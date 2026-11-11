@@ -78,21 +78,23 @@ apps/
 
 ## 3. 五大关键工程机制设计
 
-### 3.1 托管 PostgreSQL 18 生命周期与恢复状态机（AW-004 / AW-008 / AW-012）
+### 3.1 托管 PostgreSQL 18 生命周期、自动自愈与外接逃生阀（AW-004 / AW-008 / AW-012）
 
 1. **初始化与编码隔离**：
    - 统一使用 `initdb -D <pgdata> --encoding=UTF8 --locale=C --no-locale --data-checksums --auth-local=scram-sha-256 --auth-host=scram-sha-256`。
    - 强制 `--locale=C --no-locale` 彻底消除 Windows/macOS GUI 进程缺失环境变量或中文用户名导致的 locale 初始化失败与跨版本索引排序漂移。
-   - 启动前检测数据目录所在卷类型：**拒绝 SMB/NFS 网络盘及 OneDrive/iCloud/Dropbox 实时同步目录**（返回稳定错误码 `AW-FS-001`）。
-2. **通信寻址与认证**：
+   - 启动前检测数据目录所在卷类型：**拒绝 SMB/NFS 网络盘及 OneDrive/iCloud/Dropbox 实时同步目录**（返回稳定错误码 `AW-FS-001`）；若用户主目录包含非 ASCII 字符导致 Windows 子进程路径兼容问题，自动映射至本地安全短路径（如 `%PROGRAMDATA%\AssetWeft\pgdata`）。
+2. **通信寻址与认证（零固定端口冲突）**：
    - **macOS**：禁用 TCP（`listen_addresses = ''`），仅监听权限为 `0700` 的本地 Unix Domain Socket（若用户目录路径超过 `sun_path` 104 字节限制，自动映射至 `/tmp/.assetweft-<uid>/pg`）。
-   - **Windows**：监听 `127.0.0.1` 动态空闲端口（`49152–65535` 探测后启动，并从 `postmaster.pid` 第 4 行回读确认实际端口写入 `runtime.json`）。
+   - **Windows**：监听 `127.0.0.1` 动态空闲端口（`49152–65535` 探测后启动，并从 `postmaster.pid` 第 4 行回读确认实际端口写入 `runtime.json`），绝不抢占默认的 `5432` 端口。
    - **认证**：初始化时生成 32 字节随机高熵口令存入 OS 凭据库（macOS Keychain / Windows Credential Manager），严禁使用 `trust`。
-3. **异常退出与 `postmaster.pid` 恢复算法**：
+3. **异常退出与 `postmaster.pid` 自动自愈状态机**：
    - 解析 `postmaster.pid`：比对数据目录 `realpath`、检查 PID 是否存活且进程启动时间/命令行匹配 `postgres`。
-   - 若为崩溃残留（`STALE_PIDFILE`），先备份原 `postmaster.pid` 到 `logs/` 再清理并启动；若为 Windows Defender 等杀毒软件瞬时锁文件（`ERROR_SHARING_VIOLATION`），执行 5 次指数退避（200ms ~ 3.2s），仍失败则报 `AW-DB-011` 引导用户排除目录。
+   - 若为断电/强退残留（`STALE_PIDFILE`），先备份原 `postmaster.pid` 到 `logs/` 再自动清理并拉起，无需用户手动干预；若为 Windows Defender / 杀毒软件瞬时锁文件（`ERROR_SHARING_VIOLATION`），执行 5 次指数退避（200ms ~ 3.2s），仍失败则报 `AW-DB-011` 引导用户排除目录。
    - **严禁自动执行 `initdb` 覆盖非空目录，严禁自动执行 `pg_resetwal`**。
-4. **`pg_upgrade` 双目录与熔断判据（Kill Criteria）**：
+4. **外接 PostgreSQL 18 逃生阀（External PG Escape Hatch）**：
+   - 针对极端受限的企业 Windows 终端（组策略禁止桌面应用拉起 `postgres.exe` 子进程），`persistence` 层支持在设置中配置外部 `DATABASE_URL`（连接本机已有 PostgreSQL、Docker 容器或局域网 PostgreSQL 18 实例）。由于底层同为 PostgreSQL 18，**100% 复用同一套 SQL Schema 与 `sqlx` 查询，零双数据库维护成本**。
+5. **`pg_upgrade` 双目录与熔断判据（Kill Criteria）**：
    - 升级仅使用 `--copy` 模式（禁用会就地破坏旧集群的 `--link`），通过 `CURRENT` 指针文件原子切换 `pg/18` 与 `pg/19`。
    - 命中任一 Kill Criteria（`--check` 失败、磁盘可用空间 < `2.2 × PGDATA`、20 张表升级前后 `count(*)` 不一致、主键索引 `amcheck` 失败）立即将 `CURRENT` 指回旧集群，保证零数据丢失。
 
@@ -119,28 +121,43 @@ apps/
    - **Phase B（宽限期 G = 24h）**：宽限期内若任何新写入命中该哈希，直接撤销墓碑并复用。
    - **Phase C（删除）**：在事务内获取与写入端相同的 `pg_advisory_xact_lock(hashtext(hash))`，二次确认 `blobs` 无引用且墓碑未撤销后，提交事务并 `unlink` 物理文件。彻底消除“GC 删掉正在提交的文件”的竞态。
 
-### 3.4 预算原子预留、写前意图与增量语义哈希（AW-014 / AW-015 / AW-016）
+### 3.4 预算原子预留、写前意图、组件语义哈希与姿态校准门禁（AW-014 / AW-015 / AW-016 / AW-019）
 
-1. **防超支原子预留 SQL**：
-   - 严禁“先 SELECT 余额再 INSERT 任务”。所有付费步骤调用前，必须执行单条带条件更新：
+1. **按通道原币种/原积分直显与防超支原子预留 SQL**：
+   - **直观计价模型（不搞自动跨币种汇率换算）**：各外部 AI 平台按其原生计价单位独立建账（美元通道显示 `USD $`、人民币通道显示 `CNY ¥`、积分制平台如 Tripo/Meshy 显示 `Credits 积分`、本地开源模型显示 `Free 0 成本`）。用户在界面中只需设定直观的**「单次任务最高限额」**与**「项目/日总限额」**。
+   - **底层整数防精度丢失**：数据库内部统一采用整数微单位（`minor_units`，如 `1 元 = 1,000,000 微元` 或 `1 积分`）存储，彻底杜绝浮点数加减误差。
+   - **防超支原子预留**：严禁“先 SELECT 余额再 INSERT 任务”。所有付费步骤调用前，必须执行单条带条件更新：
      `UPDATE budget_accounts SET reserved_minor = reserved_minor + :cost WHERE id = :acct AND reserved_minor + spent_minor + overdraft_minor + :cost <= limit_minor`。影响行数为 0 则立即拒绝并返回 `BUDGET_EXCEEDED`。
 2. **防重复付费写前意图（Write-Ahead Intent）**：
    - 发起外部 HTTP POST 前，**必须先在数据库提交 `remote_jobs(state='INTENT', idempotency_key, request_hash)`**。
    - 若在收到响应前进程崩溃，重启后该步骤状态为 `REMOTE_UNKNOWN`（其预算预留 `HELD` 保持冻结、不释放为 0），优先通过 Provider 的 `idempotency_key` 或任务列表接口对账，严禁盲目重发第二次付费请求。
 3. **组件级语义哈希与增量 CAS 提交**：
-   - 区分**物理文件哈希（`blob.content_hash`）**与**组件语义哈希（`component_manifest`）**：GLB 重新打包会改变文件字节哈希，但只要 `component_manifest.mesh`（规范化顶点/索引/法线/UV 缓冲哈希）、`skeleton`、`materials` 未变，即证明满足 AW-016“只改动作时 Mesh/材质/Rig 哈希不变”的验收判据。
+   - 区分**物理文件哈希（`blob.content_hash`）**与**逻辑组件语义哈希（`component_manifest`）**：GLB 重新打包会改变文件字节哈希，但只要 `component_manifest.mesh`（规范化顶点/索引/法线/UV 缓冲哈希）、`skeleton`、`materials` 未变，即证明满足 AW-016“只改动作时 Mesh/材质/Rig 哈希不变”的验收判据。
    - 提交新版本采用乐观锁：`UPDATE assets SET head_version_id = :new WHERE id = :id AND head_version_id = :base_version`。
+4. **刚体挂点（Socket）与骨骼拓扑变更的校准对比测试门禁（A/B Calibration Gate）**：
+   - 针对增量修改中涉及 `Sockets`（武器挂点/特效锚点）微调或 `Rig`（骨骼拓扑重绑定 + `AW-019` 动作重定向）的场景，强制设立自动化**前后同帧姿态校准对比测试（Pose & Socket Drift Calibration）**：
+     1. 锁定组件（`Mesh / Material`）规范化语义哈希必须 **100% 恒等（0 差异）**；
+     2. 对挂点与重定向动画采样关键帧（0% / 25% / 50% / 75% / 100%），对比修改前后世界空间变换矩阵：**挂点位置偏移（Position Drift）$\le 0.5\text{ mm}$、旋转误差（Angular Error）$\le 0.1^\circ$、脚底接触点滑动（Foot Skate）不劣化**，并输出量化校准对比报告写入 `validation_reports`，未达标直接拦截提交。
 
-### 3.5 视口二进制协议与三引擎交付边界（AW-005 / AW-029~031）
+### 3.5 视口二进制协议、三引擎无感交付与工作台 Figma 设计门禁（AW-005 / AW-025 / AW-029~031）
 
 1. **Tauri 2 + Three.js 二进制流传输**：
    - 严禁通过 Tauri JSON `invoke` 传输 3D 网格、纹理或音频字节。
    - 核心通过 `register_asynchronous_uri_scheme_protocol("assetweft", ...)` 暴露 `assetweft://blob/<sha256>`，支持 HTTP Range 与 `ArrayBuffer` 零拷贝直传 Three.js `GLTFLoader`；切换资产时强制执行 Three.js 显存回收（`geometry.dispose()`, `material.dispose()`, `texture.dispose()`）。
-2. **三引擎交付与开源许可证防火墙**：
+2. **三引擎交付与“零闭源依赖 + 无感三层Unreal管线”设计**：
+   - **主仓库开源许可证**：统一采用 **`Apache-2.0 OR MIT` 双许可**（Owner 已拍板）。
    - **Unity**：基于 `com.unity.cloud.gltfast` (Apache-2.0) + AssetWeft Unity Editor C# 插件读取 `ExportManifest`。
-   - **Unreal Engine**：主路径采用 **UE 5.6+ 原生 Interchange Framework (glTF 2.0)** + Unreal C++ Editor 插件装配材质、骨骼与 `ActionPresentation` 事件；若需导出 FBX 2020.2，仅通过**外部隔离工具进程（如用户本地安装的 Blender CLI）**桥接转换，主仓库绝不静态链接闭源 Autodesk FBX SDK 或捆绑 GPL 二进制。
+   - **Unreal Engine（三层无感开源交付架构）**：用户在工作台只需点击「一键发送到 Unreal」，无需关心底层是 glTF 还是 FBX：
+     - **第 1 层（默认主通道，零外部依赖）**：AssetWeft 输出标准 `glTF 2.0 (.glb)` + `ExportManifest.json`。Unreal C++ 插件调用引擎自带 **Interchange 原生管线**导入骨骼网格、材质与动画；若检测到旧版 UE 5.5（存在原生 glTF 表情曲线遗漏 Bug），由我们的 **Unreal C++ 插件直接读取 `ExportManifest.json` 在引擎内存里自动补齐 Morph Target 动画曲线**，从而在 UE 5.5 / 5.6+ 下均无需依赖闭源 Autodesk FBX SDK！
+     - **第 2 层（纯 Rust 开源 FBX 写出器）**：针对必须交付 `.fbx` 物理文件的传统外包流水线，使用纯 Rust 开源二进制写出器生成静态网格与基础骨骼 `.fbx`，100% 规避 Autodesk 闭源 SDK 传染。
+     - **第 3 层（本机 Blender CLI 无感桥接）**：针对含特殊自定义约束的复杂绑定 FBX，若检测到用户本机安装了 Blender，自动后台调用 `blender --background` 完成工业级 FBX 2020.2 转换。
    - **Godot**：基于 Godot 4.x 原生 glTF 2.0 导入器 + GDScript `EditorImportPlugin`。
-   - **Piper TTS (GPL-3.0) 隔离**：默认不随安装包分发，仅作为可选外部独立进程通过命令行/HTTP 调用；默认内置 TTS 候选优先采用 Apache-2.0 的 `Kokoro-82M`。
+   - **重型 AI 模型与 GPL-3.0 进程隔离**：桌面客户端保持纯 Rust 零 Python 依赖；`UniRig`、`TRELLIS.2`、`ACE-Step-1.5` 通过标准 Docker / 远端推理 Endpoint 按需接入；`piper1-gpl` (GPL-3.0) 严格作为可选外部独立进程调用，默认内置 TTS 优先采用 Apache-2.0 的 `Kokoro-82M`。
+3. **M6 桌面工作台视觉设计门禁（Mobbin $\to$ Eagle $\to$ Figma $\to$ Owner 审核）**：
+   - 在编写任何 `AW-025` 工作台前端页面代码前，强制执行三步视觉门禁（遵循 `[细则·视觉]`）：
+     1. **Mobbin 采集并入库 Eagle**：按工作台核心视图（资产网格库、3D/2D/音频主视口、DAG 节点编排器、A/B 增量对比视图、三引擎导出面板、预算设置）在 Mobbin 采集高水准参考图，全部存入本地 Eagle 素材库并 `GET /api/item/list` 读回校验，生成 `references/MOBBIN-EAGLE-MANIFEST.md`；
+     2. **Figma 模块化设计**：在 Figma 中构建 Variables 令牌、基础组件与 Auto Layout 完整工作台页面；
+     3. **Owner 审核门禁**：导出 Figma 页面完整预览提交 Owner 审核，**Owner 审核通过后方可启动前端实现**。
 
 ---
 

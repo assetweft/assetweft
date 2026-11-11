@@ -5,26 +5,27 @@
 | 文档编号 | `AW-DOC-AUDIT-001` |
 | 唯一维护位置 | `docs/AUDIT_AND_OPEN_QUESTIONS.md` |
 | 基线依据 | `docs/DEVELOPMENT_BASELINE.md` (`AW-DEV-001`, SHA-256: `b15d51b3048a0d95424b514e59cc6331a620f302905277b5801e78ae86cd7fe1`) |
-| 参与审计通道 | 主控（Antigravity Gemini 4 Argon）+ Orca Worker 1（`DSH` 车道，`task_210d1dd9aaa6`）+ Orca Worker 2（`Hy4 / OpenCode` 车道，`task_4543a26b81b9`） |
+| 参与审计通道 | 主控（Antigravity Gemini 4 Argon）+ Orca Worker 1（`DSH` 车道，`task_210d1dd9aaa6`）+ Orca Worker 2（**腾讯官方 `CodeBuddy / Hy4` 车道**，`task_b2f3207a0d10` / `ctx_f4c916e98d59`，`hy4free high`）+ 早期 `OpenCode` 车道（`task_4543a26b81b9`） |
 | 核查日期 | 2026-11-11 |
 
 ---
 
 ## 一、 多模型联合审计执行记录与证据链
 
-按照指令（不调用 Claude / Codex，通过 Orca 编排 `DSH` 与 `Hy4` 车道，遵循唯一权威），本次对 `DEVELOPMENT_BASELINE.md` 进行了三方独立交叉审计与一手外部规范核验：
+按照指令（不调用 Claude / Codex，通过 Orca 编排 `DSH` 与官方 `Hy4 / CodeBuddy` 车道，遵循唯一权威），本次对 `DEVELOPMENT_BASELINE.md` 及 `docs/ARCHITECTURE.md` 进行了多模型独立交叉审计与一手外部规范核验：
 
 | 审计通道 | Orca 任务 / Dispatch ID | 负责模块与维度 | 产出报告与 SHA-256 | 发现统计 |
 |---|---|---|---|---|
 | **DSH 车道** | `task_210d1dd9aaa6` / `ctx_a5c89b52698a` | M1/M2/M4、内置 PG18 生命周期、单核心进程租约与 IPC、CAS 事务与 GC、DAG 预算与 `REMOTE_UNKNOWN` 对账、表归属与 `sqlx` | `work/arch-audit-20261111/reports/AUDIT-DSH.md` (`cdd04badab392f156a3ccad2ea47061bc8086c562fdf14557e97adf957a723ed`) | **5 P0 / 9 P1 / 9 P2**（共 23 项） |
-| **Hy4 / OpenCode 车道** | `task_4543a26b81b9` / `ctx_e3dc56106924` (自 `ctx_f8945e6c2b81` 套餐墙切免费车道续跑) | M3/M5/M6、Unreal FBX 许可证冲突、Tauri+Three.js 二进制传输、许可证准入隔离、40 卡 DAG 拓扑与 GitHub CI 门禁 | `work/arch-audit-20261111/reports/AUDIT-HY4.md` (`65e71dc2f74742f740bee183b205d6f2335ef4767e2371d3336e4dee0654e82d`) | **3 P0 / 8 P1 / 5 P2**（共 16 项） |
-| **主控权威实测** | Humaux `1164456b-5d65-44f6-bc00-9ca824190a9a` | 穿透核查 E01–E11 官方文档与 GitHub API 仓库精确 HEAD SHA / SPDX 许可证，汇总并落地 `PRODUCT.md`、`ARCHITECTURE.md`、`sources.yaml`、`capabilities.yaml` | `evidence/sources.yaml` · `docs/ARCHITECTURE.md` | 锁定 11 项外部权威与 20 表架构契约 |
+| **官方 Hy4 (`CodeBuddy`) 车道** | `task_b2f3207a0d10` / `ctx_f4c916e98d59` (`--agent codebuddy`, `hy4free high`) | M3 跨平台浮点确定性、M5 三引擎坐标/手性/PBR/IBM 转换数学契约、`ExportManifest v2`、CAS 状态机与 GC 锁内隔离复核、WebGL 显存释放、外部进程沙箱 | `work/arch-audit-20261111/reports/AUDIT-HY4-CODEBUDDY.md` (`12066d05f09085e98dfcd50fa6f466f37a322dd879b529f4ff884063d8462d3e`) | **4 P0 / 10 P1 / 9 P2**（共 23 项） |
+| **OpenCode 辅助车道** | `task_4543a26b81b9` / `ctx_e3dc56106924` | M3/M5/M6、Unreal FBX 许可证冲突、Tauri+Three.js 二进制传输、许可证准入隔离、40 卡 DAG 拓扑与 GitHub CI 门禁 | `work/arch-audit-20261111/reports/AUDIT-HY4.md` (`65e71dc2f74742f740bee183b205d6f2335ef4767e2371d3336e4dee0654e82d`) | **3 P0 / 8 P1 / 5 P2**（共 16 项） |
+| **主控权威实测** | Humaux `1164456b` & `9cb6c535` | 穿透核查 E01–E11 官方文档与 GitHub API 仓库精确 HEAD SHA / SPDX 许可证，汇总并落地 `PRODUCT.md`、`ARCHITECTURE.md`、`sources.yaml`、`capabilities.yaml` | `evidence/sources.yaml` · `docs/ARCHITECTURE.md` | 锁定 11 项外部权威与 21 表架构契约 |
 
 ---
 
-## 二、 核心架构不完善点与完善结论汇总（8 项 P0 级关键缺口）
+## 二、 核心架构不完善点与完善结论汇总（12 项 P0 级关键缺口全量闭环）
 
-基线文档（`AW-DEV-001`）在产品方向、模块边界、反腐败层和风险前置（W1 三大原型）上设计非常扎实，但在进入代码编写前，存在 **8 项“原则已写、但缺少可执行工程契约”的 P0/P1 级缺口**。现已在 [`docs/ARCHITECTURE.md`](file:///Volumes/data/assetweft_delivery/docs/ARCHITECTURE.md) 与 [`evidence/sources.yaml`](file:///Volumes/data/assetweft_delivery/evidence/sources.yaml) 中完成闭环补齐：
+基线文档（`AW-DEV-001`）在产品方向、模块边界、反腐败层和风险前置（W1 三大原型）上设计非常扎实，但在进入代码编写前，经 `DSH` 与官方 `CodeBuddy (Hy4)` 深度审计共识别出 **12 项“原则已写、但缺少可执行工程/数学契约”的 P0 级缺口**。现已在 [`docs/ARCHITECTURE.md`](file:///Volumes/data/assetweft_delivery/docs/ARCHITECTURE.md) 与 [`evidence/sources.yaml`](file:///Volumes/data/assetweft_delivery/evidence/sources.yaml) 中完成闭环补齐：
 
 1. **【P0 · 资金安全】并发任务预算缺少“原子预留（Reservation）”表与单条 SQL 锁**：
    - *原基线缺陷*：仅要求“并发任务不会绕过预算”（L644），但 §8.3 的 11 张表中无预算表，若实现为“先查余额再提交”必然在并发下超支。
@@ -49,7 +50,18 @@
    - *已完善方案*：通过 GitHub API 实测锁定全部 11 项外部仓库精确 Commit SHA 与 SPDX 许可证（写入 `evidence/sources.yaml`）；将 `Kokoro-82M`（Apache-2.0）作为默认 TTS 候选，将 `Piper` 严格限制为“用户可选安装的外部独立进程”。
 8. **【P0 · 视口与 DAG】Tauri 2 视口二进制传输协议与 40 卡 DAG 依赖修正**：
    - *原基线缺陷*：未规定 Rust 到 Three.js 的大资产传输方式（默认 JSON `invoke` 会内存翻倍卡死）；`AW-016` 漏掉了对 `AW-022`（M3 语义哈希）的依赖；`AW-033`（CLI/MCP）被 `AW-016` 硬阻塞导致介入过晚。
-   - *已完善方案*：确立 `assetweft://blob/<sha256>` 自定义二进制协议直传 `ArrayBuffer`；修正 `AW-016`、`AW-022`、`AW-033a/b` 与 `AW-029~031` 的 DAG 依赖关系。
+   - *已完善方案*：确立 `assetweft://blob/<sha256>` 自定义二进制协议（含 `OPTIONS` CORS 预检、`206 Range`、CSP 放行与递归 `disposeScene` 显存释放）；修正 `AW-016`、`AW-033a/b` 与 `AW-029~031` 的 DAG 依赖，并保持 `AW-022`（纯计算层）不逆向依赖 `AW-005`（UI 视口原型）（修补 `HY4-CB-P1-10`）。
+9. **【P0 · 跨平台确定性】`macOS ARM64` 与 `Windows x86_64` 浮点计算哈希漂移（官方 Hy4 新增 `HY4-CB-P0-01`）**：
+   - *缺陷根因*：ARM64 NEON FMA 硬件乘加融合、平台 `libm` 超越函数与 SIMD 归约顺序差异，会导致同一模型在 Mac 与 Windows 上算出不同的浮点末位，使 `component_manifest` 语义哈希与 `AW-016` 增量判据跨平台失效。
+   - *已完善方案*：在 `ARCHITECTURE.md §3.4` 确立 `DeterminismPolicy`：所有进入语义哈希的浮点属性统一经过 `domain::canonicalize`（`-0.0 -> +0.0`、四元数强制 `w >= 0` 半球符号、`1e-6` 定点量化 `round_ties_even`、禁用 FMA、纯 Rust `libm`），并纳入双平台 CI 必跑门禁 `G-DET-1`。
+10. **【P0 · 三引擎转换数学】坐标/手性/`inverseBindMatrices`/切线 `w`/厘米缩放缺少显式数学契约（官方 Hy4 新增 `HY4-CB-P0-02`）**：
+    - *缺陷根因*：glTF（右手系 +Y Up 米）转 Unity（左手系 +Y Up 米）与 Unreal（左手系 +Z Up 厘米 $\times 100$）是手性反射变换（$\det(C) < 0$）。若只改坐标不反转三角形顶点绕序 `(i0, i2, i1)`、不翻转 MikkTSpace 切线 `tangent.w = -tangent.w`、不按相似变换 $\text{IBM}' = C \cdot \text{IBM} \cdot C^{-1}$ 重算蒙皮逆绑定矩阵，会导致“导入不报错但模型内翻、法线贴图反向、蒙皮糖果纸扭曲”。
+    - *已完善方案*：在 `ARCHITECTURE.md §3.5` 确立 `EngineTransformContract`，锁定换基矩阵、绕序反转、切线手性翻转、IBM 相似变换与 Unreal $\times 100$ 全通道缩放公式。
+11. **【P0 · 材质与色彩空间】PBR 贴图通道重打包与 sRGB/Linear 标志缺失（官方 Hy4 新增 `HY4-CB-P0-03`）**：
+    - *缺陷根因*：glTF/Unreal 使用 `ORM (R=AO, G=Roughness, B=Metallic)`，而 Unity URP/HDRP 使用 `MetallicSmoothness (R=Metallic, A=1-Roughness)`；直接共用同一张贴图会导致金属度与粗糙度全错。
+    - *已完善方案*：M5 导出时按目标引擎自动重打包贴图通道，并在 `ExportManifest v2` 中强制标记数据贴图（法线/ORM/MetallicSmoothness）为 `sRGB = false` 线性空间。
+12. **【P0 · 交付清单完整性与 CAS 锁内删除】`ExportManifest v2` 扩展与 GC Phase C 锁内隔离（官方 Hy4 新增 `HY4-CB-P0-04 / P1-09 / P2-08`）**：
+    - *已完善方案*：① 将 `gc_tombstones` 纳入第 2 章 **21 张表归属矩阵**（归属 M1），锁键改用 SHA-256 前 8 字节 64-bit 整数替代 `hashtext`，且 GC Phase C 在持有事务锁期间先原子 `rename` 到 `work/trash/` 再提交 `unlink`；② 将 `ExportManifest` 升级为 `v2`，补齐 `event_tracks`、`attach_points`、`root_motion`、`skeleton_mapping`、`material_channel_map`、`morph_target_curves` 与 Artifact 级 `license_chain`。
 
 ---
 

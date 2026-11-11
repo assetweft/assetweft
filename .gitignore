@@ -1,0 +1,27 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# Node / Frontend / Tauri
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Process & Scratch Work Artifacts (tracked locally in work/, not pushed to public repo)
+/work/
+/logs/
+*.log
+
+# Local Environment & Secrets (NEVER commit credentials)
+.env
+.env.*
+!.env.example
+*.pem
+*.key

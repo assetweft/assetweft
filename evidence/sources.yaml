@@ -1,0 +1,229 @@
+# AssetWeft（游织）v1.0 外部权威来源与候选能力准入清单
+
+# 本文件对应任务卡 AW-001 与 AW-006 的权威文献、规范及代码仓库快照登记。
+# 遵循铁律 3（唯一权威）：所有技术规范与开源实现均穿透至官方一手文档或 GitHub API 实测 HEAD SHA（核查日期：2026-11-11）。
+
+schema_version: "1.0"
+verified_at: "2026-11-11T12:00:00Z"
+baseline_document:
+  id: "AW-DEV-001"
+  path: "docs/DEVELOPMENT_BASELINE.md"
+  sha256: "b15d51b3048a0d95424b514e59cc6331a620f302905277b5801e78ae86cd7fe1"
+
+external_authorities:
+  - id: "E01"
+    domain: "Rust 依赖锁定与工作区规范"
+    authority_owner: "The Rust Project (Cargo Team)"
+    official_url: "https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED"
+    constraint: "应用与可执行工程（含 Tauri 核心、CLI、MCP 服务）必须提交 Cargo.lock 以保证可重现构建。"
+
+  - id: "E02"
+    domain: "Tauri v2 进程模型、Sidecar、自定义协议与签名更新"
+    authority_owner: "Tauri Programme (The Commons Conservancy)"
+    official_urls:
+      - "https://v2.tauri.app/concept/process-model/"
+      - "https://v2.tauri.app/develop/sidecar/"
+      - "https://v2.tauri.app/plugin/updater/"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED_WITH_PROTOTYPE_GATE"
+    constraint: >
+      Sidecar 仅管理单可执行文件启动；PostgreSQL 18 包含动态库、share/locale 资源及父子进程树，
+      在 Windows 更新替换时存在文件锁与残留进程风险，须通过独立 DatabaseSupervisor 与 AW-004 原型验证。
+      3D 大资产传输须走 register_asynchronous_uri_scheme_protocol (assetweft://) 或 Raw Binary IPC，禁走 JSON 序列化。
+
+  - id: "E03"
+    domain: "PostgreSQL 18 集群初始化、启停控制与跨版本升级"
+    authority_owner: "PostgreSQL Global Development Group"
+    official_urls:
+      - "https://www.postgresql.org/docs/18/app-initdb.html"
+      - "https://www.postgresql.org/docs/18/app-pg-ctl.html"
+      - "https://www.postgresql.org/docs/18/pgupgrade.html"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED_WITH_PROTOTYPE_GATE"
+    constraint: >
+      PostgreSQL 18 的 initdb 默认启用 --data-checksums；强制指定 --encoding=UTF8 --locale=C --no-locale
+      以规避 Windows 中文用户名与 locale 兼容故障；禁用 trust，采用本地 Unix Socket (macOS) 或 127.0.0.1 动态端口 +
+      每次启动随机生成的临时密码文件 + scram-sha-256 认证。
+
+  - id: "E04"
+    domain: "Khronos glTF 2.0 规范与官方 Validator"
+    authority_owner: "The Khronos Group"
+    official_urls:
+      - "https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html"
+      - "https://github.com/KhronosGroup/glTF-Validator"
+    repo_metadata:
+      full_name: "KhronosGroup/glTF-Validator"
+      default_branch: "main"
+      pinned_commit_sha: "602c54043ba66856b2e68c40fdf2bced975cdb8a"
+      commit_date: "2026-10-06T19:02:39Z"
+      spdx_license: "Apache-2.0"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED"
+    constraint: "glTF 2.0 是核心交换格式而非工程数据库；Validator 通过仅代表语法与访问器合法（E1），不代表绑定变形或引擎内表现合格。"
+
+  - id: "E05"
+    domain: "Model Context Protocol (MCP) 规范与官方 Rust SDK (rmcp)"
+    authority_owner: "Model Context Protocol Specification & Rust SDK Maintainers"
+    official_urls:
+      - "https://modelcontextprotocol.io/specification/2026-07-28"
+      - "https://github.com/modelcontextprotocol/rust-sdk"
+    repo_metadata:
+      full_name: "modelcontextprotocol/rust-sdk"
+      crate_name: "rmcp"
+      crate_version: "3.9.0"
+      rust_edition: "2024"
+      msrv: "1.88"
+      default_branch: "main"
+      pinned_commit_sha: "f2b0ddf113d1ed426b77a81511eac6e4bffa0ac4"
+      commit_date: "2026-11-08T16:23:23Z"
+      spdx_license: "Apache-2.0"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED"
+    constraint: "锁定协议版本与 rmcp 3.9.0；长耗时生成任务采用 job_id + 轮询/状态查询契约，不在 stdio 单次请求内无限阻塞。"
+
+  - id: "E06"
+    domain: "Agent Skills 开放规范"
+    authority_owner: "Agent Skills Specification"
+    official_url: "https://agentskills.io/specification"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED"
+    constraint: "Skills 仅定义工作流指令、输入要求与验收步骤，必须通过 CLI/MCP 调应用服务，严禁绕过预算或直写数据库。"
+
+  - id: "E07"
+    domain: "Unity glTFast 导入导出管线"
+    authority_owner: "Unity Technologies"
+    official_url: "https://github.com/Unity-Technologies/com.unity.cloud.gltfast"
+    repo_metadata:
+      full_name: "Unity-Technologies/com.unity.cloud.gltfast"
+      package_name: "com.unity.cloud.gltfast"
+      package_version: "6.20.1-pre.1"
+      unity_minimum: "6000.0"
+      default_branch: "main"
+      pinned_commit_sha: "fdb580527a41fd7006916030768ba74d3728f987"
+      commit_date: "2026-08-24T22:59:36Z"
+      spdx_license: "Apache-2.0"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED"
+    constraint: "glTFast 负责基础几何、蒙皮与材质加载；ActionPresentation 事件、Humanoid 映射与 Prefab 组装需由配套 Unity Editor C# 插件读取 ExportManifest 完成。"
+
+  - id: "E08"
+    domain: "Unreal Engine 骨骼网格体、动画与 Interchange 导入管线"
+    authority_owner: "Epic Games"
+    official_urls:
+      - "https://dev.epicgames.com/documentation/unreal-engine/fbx-skeletal-mesh-pipeline-in-unreal-engine"
+      - "https://dev.epicgames.com/documentation/en-us/unreal-engine/interchange-framework-in-unreal-engine"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED_WITH_LICENSE_BOUNDARY"
+    constraint: >
+      Autodesk FBX SDK 为闭源专有许可，严禁静态链接或打包进 AssetWeft 开源主仓库发行包。
+      Unreal 交付采取双轨架构：(1) 开源默认路径采用 UE 5.6+ 原生 Interchange Framework (glTF 2.0) +
+      Unreal C++ Editor 插件消费 ExportManifest；(2) 如需 FBX 2020.2，仅通过外部隔离进程（用户本地 Blender CLI
+      或独立插件进程）转换，与主程序许可证完全解耦。
+
+  - id: "E09"
+    domain: "Godot Engine 3D 场景与动画导入管线"
+    authority_owner: "Godot Engine Contributors"
+    official_url: "https://docs.godotengine.org/en/stable/tutorials/assets_pipeline/importing_3d_scenes/available_formats.html"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED"
+    constraint: "以 Godot 4.x Stable 的 glTF 2.0 导入器为基准，配合 EditorImportPlugin (GDScript) 挂载 ActionPresentation 事件与 AnimationLibrary。"
+
+  - id: "E10"
+    domain: "GitHub Actions 门禁、Required Checks 与安全边界"
+    authority_owner: "GitHub Docs"
+    official_urls:
+      - "https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks"
+      - "https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target"
+      - "https://docs.github.com/en/actions/concepts/runners/larger-runners"
+    verified_date: "2026-11-11"
+    status: "CONFIRMED"
+    constraint: >
+      严禁在必过检查 Workflow 顶层使用 paths: 过滤（跳过会导致 Required Check 永远 Pending 阻塞合并）；
+      统一触发入口 Workflow，在内部通过 changes 探测 + Job 级 if: 条件跳过，并由最终汇总 Job (gate-verdict) 作为唯一必过状态检查。
+
+  - id: "E11"
+    domain: "候选生成模型与参考开源项目实现"
+    authority_owner: "各原始论文作者与官方代码仓库"
+    verified_date: "2026-11-11"
+    repositories:
+      - name: "TRELLIS.2"
+        full_name: "microsoft/TRELLIS.2"
+        official_url: "https://github.com/microsoft/TRELLIS.2"
+        pinned_commit_sha: "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
+        commit_date: "2026-06-05T05:19:14Z"
+        code_license: "MIT"
+        weights_license: "MIT"
+        integration_mode: "REMOTE_OR_SELF_HOSTED_PROVIDER"
+        notes: "代码与权重均为 MIT，但运行依赖重型 Linux + CUDA (24GB+ VRAM) 环境，仅作为 M4 远程/自托管 Provider 接入，不内嵌进客户端。"
+
+      - name: "UniRig"
+        full_name: "VAST-AI-Research/UniRig"
+        official_url: "https://github.com/VAST-AI-Research/UniRig"
+        paper_url: "https://arxiv.org/abs/2504.12451"
+        pinned_commit_sha: "6793c6640ff01c8fb389f3993434124bb43d2933"
+        commit_date: "2026-06-04T07:15:34Z"
+        code_license: "MIT"
+        weights_license: "MIT"
+        integration_mode: "REMOTE_OR_SELF_HOSTED_PROVIDER"
+        notes: "拆分骨架预测、骨架修正、蒙皮权重三个可中断步骤；结果进入 M3 确定性无环与权重归一化检查。"
+
+      - name: "Kokoro-82M"
+        official_url: "https://huggingface.co/hexgrad/Kokoro-82M"
+        code_license: "Apache-2.0"
+        weights_license: "Apache-2.0"
+        integration_mode: "REMOTE_OR_OPTIONAL_LOCAL_PLUGIN"
+        notes: "轻量 TTS 候选，Apache-2.0 许可友好；中英文多角色表现与本地 ONNX 推理性能待 AW-021 实测。"
+
+      - name: "Piper (OHF-Voice)"
+        full_name: "OHF-Voice/piper1-gpl"
+        official_url: "https://github.com/OHF-Voice/piper1-gpl"
+        pinned_commit_sha: "0471299744417dae497991f859dd0d3c1daab170"
+        commit_date: "2026-11-09T16:32:53Z"
+        code_license: "GPL-3.0"
+        weights_license: "VARIES_BY_VOICE_DATASET"
+        integration_mode: "ISOLATED_EXTERNAL_PROCESS_ONLY"
+        notes: "代码为 GPL-3.0 强传染许可，且不同语音包训练数据集许可证不一。严禁静态/动态链接进主程序，不随默认安装包捆绑分发；仅允许用户可选下载并通过独立命令行进程/HTTP 调用。"
+
+      - name: "ACE-Step 1.5"
+        full_name: "ace-step/ACE-Step-1.5"
+        official_url: "https://github.com/ace-step/ACE-Step-1.5"
+        pinned_commit_sha: "ca1e85fe9430179831e6bc6be790c332190a3866"
+        commit_date: "2026-08-29T08:25:18Z"
+        code_license: "MIT"
+        weights_license: "VERIFY_BEFORE_RELEASE"
+        integration_mode: "REMOTE_OR_SELF_HOSTED_PROVIDER"
+        notes: "仓库代码为 MIT，音乐与人声合成需在 AW-006/AW-021 锁定具体 checkpoint 权重许可证。"
+
+      - name: "Asset Tap (参考项目)"
+        full_name: "nightandwknd/asset-tap"
+        official_url: "https://github.com/nightandwknd/asset-tap"
+        pinned_commit_sha: "9b3b8e2092d17038c8650497129fbef17ff64e60"
+        commit_date: "2026-11-02T14:33:40Z"
+        code_license: "Apache-2.0"
+        integration_mode: "REFERENCE_ONLY"
+
+      - name: "AssetForge (参考项目)"
+        full_name: "InFaNsO/AssetForge"
+        official_url: "https://github.com/InFaNsO/AssetForge"
+        pinned_commit_sha: "6f9daed3cdd44f37020cec798f4ffc4d053e6fdd"
+        commit_date: "2026-10-06T14:01:05Z"
+        code_license: "MIT"
+        integration_mode: "REFERENCE_ONLY"
+
+      - name: "Blender Agent Skills (参考项目)"
+        full_name: "EL4CTEO/blender-skills"
+        official_url: "https://github.com/EL4CTEO/blender-skills"
+        pinned_commit_sha: "389f28addc79b87b28764898e38e7bf408d14b77"
+        commit_date: "2026-11-07T19:16:32Z"
+        code_license: "MIT"
+        integration_mode: "REFERENCE_ONLY"
+
+      - name: "ZCode (Agent 宿主参考)"
+        full_name: "zai-org/ZCode"
+        official_url: "https://github.com/zai-org/ZCode"
+        pinned_commit_sha: "b95ebaffeab641907b38652f45c1502bd762972d"
+        commit_date: "2026-11-11T03:11:53Z"
+        code_license: "Apache-2.0"
+        integration_mode: "AGENT_HOST_REFERENCE"

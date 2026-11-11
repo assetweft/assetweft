@@ -1,0 +1,14 @@
+{
+  "source_file": "AssetWeft_Development_Baseline_v1.0.md",
+  "bytes": 44507,
+  "encoding": "UTF-8",
+  "sha256": "b15d51b3048a0d95424b514e59cc6331a620f302905277b5801e78ae86cd7fe1",
+  "main_chapters": 16,
+  "task_cards": 40,
+  "task_range": [
+    "AW-001",
+    "AW-040"
+  ],
+  "markdown_and_text_byte_identical": true,
+  "validation_scope": "File integrity only; no new technical research or product tests."
+}

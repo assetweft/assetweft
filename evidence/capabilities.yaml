@@ -1,0 +1,92 @@
+# AssetWeft（游织）v1.0 模型、处理与引擎交付能力状态表
+# 唯一维护位置：evidence/capabilities.yaml
+# 状态枚举：NOT_RUN（尚未实测） | PROTOTYPE_PENDING（待 W1 原型验证） | VERIFIED（已通过实测与 CI 证据） | BLOCKED（受阻） | REJECTED（已否决）
+
+schema_version: "1.0"
+updated_at: "2026-11-11T12:00:00Z"
+
+infrastructure_capabilities:
+  - id: "CAP-INFRA-PG18"
+    name: "Windows / macOS 内置托管 PostgreSQL 18 生命周期管理"
+    module: "M1"
+    task_card: "AW-004, AW-008, AW-012"
+    status: "PROTOTYPE_PENDING"
+    evidence_level: "E0"
+    notes: "待 AW-004 验证普通用户权限、中文/空格路径、动态端口/Socket、异常残留 PID 恢复及杀毒软件兼容性。"
+
+  - id: "CAP-INFRA-VIEWPORT"
+    name: "Tauri 2 + Three.js 3D 视口与二进制资产流式加载"
+    module: "M6"
+    task_card: "AW-005, AW-032"
+    status: "PROTOTYPE_PENDING"
+    evidence_level: "E0"
+    notes: "待 AW-005 验证 assetweft:// 自定义协议加载大体积 GLB、骨骼蒙皮变形、Morph Target 与 WebView 显存释放。"
+
+generation_capabilities:
+  - id: "CAP-GEN-HUMANOID-3D"
+    name: "标准人形角色 3D 网格与贴图生成"
+    module: "M4"
+    task_card: "AW-007, AW-020"
+    candidate_providers: ["TRELLIS.2", "Meshy API", "Tripo API"]
+    status: "NOT_RUN"
+    evidence_level: "E0"
+
+  - id: "CAP-GEN-HUMANOID-RIG"
+    name: "标准人形自动骨骼绑定与蒙皮权重生成"
+    module: "M3, M4"
+    task_card: "AW-007, AW-020, AW-022"
+    candidate_providers: ["UniRig", "Meshy Rigging API"]
+    status: "NOT_RUN"
+    evidence_level: "E0"
+
+  - id: "CAP-GEN-CHAOS-RIG"
+    name: "非人形（混沌 Boss / 多触手 / 异形）骨骼预测与程序化动作"
+    module: "M3, M4"
+    task_card: "AW-007, AW-022, AW-023, AW-035"
+    candidate_providers: ["UniRig (骨骼候选)", "M3 本地程序化 FK/IK 动作"]
+    status: "NOT_RUN"
+    evidence_level: "E0"
+    notes: "严禁将仅支持标准人形的 API（如 Meshy Rigging）路由给异形 Boss 任务。"
+
+  - id: "CAP-GEN-2D-PIXEL"
+    name: "2D 像素角色、多方向帧序列与 Sprite Sheet 确定性排版"
+    module: "M3, M4"
+    task_card: "AW-020, AW-024"
+    status: "NOT_RUN"
+    evidence_level: "E0"
+
+  - id: "CAP-GEN-AUDIO-TTS"
+    name: "角色台词配音 (TTS)、音效 (SFX) 与背景音乐 (BGM)"
+    module: "M3, M4"
+    task_card: "AW-021, AW-027"
+    candidate_providers: ["Kokoro-82M (Apache-2.0)", "ACE-Step 1.5 (MIT)", "Piper (GPL-3.0 外部进程隔离)"]
+    status: "NOT_RUN"
+    evidence_level: "E0"
+
+engine_delivery_capabilities:
+  - id: "CAP-ENG-UNITY"
+    engine: "Unity"
+    target_version: "Unity 6 (6000.0 LTS) + com.unity.cloud.gltfast 6.20.x"
+    module: "M5"
+    task_card: "AW-029"
+    supported_formats: ["glTF 2.0 / GLB", "ExportManifest JSON", "PNG Atlas", "WAV/OGG"]
+    status: "NOT_RUN"
+    evidence_level: "E0"
+
+  - id: "CAP-ENG-UNREAL"
+    engine: "Unreal Engine"
+    target_version: "Unreal Engine 5.6+ (Interchange glTF 2.0 主路径 / 外部隔离 FBX 2020.2 备选)"
+    module: "M5"
+    task_card: "AW-030"
+    supported_formats: ["glTF 2.0 / GLB (Interchange)", "FBX 2020.2 (仅限外部隔离转换器)", "ExportManifest JSON"]
+    status: "NOT_RUN"
+    evidence_level: "E0"
+
+  - id: "CAP-ENG-GODOT"
+    engine: "Godot Engine"
+    target_version: "Godot 4.3 / 4.4 Stable"
+    module: "M5"
+    task_card: "AW-031"
+    supported_formats: ["glTF 2.0 / GLB", "ExportManifest JSON", "SpriteFrames / AnimationLibrary"]
+    status: "NOT_RUN"
+    evidence_level: "E0"

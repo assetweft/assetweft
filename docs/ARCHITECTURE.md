@@ -79,25 +79,18 @@ apps/
 
 ## 3. 五大关键工程机制设计
 
-### 3.1 托管 PostgreSQL 18 生命周期、自动自愈与外接逃生阀（AW-004 / AW-008 / AW-012）
+### 3.1 桌面端嵌入式存储架构：SQLite 3 (WAL 模式) 默认 + 可选外接 PostgreSQL 18（彻底消除进程托管脆弱性）
 
-1. **初始化与编码隔离**：
-   - 统一使用 `initdb -D <pgdata> --encoding=UTF8 --locale=C --no-locale --data-checksums --auth-local=scram-sha-256 --auth-host=scram-sha-256`。
-   - 强制 `--locale=C --no-locale` 彻底消除 Windows/macOS GUI 进程缺失环境变量或中文用户名导致的 locale 初始化失败与跨版本索引排序漂移。
-   - 启动前检测数据目录所在卷类型：**拒绝 SMB/NFS 网络盘及 OneDrive/iCloud/Dropbox 实时同步目录**（返回稳定错误码 `AW-FS-001`）；若用户主目录包含非 ASCII 字符导致 Windows 子进程路径兼容问题，自动映射至本地安全短路径（如 `%PROGRAMDATA%\AssetWeft\pgdata`）。
-2. **通信寻址与认证（零固定端口冲突）**：
-   - **macOS**：禁用 TCP（`listen_addresses = ''`），仅监听权限为 `0700` 的本地 Unix Domain Socket（若用户目录路径超过 `sun_path` 104 字节限制，自动映射至 `/tmp/.assetweft-<uid>/pg`）。
-   - **Windows**：监听 `127.0.0.1` 动态空闲端口（`49152–65535` 探测后启动，并从 `postmaster.pid` 第 4 行回读确认实际端口写入 `runtime.json`），绝不抢占默认的 `5432` 端口。
-   - **认证**：初始化时生成 32 字节随机高熵口令存入 OS 凭据库（macOS Keychain / Windows Credential Manager），严禁使用 `trust`。
-3. **异常退出与 `postmaster.pid` 自动自愈状态机**：
-   - 解析 `postmaster.pid`：比对数据目录 `realpath`、检查 PID 是否存活且进程启动时间/命令行匹配 `postgres`。
-   - 若为断电/强退残留（`STALE_PIDFILE`），先备份原 `postmaster.pid` 到 `logs/` 再自动清理并拉起，无需用户手动干预；若为 Windows Defender / 杀毒软件瞬时锁文件（`ERROR_SHARING_VIOLATION`），执行 5 次指数退避（200ms ~ 3.2s），仍失败则报 `AW-DB-011` 引导用户排除目录。
-   - **严禁自动执行 `initdb` 覆盖非空目录，严禁自动执行 `pg_resetwal`**。
-4. **外接 PostgreSQL 18 逃生阀（External PG Escape Hatch）**：
-   - 针对极端受限的企业 Windows 终端（组策略禁止桌面应用拉起 `postgres.exe` 子进程），`persistence` 层支持在设置中配置外部 `DATABASE_URL`（连接本机已有 PostgreSQL、Docker 容器或局域网 PostgreSQL 18 实例）。由于底层同为 PostgreSQL 18，**100% 复用同一套 SQL Schema 与 `sqlx` 查询，零双数据库维护成本**。
-5. **`pg_upgrade` 双目录与熔断判据（Kill Criteria）**：
-   - 升级仅使用 `--copy` 模式（禁用会就地破坏旧集群的 `--link`），通过 `CURRENT` 指针文件原子切换 `pg/18` 与 `pg/19`。
-   - 命中任一 Kill Criteria（`--check` 失败、磁盘可用空间 < `2.2 × PGDATA`、20 张表升级前后 `count(*)` 不一致、主键索引 `amcheck` 失败）立即将 `CURRENT` 指回旧集群，保证零数据丢失。
+针对客户端打包原生 PostgreSQL 18 存在的四大现实痛点（安装包膨胀 150MB+、Windows 杀毒软件对后台 `postgres.exe` 子进程误报拦截、固定 5432 端口冲突、断电残留 `postmaster.pid` 需复杂状态机自愈），V1.2 架构正式将**单机默认存储彻底切换为工业界绝对黄金标准的嵌入式 SQLite 3**，同时保留外部 PostgreSQL 18 作为局域网大团队协作的逃生通道：
+
+1. **单机默认：纯 Rust 静态嵌入式 SQLite 3（WAL 模式）**：
+   - **零子进程、零网络端口、零杀毒拦截**：通过 Rust `rusqlite` / `sqlx(sqlite)` 直接以静态库形式编译进客户端单一二进制文件。客户端不再拉起任何外部数据库进程，彻底消除操作系统杀毒软件的进程与网络拦截。
+   - **单文件工程库（Local-First）**：每个项目或资产库表现为一个独立的本地数据库文件（如 `project.assetweft` 或 `assetweft.db`），如同移动 Word 或 Photoshop 文档一样，备份、重命名、拷贝极为直观。
+   - **WAL 模式（Write-Ahead Logging）高并发**：启用 `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;`，实现单机“一写多读”。桌面 UI、CLI 与 `MCP stdio` 多个读客户端完全并发互不阻塞，事务提交达到微秒级。
+   - **完整支持 21 张表与 JSONB 语义索引**：SQLite 内置的 `JSON1` 扩展与 JSON 提取函数完美承载 `component_manifest` 与 `ReferenceSet` 的动态结构，性能与表现力完全满足单机游戏资产管理需求。
+2. **团队协作逃生通道（可选外接 PostgreSQL 18）**：
+   - 针对 5 人以上游戏工作室的局域网集中存储与团队协同需求，`persistence` 层通过 Repository 抽象保留外部 PostgreSQL 驱动。
+   - 用户可在设置中配置外部 `DATABASE_URL`（连接局域网自建专用服务器或 Docker 内的 PostgreSQL 18）。**单机个人模式默认 100% 走 SQLite 3，零配置开箱即用；团队模式按需连接中心 PG**。
 
 ### 3.2 单一核心进程（`core-daemon`）多入口租约与 IPC 握手（AW-008 / AW-033）
 
@@ -106,12 +99,10 @@ apps/
    - 桌面 UI、CLI、`MCP stdio` 均作为 IPC 客户端连接核心进程；**`MCP stdio` 是纯转发瘦代理（Proxy）**，且核心库启用 `#![deny(clippy::print_stdout)]`，确保 `stdout` 100% 留给 MCP JSON-RPC 帧。
 2. **会话租约（Lease）与优雅退出谓词**：
    - 每个入口连接在握手中申请 `Lease`（默认 TTL 30s，每 10s 心跳续期）。
-   - 核心进程仅在以下条件**同时满足**时才优雅停止 PG 并退出：
-     `active_leases == 0 && active_runs == 0 (含 REMOTE_UNKNOWN 待对账任务) && maintenance_lock == none && idle_elapsed > idle_timeout (默认 300s)`。
-   - 关闭桌面 UI 窗口仅释放 `Desktop` 租约，绝不中断正在后台执行的 CLI 或 MCP 生成任务。
+   - 核心进程在无连接、无运行中生成任务且空闲超 300s 后自动关闭退出；单机 SQLite 模式下无任何后台常驻守护服务负担。
 3. **版本握手与平滑升级（Drain 防死锁协议）**：
    - 握手消息 `Hello / Welcome` 采用独立于业务消息的轻量版本协商帧，校验 `(proto_min, proto_max)`、`core_build` 与 `db.schema_version`。
-   - 客户端升级后发现旧核心版本不匹配时，在不申请业务 `Lease` 的前提下直接发送 `DrainRequest`：旧核心将 `draining = true`、拒绝新任务、忽略或撤销空闲计时器，并在 `active_runs == 0` 时立即优雅停止 PG 并退出，彻底消除“新客户端持 Lease 导致旧核心永不退出”的死锁（修补 `HY4-CB-5.2`）。
+   - 客户端升级后发现旧核心版本不匹配时，在不申请业务 `Lease` 的前提下直接发送 `DrainRequest`，旧核心等待在飞任务归零后退出并完成 SQLite 检查点，由新客户端拉起新版本。
 
 ### 3.3 CAS 内容寻址存储与三阶段无竞态 GC（AW-010 / AW-012）
 
@@ -126,13 +117,18 @@ apps/
    - **Phase B（宽限期 G = 24h）**：宽限期内若任何新写入命中该哈希，直接在写入事务内删除 `gc_tombstones` 记录并复用。
    - **Phase C（锁内隔离与删除，修补 `HY4-CB-P1-09`）**：在 PG 事务内获取相同的 `pg_advisory_xact_lock(lock_key_i64)`，二次确认 `blobs` 与活跃 `blob_intents` 均无引用且墓碑未撤销后，**在持有数据库事务锁期间**先将 `objects/aa/bb/<sha256>` 原子 `rename` 到 `work/trash/<sha256>.<txid>`，随后提交事务并执行物理 `unlink`。彻底消除“事务提交释放锁后、物理 `unlink` 前并发写入同哈希文件被误删”的竞态窗口。
 
-### 3.4 预算原子预留、跨平台浮点确定性契约与姿态校准门禁（AW-014 / AW-015 / AW-016 / AW-022 / AW-023）
+### 3.4 预算控制（Budget）与 API 费用本质、跨平台浮点确定性契约（AW-014 / AW-015 / AW-016 / AW-022 / AW-023）
 
-1. **按通道原币种/原积分直显与防超支原子预留 SQL**：
-   - **直观计价模型（不搞自动跨币种汇率换算）**：各外部 AI 平台按其原生计价单位独立建账（美元通道显示 `USD $`、人民币通道显示 `CNY ¥`、积分制平台如 Tripo/Meshy 显示 `Credits 积分`、本地开源模型显示 `Free 0 成本`）。用户在界面中只需设定直观的**「单次任务最高限额」**与**「项目/日总限额」**。
-   - **底层整数防精度丢失**：数据库内部统一采用整数微单位（`minor_units`，如 `1 元 = 1,000,000 微元` 或 `1 积分`）存储，彻底杜绝浮点数加减误差。
-   - **防超支原子预留**：严禁“先 SELECT 余额再 INSERT 任务”。所有付费步骤调用前，必须执行单条带条件更新：
-     `UPDATE budget_accounts SET reserved_minor = reserved_minor + :cost WHERE id = :acct AND reserved_minor + spent_minor + overdraft_minor + :cost <= limit_minor`。影响行数为 0 则立即拒绝并返回 `BUDGET_EXCEEDED`。
+1. **什么是 API？为什么会产生费用？什么时候费用为 0？**：
+   - **API 的定义与用途**：API（Application Programming Interface，应用程序接口）是 AssetWeft 软件向外界机房发送制作请求的“电话热线”。
+     - **纯本地模式（完全免费，费用 = 0）**：当用户电脑配置足够高时，运行本地开源模型（如本地安装的 TRELLIS 跑 3D、UniRig 绑骨骼、本地算法裁切音频与处理切线），**全部在用户本地显卡运行，不联网、不调外部接口，一分钱都不用花，预算占用恒等于 0**。
+     - **云端商业生成模式（按次计费，产生 API 费用）**：当用户电脑是普通办公本（跑不动 24GB 显存的大模型）、或者追求行业顶尖的商业 AI 效果（如 Midjourney / Flux 出 2D 原画、Tripo3D / Meshy 生成高精度 3D 网格、ElevenLabs 生成好莱坞级音效、OpenAI / Claude 生成复杂策划设计规格）时，模型运行在对应云端厂商的超算中心。AssetWeft 通过网络将参数发给对方（调用 API），对方机房算好后把 3D 或音频文件传回。**因为对方提供了昂贵的云端 GPU 算力，对方会按次收取费用（例如生成一个 3D 模型收 0.2 美元，一段音效收 0.05 美元），这笔由网络调用外部服务产生的花销即为 API 费用**。
+   - **预算控制（Budget）的本质作用**：
+     - 游戏资产通常是自动化、DAG 批量化生产（例如一键为全关卡 20 种怪物批量生成 5 套动作与音效）。
+     - 若程序发生逻辑死循环、或用户不小心误点超大批量倍数，后台可能会在几分钟内狂发几千次云端网络请求，导致用户的 API 账户或信用卡被瞬间刷爆。
+     - **预算控制就是“防刷爆电气保险丝”**：用户在软件中设定直观的「单次任务最高限额」与「项目总限额」。一旦达到红线，软件底层原子 SQL 立即切断网络请求并弹窗警告，绝不让用户承受意料之外的扣费风险。
+   - **底层直观计价与整数防漏**：各平台原币种原单位独立建账（美元通道 `USD $`、人民币通道 `CNY ¥`、积分平台 `Credits`），底层使用 `minor_units` 整数微单位记账杜绝浮点计算误差。付费前执行单条原子更新 SQL：
+     `UPDATE budget_accounts SET reserved_minor = reserved_minor + :cost WHERE id = :acct AND reserved_minor + spent_minor + overdraft_minor + :cost <= limit_minor`，行数为 0 立即阻断。
 2. **防重复付费写前意图（Write-Ahead Intent）**：
    - 发起外部 HTTP POST 前，**必须先在数据库提交 `remote_jobs(state='INTENT', idempotency_key, request_hash)`**。
    - 若在收到响应前进程崩溃，重启后该步骤状态为 `REMOTE_UNKNOWN`（其预算预留 `HELD` 保持冻结、不释放为 0），优先通过 Provider 的 `idempotency_key` 或任务列表接口对账，严禁盲目重发第二次付费请求。
@@ -148,7 +144,7 @@ apps/
      1. 锁定组件（`Mesh / Material`）规范化语义哈希必须 **100% 恒等（0 差异）**；
      2. 对挂点与重定向动画采样关键帧（0% / 25% / 50% / 75% / 100%），对比修改前后世界空间变换矩阵：**挂点位置偏移（Position Drift）$\le 0.5\text{ mm}$、旋转误差（Angular Error）$\le 0.1^\circ$、脚底接触点滑动（Foot Skate）不劣化**，并输出量化校准对比报告写入 `validation_reports`，未达标直接拦截提交。
 
-### 3.5 视口二进制协议、三引擎转换数学契约与工作台 Figma 设计门禁（AW-005 / AW-025 / AW-029~031 / AW-034）
+### 3.5 视口二进制协议、Unreal 极速交付（OpenUSD + glTF + Remote Control）与工作台 Figma 设计门禁（AW-005 / AW-025 / AW-029~031 / AW-034）
 
 1. **Tauri 2 + Three.js 二进制流传输与显存闭环（修补 `HY4-CB-P1-02 / P1-03 / P1-04`）**：
    - 严禁通过 Tauri JSON `invoke` 传输 3D 网格、纹理或音频字节。
@@ -163,15 +159,15 @@ apps/
      - 导出时按目标引擎生成对应贴图通道布局（Unreal/Godot 采用 `ORM: R=AO, G=Roughness, B=Metallic`；Unity URP/HDRP 自动重打包为 `MetallicSmoothness: R=Metallic, A=1.0-Roughness` + 独立 AO），并在 `ExportManifest v2` 中强制声明每张贴图的 `color_space`（法线/ORM/MetallicSmoothness 强制 `sRGB = false` 线性空间，BaseColor/Emissive 为 `sRGB = true`）。
    - **`ExportManifest v2` 完整结构化字段**：
      - 除文件列表、语义哈希、引擎版本与 Artifact 级 `license_chain` 外，强制包含：`event_tracks`（动作帧事件）、`attach_points`（Socket 局部变换与父骨骼 ID）、`root_motion`（提取模式与单位）、`skeleton_mapping`（源骨骼 ID $\leftrightarrow$ Unity Humanoid / UE Mannequin 映射）、`material_channel_map`、`morph_target_curves`（供 UE 插件直接还原表情曲线）。
-3. **三引擎交付与“零闭源依赖 + 无感三层Unreal管线”设计**：
-   - **主仓库开源许可证**：统一采用 **`Apache-2.0 OR MIT` 双许可**（Owner 已拍板）。
-   - **Unity**：基于 `com.unity.cloud.gltfast` (Apache-2.0，同时固定稳定版兜底与离线校验和) + AssetWeft Unity Editor C# 插件读取 `ExportManifest v2`。
-   - **Unreal Engine（三层无感开源交付架构）**：用户在工作台只需点击「一键发送到 Unreal」，无需关心底层是 glTF 还是 FBX：
-     - **第 1 层（默认主通道，零外部依赖）**：AssetWeft 输出标准 `glTF 2.0 (.glb)` + `ExportManifest v2`。Unreal C++ 插件调用引擎自带 **Interchange 原生管线**导入骨骼网格、材质与动画；若检测到旧版 UE 5.5（存在原生 glTF 表情曲线遗漏 Bug），由我们的 **Unreal C++ 插件直接读取 `ExportManifest.morph_target_curves` 在引擎内存里自动补齐 Morph Target 动画曲线**，从而在 UE 5.5 / 5.6+ 下均无需依赖闭源 Autodesk FBX SDK！
-     - **第 2 层（纯 Rust 开源 FBX 写出器）**：针对必须交付 `.fbx` 物理文件的传统外包流水线，使用纯 Rust 开源二进制写出器生成静态网格与基础骨骼 `.fbx`，100% 规避 Autodesk 闭源 SDK 传染。
-     - **第 3 层（本机 Blender CLI 无感桥接）**：针对含特殊自定义约束的复杂绑定 FBX，若检测到用户本机安装了 Blender，自动后台调用 `blender --background`（受外部进程沙箱隔离，仅挂载临时输入输出目录）完成工业级 FBX 2020.2 转换。
-   - **Godot**：基于 Godot 4.x 原生 glTF 2.0 导入器 + GDScript `EditorImportPlugin`。
-   - **重型 AI 模型与 GPL-3.0 进程沙箱隔离（`ExternalProcessSandboxPolicy`）**：桌面客户端保持纯 Rust 零 Python 依赖（通过安装包审计 Gate `G-R03-1` 强制校验）；`UniRig`、`TRELLIS.2`、`ACE-Step-1.5` 通过标准 Docker / 远端推理 Endpoint 按需接入；`piper1-gpl` (GPL-3.0) 严格作为可选外部独立进程调用（绑定 `127.0.0.1` 临时端口 + 每次会话随机 Token 鉴权 + 仅传显式输入字节，严禁直访 CAS 目录或凭据库）。
+3. **Unreal 业界最顶尖资产交付设计：OpenUSD + Interchange glTF + Remote Control 实时一键直达**：
+   - **格式层突破（解决 glTF 2.0 规格限制每顶点仅 4 骨骼影响的痛点）**：
+     - **主推 OpenUSD (`.usdc` / `.usda`)**：Pixar 开源、Linux 基金会主导（Apache-2.0 许可证，100% 完全开源合法无专有 SDK 风险）。Unreal Engine 5.4/5.5/5.6 拥有官方 **Interchange OpenUSD** 核心支持。**USD 原生突破 glTF 4 骨骼影响数限制（支持 8+ 骨骼精细蒙皮与骨骼动画）**，材质完美映射 `UsdPreviewSurface` 与 `MaterialX`，无需任何复杂格式转换！
+     - **成熟兼顾 glTF 2.0**：对中低多边形资产输出自包含 `.glb` + `ExportManifest v2`，UE 插件在内存中自动补齐表情动画。
+     - **外包兜底纯 Rust FBX 写出器**：针对甲方强制交 `.fbx` 的外包场景，提供无外部依赖的纯 Rust 静态网格与基础骨骼 FBX 二进制写出器，彻底杜绝 Autodesk 专有闭源 SDK 污染。
+   - **交互层突破（类似 Quixel Bridge / Blender to Unreal 的 Remote Control 体验）**：
+     - 用户不再需要手动打开文件夹、把文件拖进 Unreal 窗口、再面对几十个繁琐导入选项！
+     - AssetWeft 桌面端通过探测 Unreal 官方 **Remote Control API**（本地 HTTP `30010` / WebSocket `30020`）或 **Python Remote Execution**（UDP 广播）：
+     - 当检测到电脑正在运行 Unreal Editor 时，视口右上角点亮「Unreal 已连接 🟢」，点击 **「一键直推到 Unreal」**，Unreal 后台自动无感完成资产导入、生成材质实例并自动保存在 `Content/AssetWeft/<Project>/` 目录，甚至自动把模型放置在当前编辑器关卡视口正中央！
 4. **M6 桌面工作台视觉设计门禁（Mobbin $\to$ Eagle $\to$ Figma $\to$ Owner 审核）**：
    - 在编写任何桌面工作台前端页面代码（基线 `AW-034` / `AW-035`）前，强制执行三步视觉门禁（遵循 `[细则·视觉]`）：
      1. **Mobbin 采集并入库 Eagle**：按工作台核心视图（资产网格库、3D/2D/音频主视口、DAG 节点编排器、A/B 增量对比视图、三引擎导出面板、预算设置）在 Mobbin 采集高水准参考图，全部存入本地 Eagle 素材库并 `GET /api/item/list` 读回校验，生成 `references/MOBBIN-EAGLE-MANIFEST.md`；

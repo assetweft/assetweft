@@ -437,3 +437,17 @@ impl Application {
             .next())
     }
 }
+
+impl Application {
+    /// Typed LOCAL TEST_FIXTURE engineering only; not authenticated provider admission.
+    /// # Errors
+    /// Returns preflight failures; post-invocation recording errors retain the backend result.
+    pub fn submit_executor_local_test_fixture<B: crate::executor::Backend>(
+        &mut self,
+        executor: &mut crate::executor::Executor<B>,
+        budget: &crate::budget::Request,
+        request: &crate::executor::SubmitRequest,
+    ) -> Result<crate::executor_runtime::Submission, crate::executor_runtime::PreflightError> {
+        crate::executor_runtime::submit_local_test_fixture(self, executor, budget, request)
+    }
+}

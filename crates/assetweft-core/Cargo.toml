@@ -18,6 +18,10 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+# AW-013:A 只把已锁的成熟 wire 解析提升为直接依赖（版本与 Cargo.lock 既有 pin 一致，不新增 crate 版本）。
+# serde/serde_json 仅做 JSON→Rust 类型解析；验证逻辑唯一在 generation_spec.rs，不写第二套 JSON Schema 引擎。
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
 # 成熟标准解析器：glTF 2.0/GLB 官方 Rust 实现；不使用 import（图片/URI）能力，仅做容器与结构解析。
 gltf = { version = "1.4.1", default-features = false }
 # 成熟哈希库，不自造 SHA-256。

@@ -232,6 +232,12 @@ pub struct ReferenceUse {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockClaim {
+    /// Opaque predeclared algorithm identity; required for SEMANTIC, never executed here.
+    #[serde(default)]
+    pub canonicalization_id: Option<String>,
+    /// Opaque version, compared verbatim; no normalization or semver inference.
+    #[serde(default)]
+    pub canonicalization_version: Option<String>,
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
@@ -325,7 +331,8 @@ pub struct TrustedContext {
 }
 
 impl TrustedContext {
-    /// 供 UI/Agent 在 Rust 内直接构造可信上下文（与 wire 同一类型）。
+    /// 供 UI/Agent 构造上下文；SEMANTIC identity is deliberately absent.
+    /// Callers must explicitly set canonicalization_id/version from their predeclared contract.
     #[must_use]
     pub fn from_contract(contract_id: &str, locks: &[(ComponentRole, LockMode)]) -> Self {
         Self {
@@ -333,6 +340,8 @@ impl TrustedContext {
             declared_locks: locks
                 .iter()
                 .map(|(role, mode)| LockClaim {
+                    canonicalization_id: None,
+                    canonicalization_version: None,
                     role: Some(role.as_str().to_owned()),
                     declaration: Some(mode.as_str().to_owned()),
                 })
@@ -485,6 +494,29 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
             "source",
             format!("unknown source class {src:?}"),
         ));
+    }
+
+    // Required identity is checked independently on each wire side, preserving indices.
+    for (prefix, locks) in [
+        ("locked_components", &request.locked_components),
+        ("context.declared_locks", &context.declared_locks),
+    ] {
+        for (i, lock) in locks.iter().enumerate() {
+            if lock.declaration.as_deref() == Some("SEMANTIC") {
+                for (field, value) in [
+                    ("canonicalization_id", &lock.canonicalization_id),
+                    ("canonicalization_version", &lock.canonicalization_version),
+                ] {
+                    if !nonblank(value) {
+                        issues.push(issue(
+                            IssueCode::InputIncomplete,
+                            format!("{prefix}[{i}].{field}"),
+                            "SEMANTIC requires a nonblank predeclared identity and version",
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     // --- 2) 组件词表与锁定声明解析 ---
@@ -644,7 +676,39 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
                 format!("locked_components[{i}].declaration"),
                 "lock declaration differs from pre-declared contract",
             )),
-            Some(_) => {}
+            Some((i, _, _)) => {
+                if context.declared_locks.iter().any(|l| {
+                    l.role.as_deref() == Some(role.as_str())
+                        && l.declaration.as_deref() == Some("SEMANTIC")
+                }) {
+                    let trusted = context
+                        .declared_locks
+                        .iter()
+                        .find(|l| l.role.as_deref() == Some(role.as_str()))
+                        .expect("declared role exists");
+                    let requested = &request.locked_components[*i];
+                    for (field, actual, expected) in [
+                        (
+                            "canonicalization_id",
+                            &requested.canonicalization_id,
+                            &trusted.canonicalization_id,
+                        ),
+                        (
+                            "canonicalization_version",
+                            &requested.canonicalization_version,
+                            &trusted.canonicalization_version,
+                        ),
+                    ] {
+                        if nonblank(actual) && nonblank(expected) && actual != expected {
+                            issues.push(issue(
+                                IssueCode::LockViolation,
+                                format!("locked_components[{i}].{field}"),
+                                "semantic identity differs from pre-declared contract",
+                            ));
+                        }
+                    }
+                }
+            }
         }
     }
     let declared_roles: Vec<ComponentRole> = declared.iter().map(|(r, _)| *r).collect();
@@ -714,7 +778,7 @@ pub struct RecipeExample {
 /// 少量线性 recipe examples；全部 TEST_FIXTURE / metadata-only / NOT_EXECUTED。
 #[must_use]
 pub fn recipe_examples() -> Vec<RecipeExample> {
-    let context = TrustedContext::from_contract(
+    let mut context = TrustedContext::from_contract(
         "AW-CONTRACT-001",
         &[
             (ComponentRole::Mesh, LockMode::Byte),
@@ -722,6 +786,8 @@ pub fn recipe_examples() -> Vec<RecipeExample> {
             (ComponentRole::Rig, LockMode::Semantic),
         ],
     );
+    context.declared_locks[2].canonicalization_id = Some("TEST_FIXTURE:rig".to_owned());
+    context.declared_locks[2].canonicalization_version = Some("TEST_FIXTURE:v1".to_owned());
     let base = GenerationSpecRequest {
         base_version: Some("ver:fixture-001".to_owned()),
         input_refs: vec!["metadata://fixture/mesh.bin".to_owned()],

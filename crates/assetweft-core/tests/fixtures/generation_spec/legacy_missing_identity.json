@@ -1,0 +1,73 @@
+{
+  "$comment": "AW-013:A 样例集合。全部 TEST_FIXTURE / metadata-only；只验证声明一致性，不代表真实 F0/AI/引擎/授权成功。期望值不在此文件内，见 tests/generation_spec.rs 的显式断言（避免 golden 弱化）。",
+  "cases": [
+    {
+      "id": "valid_single_motion_increment",
+      "fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "正常正例：仅 motion 可写，mesh/materials/rig 按预声明锁定"
+      },
+      "context": {
+        "contract_id": "AW-CONTRACT-001",
+        "declared_locks": [
+          {
+            "role": "mesh",
+            "declaration": "BYTE"
+          },
+          {
+            "role": "materials",
+            "declaration": "BYTE"
+          },
+          {
+            "role": "rig",
+            "declaration": "SEMANTIC"
+          }
+        ],
+        "source_note": "caller-provided pre-declared contract; NOT verified by generation_spec (TEST_FIXTURE)"
+      },
+      "request": {
+        "base_version": "ver:fixture-001",
+        "input_refs": [
+          "metadata://fixture/mesh.bin"
+        ],
+        "references": [
+          {
+            "reference_id": "ref:front",
+            "purpose": "APPEARANCE",
+            "hidden_regions": []
+          }
+        ],
+        "editable_components": [
+          "motion"
+        ],
+        "locked_components": [
+          {
+            "role": "mesh",
+            "declaration": "BYTE"
+          },
+          {
+            "role": "materials",
+            "declaration": "BYTE"
+          },
+          {
+            "role": "rig",
+            "declaration": "SEMANTIC"
+          }
+        ],
+        "output_contract": "TEST_FIXTURE:metadata-only",
+        "budget": {
+          "max_calls": 0,
+          "cost_status": "unknown",
+          "cost_value": null
+        },
+        "allowed_environment": "METADATA_ONLY_NO_EXECUTION",
+        "authorized": true,
+        "source": "TEST_FIXTURE",
+        "declared_engine": "UNKNOWN",
+        "declared_executor": "UNKNOWN",
+        "completion": []
+      }
+    }
+  ]
+}

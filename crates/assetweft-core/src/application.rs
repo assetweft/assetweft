@@ -22,6 +22,35 @@ pub struct Application {
 }
 
 impl Application {
+    /// Creates an exclusive new SQLite/CAS backup, retaining objects until completion.
+    /// # Errors
+    /// Reports lease, schema, integrity, cancellation, limits and filesystem failures.
+    pub fn backup_library(
+        &self,
+        destination: &Path,
+        limits: crate::backup::Limits,
+        progress: &mut dyn FnMut(crate::backup::Progress) -> bool,
+    ) -> Result<crate::backup::Manifest, crate::backup::BackupError> {
+        crate::backup::create(
+            &self.connection,
+            &self.library_root,
+            destination,
+            limits,
+            progress,
+        )
+    }
+    /// Restores a supported snapshot into an exclusively new directory.
+    /// # Errors
+    /// Reports unsupported or corrupt packages, existing destinations and IO failures.
+    pub fn restore_library(
+        source: &Path,
+        destination: &Path,
+        limits: crate::backup::Limits,
+        progress: &mut dyn FnMut(crate::backup::Progress) -> bool,
+    ) -> Result<crate::backup::Manifest, crate::backup::BackupError> {
+        crate::backup::restore(source, destination, limits, progress)
+    }
+
     /// Opens a local file database, creating it if necessary. Parent directories must exist.
     ///
     /// # Errors

@@ -94,7 +94,7 @@ pub(crate) fn reference_guard(root: &Path) -> Result<Guard, LibraryError> {
 }
 // A directory may hold multiple SQLite files, but its objects belong to exactly one.
 // Relative database filename keeps a closed whole-library move possible.
-fn bind(conn: &Connection, root: &Path) -> Result<(), StorageError> {
+pub(crate) fn bind(conn: &Connection, root: &Path) -> Result<(), StorageError> {
     let db =
         Path::new(conn.path().ok_or(StorageError::Invalid("file database"))?).canonicalize()?;
     let name = db

@@ -1,0 +1,9 @@
+# 职责: 固定本仓库 Rust 工具链版本，使 fmt/clippy/test/build 可复现。
+# 依赖: rustup（本机 1.29.1）；component 由官方 stable 渠道提供。
+# 调用方: cargo/rustc/rustfmt/clippy 经 rustup shim 自动读取；CI 的 `rustup show` 步骤。
+# 不变量: 版本只在此处声明一次；不在 CI 或脚本里另传稳定版别名。
+
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,4 +1,4 @@
-//! 职责: 共享应用库入口；导出合同词表、应用与本地资产库、验证、几何和 Rig 数值检查模块。
+//! 职责: 共享应用库入口；导出合同词表、应用与本地资产库、用户规格、验证、几何和 Rig 数值检查模块。
 //! 依赖: 词表使用 std；子模块分别使用 rusqlite、gltf 与 sha2。
 //! 调用方: 将来的 CLI、桌面与验证入口；当前由本模块单元测试和 C1 调用。
 //! 不变量: 未知合同值必须返回错误，不得静默默认；`NOT_DEFINED` 是"未定义摘要"的声明状态，
@@ -14,6 +14,9 @@ pub mod geometry;
 
 /// AW-009:A typed local library metadata and migration boundary.
 pub mod library;
+
+/// AW-013:A user generation specification and trusted lock declarations.
+pub mod generation_spec;
 
 /// AW-022:B partial bound-skin numeric inspection; no pose evaluation.
 pub mod rig;

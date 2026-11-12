@@ -28,7 +28,7 @@ gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 sha2 = "0.11.1"
 
 # AW-004:A fixed bundled SQLite build; preserve the reviewed validation dependencies.
-rusqlite = { version = "=0.42.0", features = ["bundled"] }
+rusqlite = { version = "=0.42.0", features = ["bundled", "backup"] }
 
 # Exclusive temporary files; MIT OR Apache-2.0, MSRV 1.63.
 tempfile = "=3.27.0"

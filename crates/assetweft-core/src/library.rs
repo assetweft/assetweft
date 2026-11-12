@@ -8,7 +8,7 @@ use crate::sqlite::ProtoError;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{error::Error, fmt};
 
-const CURRENT_SCHEMA: i64 = 6;
+pub(crate) const CURRENT_SCHEMA: i64 = 6;
 const INITIAL_SQL: &str = include_str!("library/001_initial.sql");
 
 /// File availability known to this metadata-only repository. No ready state is issued.

@@ -205,3 +205,6 @@ mod tests {
 pub mod executor;
 
 pub mod history;
+
+/// Consistent M1 snapshots and fresh restore.
+pub mod backup;

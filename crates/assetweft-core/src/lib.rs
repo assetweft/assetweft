@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+/// AW-017:A 独立文件验证入口与最小 ValidationReport；不依赖 SQLite/模型/Agent。
+pub mod validation;
+
 use std::fmt;
 
 /// 合同字段 `locked_components[].lock_mode` 允许的锁定模式（docs/CONTRACTS.md §10.2）。

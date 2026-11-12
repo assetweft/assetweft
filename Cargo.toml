@@ -1,0 +1,17 @@
+# 职责: 定义最小 Rust workspace（当前只有一个成员 crate）。
+# 依赖: crates/assetweft-core。
+# 调用方: cargo（本地与 C1）、tools/c1.sh。
+# 不变量: 成员清单显式列出，不做逐个 glob；不在本卡预拆六个空 crate。
+
+[workspace]
+resolver = "3"
+members = ["crates/assetweft-core"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

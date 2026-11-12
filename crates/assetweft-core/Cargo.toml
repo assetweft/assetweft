@@ -1,0 +1,19 @@
+# 职责: assetweft-core 共享应用库骨架（当前仅承载交付合同的锁定模式词表）。
+# 依赖: 仅 std，无第三方 crate。
+# 调用方: 将来的 CLI/桌面/验证入口；当前由本 crate 单元测试与 C1 调用。
+# 不变量: 未知锁定模式必须报错，不得静默默认；NotDefined 永远不可测量。
+
+[package]
+name = "assetweft-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]

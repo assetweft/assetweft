@@ -1,0 +1,45 @@
+# 职责: 在无密钥的 PR/分支上运行 C1 快检查（fmt、clippy、test、build），作为 required check 的候选。
+# 依赖: actions/checkout（官方 repo，固定 commit SHA）；Rust 工具链由 rust-toolchain.toml 固定，经 runner 自带 rustup 安装。
+# 调用方: GitHub Actions（当前无法 push，实际触发为 NOT_RUN）；本地等价入口是 tools/c1.sh。
+# 不变量: 不在 workflow 级使用 paths 过滤，required job 在本工作流被选中时总有结果；
+#         不使用密钥或写权限；不把文档检查脚本冒充产品构建。
+
+name: C1
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  c1:
+    name: c1-foundation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        run: |
+          set -eu
+          rustup --version
+          rustup show
+          rustc --version
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+
+      - name: C1 (stdout protocol + full check)
+        run: ./tools/c1-stdout-contract.sh

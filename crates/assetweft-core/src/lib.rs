@@ -14,6 +14,8 @@ pub mod geometry;
 
 /// AW-009:A typed local library metadata and migration boundary.
 pub mod library;
+/// Managed immutable content storage behind Application.
+pub mod storage;
 
 /// AW-013:A user generation specification and trusted lock declarations.
 pub mod generation_spec;

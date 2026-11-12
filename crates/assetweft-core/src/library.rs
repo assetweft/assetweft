@@ -1,14 +1,14 @@
 //! Responsibility: M1 local metadata, references and versioned SQLite migration.
-//! Dependencies: configured application connection, rusqlite and the 001 SQL migration.
+//! Dependencies: configured application connection, rusqlite and the 001/002 SQL migrations.
 //! Callers: Application's typed entry points. No connection or SQL is exposed here.
 //! Invariants: IDs are caller-supplied, versions are immutable, no state claims a file is
-//! ready, references point to exact versions, and migration/version checks are atomic.
+//! ready by itself; managed bytes use storage, references are exact, migrations atomic.
 
 use crate::sqlite::ProtoError;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{error::Error, fmt};
 
-const CURRENT_SCHEMA: i64 = 1;
+const CURRENT_SCHEMA: i64 = 2;
 const INITIAL_SQL: &str = include_str!("library/001_initial.sql");
 
 /// File availability known to this metadata-only repository. No ready state is issued.
@@ -175,7 +175,7 @@ fn version(conn: &Connection) -> Result<Option<i64>, LibraryError> {
 pub(crate) fn check_open(conn: &Connection) -> Result<(), LibraryError> {
     version(conn).map(|_| ())
 }
-fn require_current(conn: &Connection) -> Result<(), LibraryError> {
+pub(crate) fn require_current(conn: &Connection) -> Result<(), LibraryError> {
     match version(conn)? {
         Some(CURRENT_SCHEMA) => Ok(()),
         Some(_) => Err(LibraryError::Database("unsupported old schema".into())),
@@ -193,6 +193,13 @@ pub(crate) fn initialize(conn: &mut Connection) -> Result<(), LibraryError> {
             [],
         )?;
     }
+    if version(&tx)? == Some(1) {
+        tx.execute_batch(include_str!("library/002_objects.sql"))?;
+        tx.execute(
+            "UPDATE aw_schema_version SET version=2 WHERE singleton=1",
+            [],
+        )?;
+    }
     require_current(&tx)?;
     tx.commit()?;
     Ok(())
@@ -200,7 +207,7 @@ pub(crate) fn initialize(conn: &mut Connection) -> Result<(), LibraryError> {
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && !value.contains(['/', '\\', '\0']) && value != "." && value != ".."
 }
-fn validate(v: &AssetVersion) -> Result<(), LibraryError> {
+pub(crate) fn validate(v: &AssetVersion) -> Result<(), LibraryError> {
     if v.contract_version != "1.0.0" {
         return Err(LibraryError::UnknownValue(v.contract_version.clone()));
     }
@@ -236,11 +243,7 @@ pub(crate) fn add_asset_version(
     validate(v)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_current(&tx)?;
-    tx.execute(
-        "INSERT INTO aw_assets(asset_id) VALUES (?1) ON CONFLICT(asset_id) DO NOTHING",
-        [&v.asset_id],
-    )?;
-    tx.execute("INSERT INTO aw_asset_versions(version_id,asset_id,content_hash,input_id,source,authorization,authorized,license_id,usage_scope,source_format,contract_version,presence) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![v.version_id, v.asset_id, v.content_hash, v.input_id, v.source, v.authorization, v.authorized, v.license_id, v.usage_scope, v.source_format, v.contract_version, v.presence.as_str()])?;
+    insert_version(&tx, v)?;
     tx.commit()?;
     Ok(())
 }
@@ -312,4 +315,14 @@ pub(crate) fn component_references(
     };
     tx.commit()?;
     Ok(rows)
+}
+
+// Shared insertion in the caller's checked short transaction.
+pub(crate) fn insert_version(tx: &Connection, v: &AssetVersion) -> Result<(), LibraryError> {
+    tx.execute(
+        "INSERT INTO aw_assets(asset_id) VALUES (?1) ON CONFLICT(asset_id) DO NOTHING",
+        [&v.asset_id],
+    )?;
+    tx.execute("INSERT INTO aw_asset_versions(version_id,asset_id,content_hash,input_id,source,authorization,authorized,license_id,usage_scope,source_format,contract_version,presence) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![v.version_id, v.asset_id, v.content_hash, v.input_id, v.source, v.authorization, v.authorized, v.license_id, v.usage_scope, v.source_format, v.contract_version, v.presence.as_str()])?;
+    Ok(())
 }

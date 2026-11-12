@@ -3,6 +3,7 @@
 //! Callers: future CLI and desktop adapters; integration tests exercise the public API.
 //! Invariants: no SQL or transaction escapes this module or the library repository;
 //! validation is bounded, and no transaction is held while validation runs.
+//! Hash-reference insertion takes the storage lease before SQLite, like object collection.
 
 use crate::library::{self, AssetVersion, ComponentReference, LibraryError};
 use crate::sqlite::{self, ConnectionConfig, ProtoError};
@@ -10,12 +11,13 @@ use crate::validation::{
     self, RoleRequirement, SourceDeclaration, ValidationError, ValidationLimits, ValidationReport,
 };
 use rusqlite::Connection;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One independently configured local application connection. Dropping it closes it;
 /// explicit `close` reports SQLite close errors. No network or task executor exists yet.
 pub struct Application {
     connection: Connection,
+    library_root: PathBuf,
     config: ConnectionConfig,
 }
 
@@ -33,7 +35,73 @@ impl Application {
         }
         let (connection, config) = sqlite::open_and_configure(path)?;
         library::check_open(&connection).map_err(LibraryError::into_open_error)?;
-        Ok(Self { connection, config })
+        let library_root = path
+            .canonicalize()
+            .map_err(|e| ProtoError::Io(e.to_string()))?
+            .parent()
+            .ok_or_else(|| ProtoError::Other("database parent required".into()))?
+            .to_path_buf();
+        Ok(Self {
+            connection,
+            config,
+            library_root,
+        })
+    }
+
+    /// Commits exact bytes before registering an immutable managed version.
+    /// Input is bounded by expected length and max; an IO interruption cancels the commit.
+    /// # Errors
+    /// Reports input, IO, store-lock or database failure; published orphans can remain.
+    pub fn commit_object(
+        &mut self,
+        version: &AssetVersion,
+        reader: &mut impl std::io::Read,
+        expected_len: u64,
+        max_bytes: u64,
+    ) -> Result<crate::storage::StoredObject, crate::storage::StorageError> {
+        crate::storage::commit(
+            &mut self.connection,
+            &self.library_root,
+            version,
+            reader,
+            expected_len,
+            max_bytes,
+        )
+    }
+    /// Resolves and rechecks managed bytes; metadata-only versions return None.
+    /// # Errors
+    /// Reports a missing/corrupt object, lock or database error.
+    pub fn managed_object(
+        &mut self,
+        id: &str,
+    ) -> Result<Option<crate::storage::StoredObject>, crate::storage::StorageError> {
+        crate::storage::managed(&mut self.connection, &self.library_root, id)
+    }
+    /// Sets real object retention constraints; clearing them requires caller evidence.
+    /// # Errors
+    /// Rejects invalid/unknown hash, lock or database failure.
+    pub fn protect_object(
+        &mut self,
+        hash: &str,
+        backup_pin: bool,
+        unsynced_unique: bool,
+    ) -> Result<(), crate::storage::StorageError> {
+        crate::storage::protect(
+            &mut self.connection,
+            &self.library_root,
+            hash,
+            backup_pin,
+            unsynced_unique,
+        )
+    }
+    /// Explicitly collects one unreferenced, unpinned, non-unique object; no sweep.
+    /// # Errors
+    /// Rejects unsafe paths/content, lock or database failure.
+    pub fn collect_object(
+        &mut self,
+        hash: &str,
+    ) -> Result<crate::storage::Collection, crate::storage::StorageError> {
+        crate::storage::collect(&mut self.connection, &self.library_root, hash)
     }
 
     /// Configuration read back when this connection was opened.
@@ -53,8 +121,10 @@ impl Application {
     /// Records an asset identity and one metadata-only version in a short transaction.
     ///
     /// # Errors
-    /// Rejects invalid fields, unsupported schema, duplicates and database errors.
+    /// Rejects invalid fields, unsupported schema, duplicates, storage-lease Busy/IO and database errors.
     pub fn add_asset_version(&mut self, version: &AssetVersion) -> Result<(), LibraryError> {
+        library::validate(version)?;
+        let _guard = crate::storage::reference_guard(&self.library_root)?;
         library::add_asset_version(&mut self.connection, version)
     }
 

@@ -290,3 +290,34 @@ fn call_id_survives_help_and_version() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(v["call_id"], "error-id");
 }
+
+#[test]
+fn semantic_identity_plan_cannot_bypass_core() {
+    let dir = tempfile::tempdir().unwrap();
+    let all = cases();
+    let c = &all["cases"][0];
+    let (out, v) = plan(dir.path(), &c["request"], &c["context"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(v["results"]["execution"], "NOT_RUN");
+    for (value, code) in [
+        (Value::Null, "INPUT_INCOMPLETE"),
+        (json!("other"), "LOCK_VIOLATION"),
+    ] {
+        let mut req = c["request"].clone();
+        req["locked_components"][2]["canonicalization_id"] = value;
+        let (out, v) = plan(dir.path(), &req, &c["context"]);
+        assert_eq!(
+            out.status.code(),
+            Some(if code == "INPUT_INCOMPLETE" { 3 } else { 4 })
+        );
+        assert!(
+            v["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["code"] == code
+                    && e["field_path"] == "locked_components[2].canonicalization_id")
+        );
+        assert_eq!(v["results"]["execution"], "NOT_RUN");
+    }
+}

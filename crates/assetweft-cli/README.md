@@ -61,3 +61,13 @@ no geometry or validation behavior changed. Black-box tests exercise that tree.
 C2 is `cargo test -p assetweft-cli --locked` within existing workspace C1.
 Synthetic fixtures demonstrate local behavior only; Windows/F0/AI/engines remain
 NOT_RUN. Current-SHA CI and independent non-author review are separate root gates.
+
+SEMANTIC lock declarations in both `locked_components` and independent
+`declared_locks` require `canonicalization_id` and `canonicalization_version`
+(nonblank opaque strings, compared verbatim). BYTE does not require them.
+Old SEMANTIC declarations without these fields now intentionally return
+`INPUT_INCOMPLETE` (exit 3); differing complete identities return
+`LOCK_VIOLATION` (exit 4). Example identity fields:
+`"canonicalization_id":"TEST_FIXTURE:rig","canonicalization_version":"TEST_FIXTURE:v1"`.
+Identity agreement is declaration consistency only: unknown algorithms remain
+`NOT_RUN`, and authorization remains unverified. No normalizer is executed.

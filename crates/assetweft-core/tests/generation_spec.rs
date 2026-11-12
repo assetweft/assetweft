@@ -223,7 +223,7 @@ fn recipe_examples_are_not_executed_but_validate() {
 fn wire_and_programmatic_context_agree() {
     let c = case("valid_single_motion_increment");
     let wire = validate(&c.request, &c.context);
-    let built = TrustedContext::from_contract(
+    let mut built = TrustedContext::from_contract(
         "AW-CONTRACT-001",
         &[
             (ComponentRole::Mesh, LockMode::Byte),
@@ -231,6 +231,10 @@ fn wire_and_programmatic_context_agree() {
             (ComponentRole::Rig, LockMode::Semantic),
         ],
     );
+    built.declared_locks[2].canonicalization_id =
+        c.context.declared_locks[2].canonicalization_id.clone();
+    built.declared_locks[2].canonicalization_version =
+        c.context.declared_locks[2].canonicalization_version.clone();
     let programmatic = validate(&c.request, &built);
     assert_eq!(wire.status, programmatic.status);
     assert_eq!(wire.issues, programmatic.issues);
@@ -368,4 +372,89 @@ fn required_trusted_contract_id_rejects_whitespace() {
     required_text_regression("context.contract_id", |c, value| {
         c.context.contract_id = Some(value.into())
     });
+}
+
+#[test]
+fn old_semantic_without_identity_is_incomplete() {
+    // Frozen pre-strengthening wire fixture: this regression remains the old request/context.
+    let old: CasesFile = serde_json::from_str(include_str!(
+        "fixtures/generation_spec/legacy_missing_identity.json"
+    ))
+    .unwrap();
+    let c = &old.cases[0];
+    let result = validate(&c.request, &c.context);
+    assert!(
+        result
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::InputIncomplete
+                && i.field_path == "locked_components[2].canonicalization_id"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn semantic_identity_contract_matrix() {
+    let c = case("valid_single_motion_increment");
+    assert!(validate(&c.request, &c.context).is_declaration_consistent());
+    for field in ["canonicalization_id", "canonicalization_version"] {
+        for value in [None, Some(""), Some(" \t\n"), Some("\u{2003}\u{3000}")] {
+            let mut wire = serde_json::json!({"role":"rig","declaration":"SEMANTIC",
+                "canonicalization_id":"TEST_FIXTURE:rig","canonicalization_version":"TEST_FIXTURE:v1"});
+            wire[field] = value.into();
+            let lock = serde_json::from_value(wire).unwrap();
+            let mut req = c.request.clone();
+            req.locked_components[2] = lock;
+            let out = validate(&req, &c.context);
+            assert!(
+                out.issues
+                    .iter()
+                    .any(|i| i.code == IssueCode::InputIncomplete
+                        && i.field_path == format!("locked_components[2].{field}"))
+            );
+            let mut ctx = c.context.clone();
+            ctx.declared_locks[2] = req.locked_components[2].clone();
+            let out = validate(&c.request, &ctx);
+            assert!(
+                out.issues
+                    .iter()
+                    .any(|i| i.code == IssueCode::InputIncomplete
+                        && i.field_path == format!("context.declared_locks[2].{field}"))
+            );
+        }
+        let mut req = c.request.clone();
+        req.locked_components.swap(0, 2);
+        if field == "canonicalization_id" {
+            req.locked_components[0].canonicalization_id = Some(" TEST_FIXTURE:rig ".into());
+        } else {
+            req.locked_components[0].canonicalization_version = Some("other".into());
+        }
+        let snapshot = req.clone();
+        let out = validate(&req, &c.context);
+        assert!(out.issues.iter().any(|i| i.code == IssueCode::LockViolation
+            && i.field_path == format!("locked_components[0].{field}")));
+        assert_eq!(req, snapshot);
+    }
+    let mut req = c.request.clone();
+    let mut ctx = c.context.clone();
+    req.locked_components[2].declaration = Some("BYTE".into());
+    ctx.declared_locks[2].declaration = Some("BYTE".into());
+    req.locked_components[2].canonicalization_id = None;
+    req.locked_components[2].canonicalization_version = None;
+    ctx.declared_locks = req.locked_components.clone();
+    assert!(validate(&req, &ctx).is_declaration_consistent());
+    // Unknown opaque identities are declaration-only and never normalize/exe cute.
+    req.locked_components[2].declaration = Some("SEMANTIC".into());
+    req.locked_components[2].canonicalization_id = Some(" unknown algorithm ".into());
+    req.locked_components[2].canonicalization_version = Some("opaque version".into());
+    ctx.declared_locks = req.locked_components.clone();
+    let out = validate(&req, &ctx);
+    assert!(out.is_declaration_consistent());
+    assert!(out.not_run.contains(&"semantic_normalizer"));
+    assert!(
+        serde_json::from_str::<assetweft_core::generation_spec::LockClaim>(
+            r#"{"role":"rig","unrecognized_identity":1}"#
+        )
+        .is_err()
+    );
 }

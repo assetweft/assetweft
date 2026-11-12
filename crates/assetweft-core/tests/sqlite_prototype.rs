@@ -6,6 +6,7 @@
 //!        断言均为合同/缺陷型，不更新 golden、不弱化断言、不吞真实错误。
 
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,8 +32,50 @@ fn temp_dir() -> TempDirGuard {
         .as_nanos();
     let dir =
         std::env::temp_dir().join(format!("aw004-资产库 原型-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir).expect("create own temp dir");
-    TempDirGuard(dir)
+    temp_dir_from_candidates((0..16).map(|attempt| dir.with_extension(attempt.to_string())))
+        .expect("create own temp dir")
+}
+
+// Only successful atomic creation grants cleanup ownership; a clock value is merely a hint.
+// Retry collisions at most 16 times; propagate other filesystem failures immediately.
+fn temp_dir_from_candidates(
+    candidates: impl IntoIterator<Item = PathBuf>,
+) -> std::io::Result<TempDirGuard> {
+    for dir in candidates.into_iter().take(16) {
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(TempDirGuard(dir)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "temp directory candidates exhausted",
+    ))
+}
+
+#[test]
+fn temp_directory_existing_candidate_is_never_owned_or_deleted() {
+    let parent = temp_dir();
+    let existing = parent.0.join("已有 目录");
+    fs::create_dir(&existing).expect("create preexisting fixture");
+    let sentinel = existing.join("哨兵.txt");
+    fs::write(&sentinel, b"other owner").expect("sentinel");
+    let fresh = parent.0.join("独占 目录");
+    let guard = temp_dir_from_candidates([existing.clone(), fresh.clone()]).expect("allocate");
+    let claimed = guard.0.clone();
+    drop(guard);
+    eprintln!(
+        "OWNERSHIP claimed={claimed:?} existing={existing:?} sentinel_survives={}",
+        sentinel.exists()
+    );
+    assert!(
+        sentinel.exists(),
+        "guard must never delete another owner's sentinel"
+    );
+    assert_eq!(fs::read(&sentinel).unwrap(), b"other owner");
+    assert_eq!(claimed, fresh, "existing directory must not be claimed");
+    assert!(!fresh.exists(), "owned directory must be cleaned up");
 }
 
 fn db_path(guard: &TempDirGuard, name: &str) -> PathBuf {
@@ -193,4 +236,103 @@ fn two_connections_finite_busy_then_released_write() {
         .query_row("SELECT count(*) FROM parent", [], |row| row.get(0))
         .expect("count parent rows after release");
     assert_eq!(count, 2, "both A and B rows must be present");
+}
+
+#[test]
+fn controlled_duplicate_guard_sqlite_schema_after_drop() {
+    let owner = temp_dir();
+    let path = db_path(&owner, "受控.sqlite");
+    let (conn, cfg) = open_and_configure(&path).unwrap();
+    eprintln!(
+        "CONTROLLED runtime={} source={} path={path:?}",
+        cfg.sqlite_version, cfg.source_id
+    );
+    let duplicate = temp_dir_from_candidates([owner.0.clone(), owner.0.join("fresh")]).unwrap();
+    drop(duplicate);
+    eprintln!(
+        "CONTROLLED directory_exists={} db_exists={}",
+        owner.0.exists(),
+        path.exists()
+    );
+    let result = init_fixture_schema(&conn);
+    eprintln!("CONTROLLED schema_result={result:?}");
+    result.expect("duplicate guard must not destroy live database");
+}
+
+#[test]
+fn controlled_duplicate_guard_sqlite_commit_after_drop() {
+    let owner = temp_dir();
+    let path = db_path(&owner, "受控.sqlite");
+    let (mut conn, _) = open_and_configure(&path).unwrap();
+    init_fixture_schema(&conn).unwrap();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    tx.execute("INSERT INTO parent(id,label) VALUES(1,'controlled')", [])
+        .unwrap();
+    let duplicate = temp_dir_from_candidates([owner.0.clone(), owner.0.join("fresh")]).unwrap();
+    drop(duplicate);
+    let result = tx.commit();
+    eprintln!("CONTROLLED commit_result={result:?}");
+    result.expect("duplicate guard must not destroy transaction files");
+}
+
+#[test]
+fn temp_directory_parallel_claims_and_drop_are_isolated() {
+    let parent = temp_dir();
+    // All threads receive exactly the same candidate list and retain ownership until joined.
+    let barrier = std::sync::Barrier::new(8);
+    let guards = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let parent = &parent;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let guard =
+                        temp_dir_from_candidates((0..16).map(|n| parent.0.join(n.to_string())))
+                            .unwrap();
+                    fs::write(guard.0.join("sentinel"), b"owned").unwrap();
+                    guard
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let paths: std::collections::HashSet<_> = guards.iter().map(|g| g.0.clone()).collect();
+    assert_eq!(
+        paths.len(),
+        8,
+        "every concurrent claimant must own a distinct directory"
+    );
+    let mut remaining = guards;
+    while let Some(guard) = remaining.pop() {
+        let removed = guard.0.clone();
+        drop(guard);
+        assert!(!removed.exists());
+        for other in &remaining {
+            assert_eq!(fs::read(other.0.join("sentinel")).unwrap(), b"owned");
+        }
+    }
+}
+
+#[test]
+fn temp_directory_retries_are_bounded_and_other_errors_propagate() {
+    let parent = temp_dir();
+    let mut attempts = 0;
+    let result = temp_dir_from_candidates(std::iter::repeat_with(|| {
+        attempts += 1;
+        parent.0.clone()
+    }));
+    assert_eq!(result.err().unwrap().kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(attempts, 16);
+    assert!(parent.0.exists());
+    let missing_parent = parent.0.join("missing").join("child");
+    let fresh = parent.0.join("must not retry");
+    let result = temp_dir_from_candidates([missing_parent, fresh.clone()]);
+    assert_eq!(result.err().unwrap().kind(), io::ErrorKind::NotFound);
+    assert!(!fresh.exists());
 }

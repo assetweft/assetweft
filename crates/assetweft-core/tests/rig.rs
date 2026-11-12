@@ -345,3 +345,147 @@ fn binding_selects_each_nodes_actual_skin() {
     assert!(has(&r, "rig.weights", CheckStatus::Fail, "nodes[0].skin=0"));
     assert!(has(&r, "rig.weights", CheckStatus::Pass, "nodes[3].skin=1"));
 }
+
+// TEST_FIXTURE layout relocation only; values stay known and bounds stay valid.
+fn relocate_accessor(
+    j: &mut Value,
+    b: &mut Vec<u8>,
+    accessor: usize,
+    view_offset: usize,
+    relative_offset: usize,
+    stride: Option<usize>,
+    values: &[u8],
+) {
+    let view = j["accessors"][accessor]["bufferView"].as_u64().unwrap() as usize;
+    j["accessors"][accessor]["byteOffset"] = json!(relative_offset);
+    j["bufferViews"][view]["byteOffset"] = json!(view_offset);
+    j["bufferViews"][view]["byteLength"] = json!(relative_offset + values.len());
+    if let Some(stride) = stride {
+        j["bufferViews"][view]["byteStride"] = json!(stride);
+    }
+    let start = view_offset + relative_offset;
+    b.resize(start + values.len(), 0);
+    b[start..].copy_from_slice(values);
+    j["buffers"][0]["byteLength"] = json!(b.len());
+}
+
+#[test]
+fn alignment_float_vertex_absolute_and_relative() {
+    for (view, relative, stride, valid) in [
+        (101, 0, None, false),
+        (100, 2, None, false),
+        (102, 2, None, false), // aligned absolute does not excuse relative offset
+        (100, 4, Some(20), true),
+        (100, 0, Some(18), false),
+    ] {
+        let (mut j, mut b) = fixture();
+        let values = b[16..32].to_vec();
+        relocate_accessor(&mut j, &mut b, 2, view, relative, stride, &values);
+        let r = inspect_bytes(&glb(&j, &b));
+        assert_eq!(r.validation.format_status, CheckStatus::Pass, "{r:?}");
+        if valid {
+            assert!(
+                has(&r, "rig.weights", CheckStatus::Pass, "decoded"),
+                "{r:?}"
+            );
+        } else {
+            assert!(
+                has(&r, "rig.accessor", CheckStatus::Fail, "WEIGHTS_0"),
+                "view={view} relative={relative} stride={stride:?}: {r:?}"
+            );
+            assert!(!has(&r, "rig.weights", CheckStatus::Pass, ""));
+        }
+    }
+}
+
+#[test]
+fn alignment_quantized_vertex_relative_and_explicit_stride() {
+    for (kind, size, bad_relative, bad_stride) in [(5121, 4, 1, 5), (5123, 8, 2, 10)] {
+        for (relative, stride, valid) in [
+            (bad_relative, None, false),
+            (0, Some(bad_stride), false),
+            (4, Some(size + 4), true),
+        ] {
+            let (mut j, mut b) = fixture();
+            j["accessors"][2]["componentType"] = json!(kind);
+            j["accessors"][2]["normalized"] = json!(true);
+            let mut values = vec![0; size];
+            values[0] = 255;
+            if kind == 5123 {
+                values[1] = 255;
+            }
+            relocate_accessor(&mut j, &mut b, 2, 100, relative, stride, &values);
+            let r = inspect_bytes(&glb(&j, &b));
+            assert_eq!(r.validation.format_status, CheckStatus::Pass, "{r:?}");
+            if valid {
+                assert!(
+                    has(&r, "rig.weights", CheckStatus::Pass, "decoded"),
+                    "{r:?}"
+                );
+            } else {
+                assert!(
+                    has(&r, "rig.accessor", CheckStatus::Fail, "WEIGHTS_0"),
+                    "kind={kind} relative={relative} stride={stride:?}: {r:?}"
+                );
+                assert!(!has(&r, "rig.weights", CheckStatus::Pass, ""));
+            }
+        }
+    }
+}
+
+#[test]
+fn alignment_joint_attributes_use_vertex_rules_too() {
+    for (kind, size, view, relative, stride, valid) in [
+        (5121, 4, 100, 1, None, false),
+        (5123, 8, 101, 0, None, false),
+        (5123, 8, 100, 0, Some(10), false),
+        (5121, 4, 101, 4, Some(8), true), // absolute component alignment is 1
+        (5123, 8, 102, 4, Some(12), true), // absolute component alignment is 2
+    ] {
+        let (mut j, mut b) = fixture();
+        j["accessors"][1]["componentType"] = json!(kind);
+        relocate_accessor(&mut j, &mut b, 1, view, relative, stride, &vec![0; size]);
+        let r = inspect_bytes(&glb(&j, &b));
+        assert_eq!(r.validation.format_status, CheckStatus::Pass, "{r:?}");
+        if valid {
+            assert!(
+                has(&r, "rig.weights", CheckStatus::Pass, "decoded"),
+                "{r:?}"
+            );
+        } else {
+            assert!(
+                has(&r, "rig.accessor", CheckStatus::Fail, "JOINTS_0"),
+                "{r:?}"
+            );
+            assert!(!has(&r, "rig.weights", CheckStatus::Pass, ""));
+        }
+    }
+}
+
+#[test]
+fn alignment_ibm_uses_float_component_rules_without_mat4_alignment() {
+    for (view, relative, stride, valid) in [
+        (101, 0, None, false),
+        (100, 2, None, false),
+        (102, 2, None, false),
+        (100, 4, Some(68), true), // no fabricated 16-byte MAT4 alignment
+    ] {
+        let (mut j, mut b) = fixture();
+        let values = b[32..96].to_vec();
+        relocate_accessor(&mut j, &mut b, 3, view, relative, stride, &values);
+        let r = inspect_bytes(&glb(&j, &b));
+        assert_eq!(r.validation.format_status, CheckStatus::Pass, "{r:?}");
+        if valid {
+            assert!(
+                has(&r, "rig.bind_matrices", CheckStatus::Pass, "decoded"),
+                "{r:?}"
+            );
+        } else {
+            assert!(
+                has(&r, "rig.accessor", CheckStatus::Fail, "inverseBindMatrices"),
+                "{r:?}"
+            );
+            assert!(!has(&r, "rig.bind_matrices", CheckStatus::Pass, ""));
+        }
+    }
+}

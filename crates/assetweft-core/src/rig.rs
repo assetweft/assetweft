@@ -167,7 +167,7 @@ pub fn inspect_bytes(bytes: &[u8]) -> RigReport {
                     Fail,
                     format!("{ibloc}: requires FLOAT MAT4, count >= {}", joints.len()),
                 );
-            } else if ready(&a, g.blob.as_deref(), &ibloc, &mut r) {
+            } else if ready(&a, g.blob.as_deref(), false, &ibloc, &mut r) {
                 let reader = skin.reader(|b| bin(b, g.blob.as_deref()));
                 if let Some(values) = reader.read_inverse_bind_matrices() {
                     let mut ok = true;
@@ -267,8 +267,20 @@ pub fn inspect_bytes(bytes: &[u8]) -> RigReport {
                 );
                 continue;
             }
-            let jr = ready(&j, g.blob.as_deref(), &format!("{ploc}.JOINTS_0"), &mut r);
-            let wr = ready(&w, g.blob.as_deref(), &format!("{ploc}.WEIGHTS_0"), &mut r);
+            let jr = ready(
+                &j,
+                g.blob.as_deref(),
+                true,
+                &format!("{ploc}.JOINTS_0"),
+                &mut r,
+            );
+            let wr = ready(
+                &w,
+                g.blob.as_deref(),
+                true,
+                &format!("{ploc}.WEIGHTS_0"),
+                &mut r,
+            );
             if !jr || !wr {
                 continue;
             }
@@ -334,7 +346,13 @@ fn bin<'a>(b: gltf::Buffer<'_>, blob: Option<&'a [u8]>) -> Option<&'a [u8]> {
     }
 }
 /// Validate arithmetic before invoking reader (which uses unchecked offset math).
-fn ready(a: &gltf::Accessor<'_>, blob: Option<&[u8]>, loc: &str, r: &mut RigReport) -> bool {
+fn ready(
+    a: &gltf::Accessor<'_>,
+    blob: Option<&[u8]>,
+    vertex_attribute: bool,
+    loc: &str,
+    r: &mut RigReport,
+) -> bool {
     use CheckStatus::{Fail, NotRun};
     let loc = format!("{loc} accessors[{}]", a.index());
     if a.sparse().is_some() || a.view().is_none() {
@@ -367,9 +385,16 @@ fn ready(a: &gltf::Accessor<'_>, blob: Option<&[u8]>, loc: &str, r: &mut RigRepo
         .and_then(|n| n.checked_add(a.offset()))
         .and_then(|n| n.checked_add(size));
     let vend = v.offset().checked_add(v.length());
+    // glTF 2.0.1 §3.6.2.4: relative AND absolute component alignment.
+    // Vertex attributes additionally align relative offsets/declared strides to 4;
+    // IBM is not a vertex attribute and only uses its FLOAT component rules.
+    let absolute = v.offset().checked_add(a.offset());
     if stride < size
         || !stride.is_multiple_of(a.data_type().size())
         || !a.offset().is_multiple_of(a.data_type().size())
+        || absolute.is_none_or(|n| !n.is_multiple_of(a.data_type().size()))
+        || (vertex_attribute
+            && (!a.offset().is_multiple_of(4) || v.stride().is_some_and(|n| !n.is_multiple_of(4))))
         || end.is_none_or(|n| n > v.length())
         || vend.is_none_or(|n| n > b.length())
         || bin(b, blob).is_none()

@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+/// AW-008:A shared application lifecycle and bounded validation entry.
+pub mod application;
+
 /// AW-004:A SQLite 文件持久化原型；不依赖验证模块或模型执行。
 pub mod sqlite;
 

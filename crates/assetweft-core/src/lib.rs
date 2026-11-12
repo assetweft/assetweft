@@ -14,6 +14,9 @@ pub mod geometry;
 
 /// AW-009:A typed local library metadata and migration boundary.
 pub mod library;
+/// Bounded persistent local workflow.
+pub mod workflow;
+
 /// Managed immutable content storage behind Application.
 pub mod storage;
 

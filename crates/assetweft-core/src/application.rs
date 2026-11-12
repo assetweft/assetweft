@@ -118,6 +118,70 @@ impl Application {
         library::initialize(&mut self.connection)
     }
 
+    /// Validates and persists a bounded local workflow before any step runs.
+    /// # Errors
+    /// Returns invalid dependencies, schema, or database errors.
+    pub fn create_workflow(
+        &mut self,
+        run: &str,
+        steps: &[crate::workflow::Step],
+    ) -> Result<(), LibraryError> {
+        crate::workflow::create(&mut self.connection, run, steps)
+    }
+    /// Atomically claims a ready step. A running step blocks further claims until reconciled.
+    /// # Errors
+    /// Returns schema, unknown run, or database errors.
+    pub fn claim_workflow_step(&mut self, run: &str) -> Result<Option<String>, LibraryError> {
+        crate::workflow::claim(&mut self.connection, run)
+    }
+    /// Explicitly records the actual outcome of a claimed step, including after restart.
+    /// # Errors
+    /// Returns invalid state, oversized result, schema, or database errors.
+    pub fn finish_workflow_step(
+        &mut self,
+        run: &str,
+        id: &str,
+        outcome: &crate::workflow::Outcome,
+    ) -> Result<(), LibraryError> {
+        crate::workflow::finish(&mut self.connection, run, id, outcome)
+    }
+    /// Claims and invokes at most one caller-provided local driver outside any transaction.
+    /// # Errors
+    /// Returns claim or recording errors; an unresolved claim remains running.
+    pub fn run_workflow_step(
+        &mut self,
+        run: &str,
+        driver: impl FnOnce(&str) -> crate::workflow::Outcome,
+    ) -> Result<bool, LibraryError> {
+        let Some(id) = self.claim_workflow_step(run)? else {
+            return Ok(false);
+        };
+        let outcome = driver(&id);
+        self.finish_workflow_step(run, &id, &outcome)?;
+        Ok(true)
+    }
+    /// Prevents future claims; does not stop a running callback or assert remote billing stopped.
+    /// # Errors
+    /// Returns unknown run, schema, or database errors.
+    pub fn cancel_workflow(&mut self, run: &str) -> Result<(), LibraryError> {
+        crate::workflow::cancel(&mut self.connection, run)
+    }
+    /// Reads whether cancellation was requested, without asserting remote work stopped.
+    /// # Errors
+    /// Returns unknown run, invalid state, schema, or database errors.
+    pub fn workflow_cancelled(&self, run: &str) -> Result<bool, LibraryError> {
+        crate::workflow::is_cancelled(&self.connection, run)
+    }
+    /// Reads persisted step states and exact outcomes.
+    /// # Errors
+    /// Returns invalid persisted state, unknown run, schema, or database errors.
+    pub fn workflow_steps(
+        &self,
+        run: &str,
+    ) -> Result<Vec<crate::workflow::StepRecord>, LibraryError> {
+        crate::workflow::read(&self.connection, run)
+    }
+
     /// Records an asset identity and one metadata-only version in a short transaction.
     ///
     /// # Errors

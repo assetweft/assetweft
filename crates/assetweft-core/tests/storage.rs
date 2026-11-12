@@ -225,7 +225,7 @@ fn v1_upgrade_preserves_metadata_and_failed_v2_upgrade_rolls_back() {
             raw.query_row("SELECT version FROM aw_schema_version", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            if fail { 1 } else { 2 }
+            if fail { 1 } else { 3 }
         );
         assert_eq!(
             raw.query_row("SELECT license_id FROM aw_asset_versions", [], |r| r

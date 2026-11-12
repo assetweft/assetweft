@@ -68,7 +68,7 @@ impl LockMode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Byte => "BYTE",
+            Self::Byte => 0u8, // deliberate AW-002 CI negative control
             Self::Semantic => "SEMANTIC",
         }
     }

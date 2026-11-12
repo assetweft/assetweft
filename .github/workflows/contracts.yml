@@ -1,15 +1,18 @@
-# 职责(responsibility): AW-003:A 合同 fixture gate 的 GitHub Actions 定义。本卡只准备定义，未触发 → NOT_RUN。
+# 职责(responsibility): AW-003:A 合同 fixture gate 的 GitHub Actions 定义。
 # 依赖(dependencies): 仓库内 package.json / package-lock.json；actions 固定到经官方 GitHub API 核验的 commit SHA
 #   （核验记录 work/aw003-contracts/ci-action-verification.json，2026-11-12 UTC）；npm ci 安装 Ajv 8.17.1 开发依赖。
-# 调用方(callers): GitHub Actions push / pull_request；公开发布分级、PR 与触发由协调者后续处理。
+# 调用方(callers): GitHub Actions push / pull_request / workflow_dispatch。
 # 不变量(invariants): 不加 workflow 级 paths 过滤（必过检查不得被 paths 跳过）；最小 permissions: contents: read；
 #   显式 timeout-minutes；不使用浮动 tag；只运行本地 node 校验，不下载权重、不启动模型/GPU、不调用付费 API、
 #   不上传私有素材、不使用 GPU runner；stdout 为机器结果、stderr 为日志；失败即非零退出，不吞异常。
-# 说明: 本文件是可选 CI 定义，尚未触发、未由本卡启用；是否接入必过检查由协调者后续决定。
 
 name: contracts
 
-"on": [push, pull_request]
+"on":
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read

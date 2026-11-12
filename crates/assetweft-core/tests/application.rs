@@ -3,30 +3,19 @@ use assetweft_core::application::Application;
 use assetweft_core::validation::{
     RoleRequirement, SourceClass, SourceDeclaration, ValidationError, ValidationLimits,
 };
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::PathBuf};
 
-struct Dir(PathBuf);
+// Exclusive allocation and owned cleanup; timestamps do not provide uniqueness.
+struct Dir(PathBuf, Option<tempfile::TempDir>);
 impl Dir {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "aw008-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&path).unwrap();
-        Self(path)
+        let owned = tempfile::tempdir().unwrap();
+        Self(owned.path().to_path_buf(), Some(owned))
     }
 }
 impl Drop for Dir {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
+        self.1.take().unwrap().close().unwrap();
     }
 }
 

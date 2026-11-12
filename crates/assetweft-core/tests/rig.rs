@@ -468,7 +468,9 @@ fn alignment_ibm_uses_float_component_rules_without_mat4_alignment() {
         (101, 0, None, false),
         (100, 2, None, false),
         (102, 2, None, false),
-        (100, 4, Some(68), true), // no fabricated 16-byte MAT4 alignment
+        (100, 4, None, true), // legal FLOAT alignment without fabricated 16-byte alignment
+        (100, 4, Some(64), false), // IBM views must not declare byteStride
+        (100, 4, Some(68), false),
     ] {
         let (mut j, mut b) = fixture();
         let values = b[32..96].to_vec();

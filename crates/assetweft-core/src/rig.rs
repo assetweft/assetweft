@@ -387,9 +387,11 @@ fn ready(
     let vend = v.offset().checked_add(v.length());
     // glTF 2.0.1 §3.6.2.4: relative AND absolute component alignment.
     // Vertex attributes additionally align relative offsets/declared strides to 4;
-    // IBM is not a vertex attribute and only uses its FLOAT component rules.
+    // §3.6.1.1 forbids byteStride on non-vertex data (including IBM).
+    // IBM still uses FLOAT alignment; no extra MAT4 16-byte rule.
     let absolute = v.offset().checked_add(a.offset());
-    if stride < size
+    if (!vertex_attribute && v.stride().is_some())
+        || stride < size
         || !stride.is_multiple_of(a.data_type().size())
         || !a.offset().is_multiple_of(a.data_type().size())
         || absolute.is_none_or(|n| !n.is_multiple_of(a.data_type().size()))

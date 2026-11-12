@@ -343,7 +343,7 @@ fn migration_004_rollback_and_faithful_v3_evolution() {
         c2.query_row("SELECT version FROM aw_schema_version", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
     assert_eq!(
         c2.query_row("SELECT asset_id FROM aw_assets", [], |r| r
@@ -351,7 +351,7 @@ fn migration_004_rollback_and_faithful_v3_evolution() {
             .unwrap(),
         "legacy"
     );
-    c2.execute_batch("UPDATE aw_schema_version SET version=5")
+    c2.execute_batch("UPDATE aw_schema_version SET version=6")
         .unwrap();
     assert!(Application::open(&p2).is_err());
     assert!(a.approve_budget(&allowance(Unit::Token, 2)).is_err());

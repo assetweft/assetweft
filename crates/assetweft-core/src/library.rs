@@ -1,5 +1,5 @@
 //! Responsibility: M1 local metadata, references and versioned SQLite migration.
-//! Dependencies: configured application connection, rusqlite and the versioned 001–004 SQL migrations (M1 objects, M2 workflow/budget).
+//! Dependencies: configured application connection, rusqlite and the versioned 001–005 SQL migrations (M1 objects, M2 workflow/budget).
 //! Callers: Application's typed entry points. No connection or SQL is exposed here.
 //! Invariants: IDs are caller-supplied, versions are immutable, no state claims a file is
 //! ready by itself; managed bytes use storage, references are exact, migrations atomic.
@@ -8,7 +8,7 @@ use crate::sqlite::ProtoError;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{error::Error, fmt};
 
-const CURRENT_SCHEMA: i64 = 4;
+const CURRENT_SCHEMA: i64 = 5;
 const INITIAL_SQL: &str = include_str!("library/001_initial.sql");
 
 /// File availability known to this metadata-only repository. No ready state is issued.
@@ -47,7 +47,7 @@ pub enum ComponentRole {
     Dialogue,
 }
 impl ComponentRole {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Mesh => "mesh",
             Self::Materials => "materials",
@@ -211,6 +211,13 @@ pub(crate) fn initialize(conn: &mut Connection) -> Result<(), LibraryError> {
         tx.execute_batch(include_str!("library/004_budget.sql"))?;
         tx.execute(
             "UPDATE aw_schema_version SET version=4 WHERE singleton=1",
+            [],
+        )?;
+    }
+    if version(&tx)? == Some(4) {
+        tx.execute_batch(include_str!("library/005_candidates.sql"))?;
+        tx.execute(
+            "UPDATE aw_schema_version SET version=5 WHERE singleton=1",
             [],
         )?;
     }

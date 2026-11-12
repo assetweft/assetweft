@@ -1,9 +1,10 @@
 //! Responsibility: shared application entry and SQLite connection lifecycle.
 //! Dependencies: the existing SQLite configuration and bounded file validation modules.
 //! Callers: future CLI and desktop adapters; integration tests exercise the public API.
-//! Invariants: no SQL or transaction escapes this module; no product schema is created;
+//! Invariants: no SQL or transaction escapes this module or the library repository;
 //! validation is bounded, and no transaction is held while validation runs.
 
+use crate::library::{self, AssetVersion, ComponentReference, LibraryError};
 use crate::sqlite::{self, ConnectionConfig, ProtoError};
 use crate::validation::{
     self, RoleRequirement, SourceDeclaration, ValidationError, ValidationLimits, ValidationReport,
@@ -31,6 +32,7 @@ impl Application {
             ));
         }
         let (connection, config) = sqlite::open_and_configure(path)?;
+        library::check_open(&connection).map_err(LibraryError::into_open_error)?;
         Ok(Self { connection, config })
     }
 
@@ -38,6 +40,52 @@ impl Application {
     #[must_use]
     pub const fn connection_config(&self) -> &ConnectionConfig {
         &self.config
+    }
+
+    /// Initializes or checks the local product schema. This never performs a downgrade.
+    ///
+    /// # Errors
+    /// Returns a migration, compatibility, or SQLite error without committing partial DDL.
+    pub fn initialize_library(&mut self) -> Result<(), LibraryError> {
+        library::initialize(&mut self.connection)
+    }
+
+    /// Records an asset identity and one metadata-only version in a short transaction.
+    ///
+    /// # Errors
+    /// Rejects invalid fields, unsupported schema, duplicates and database errors.
+    pub fn add_asset_version(&mut self, version: &AssetVersion) -> Result<(), LibraryError> {
+        library::add_asset_version(&mut self.connection, version)
+    }
+
+    /// Reads a version by stable identity.
+    ///
+    /// # Errors
+    /// Returns schema, unknown state, or database errors.
+    pub fn asset_version(&mut self, id: &str) -> Result<Option<AssetVersion>, LibraryError> {
+        library::asset_version(&mut self.connection, id)
+    }
+
+    /// Associates a component role with an existing version.
+    ///
+    /// # Errors
+    /// Returns invalid input, foreign key, duplicate, schema or database errors.
+    pub fn add_component_reference(
+        &mut self,
+        reference: &ComponentReference,
+    ) -> Result<(), LibraryError> {
+        library::add_component_reference(&mut self.connection, reference)
+    }
+
+    /// Reads explicitly versioned component references for an asset version.
+    ///
+    /// # Errors
+    /// Returns schema, unknown role, or database errors.
+    pub fn component_references(
+        &mut self,
+        version_id: &str,
+    ) -> Result<Vec<ComponentReference>, LibraryError> {
+        library::component_references(&mut self.connection, version_id)
     }
 
     /// Reads SQLite's internal schema cookie as a connection health check. This is

@@ -14,6 +14,8 @@ pub mod geometry;
 
 /// AW-009:A typed local library metadata and migration boundary.
 pub mod library;
+/// Managed immutable content storage behind Application.
+pub mod storage;
 
 /// AW-004:A SQLite 文件持久化原型；不依赖验证模块或模型执行。
 pub mod sqlite;

@@ -108,7 +108,7 @@ fn v0_upgrade_preserves_existing_data_and_reopen_round_trips_metadata_and_refs()
         read.query_row("SELECT version FROM aw_schema_version", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        1
+        2
     );
 }
 
@@ -210,22 +210,22 @@ fn future_schema_and_unknown_persisted_values_fail_closed() {
     );
     raw.execute_batch("UPDATE aw_asset_versions SET presence='UNKNOWN', contract_version='2.0.0' WHERE version_id='v';").unwrap();
     assert!(matches!(app.asset_version("v"), Err(LibraryError::UnknownValue(v)) if v == "2.0.0"));
-    raw.execute("UPDATE aw_schema_version SET version=2", [])
+    raw.execute("UPDATE aw_schema_version SET version=3", [])
         .unwrap();
     assert!(matches!(
         app.add_asset_version(&sample("b", "v2")),
-        Err(LibraryError::FutureSchema(2))
+        Err(LibraryError::FutureSchema(3))
     ));
     assert!(matches!(
         app.initialize_library(),
-        Err(LibraryError::FutureSchema(2))
+        Err(LibraryError::FutureSchema(3))
     ));
     assert!(Application::open(&db).is_err());
     assert_eq!(
         raw.query_row("SELECT version FROM aw_schema_version", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
     assert_eq!(
         raw.query_row("SELECT count(*) FROM aw_asset_versions", [], |r| r

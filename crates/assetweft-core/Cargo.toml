@@ -19,7 +19,7 @@ workspace = true
 
 [dependencies]
 # 成熟标准解析器：glTF 2.0/GLB 官方 Rust 实现；不使用 import（图片/URI）能力，仅做容器与结构解析。
-gltf = { version = "1.4.1", default-features = false }
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 # 成熟哈希库，不自造 SHA-256。
 sha2 = "0.11.1"
 
@@ -27,3 +27,4 @@ sha2 = "0.11.1"
 rusqlite = { version = "=0.42.0", features = ["bundled"] }
 
 [dev-dependencies]
+serde_json = "1.0"

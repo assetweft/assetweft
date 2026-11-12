@@ -1,7 +1,8 @@
-# 职责: assetweft-core 共享应用库骨架（当前仅承载交付合同的锁定模式词表）。
-# 依赖: 仅 std，无第三方 crate。
-# 调用方: 将来的 CLI/桌面/验证入口；当前由本 crate 单元测试与 C1 调用。
-# 不变量: 未知锁定模式必须报错，不得静默默认；NotDefined 永远不可测量。
+# 职责: assetweft-core 共享应用库骨架与独立验证入口（合同锁定词表 + AW-017 文件验证）。
+# 依赖: 仅 std、gltf 1.4.1（成熟 glTF 2.0/GLB 解析）、sha2 0.11.1（SHA-256）。
+# 调用方: 将来的 CLI/桌面/验证入口；当前由本 crate 单元测试、集成测试与 C1 调用。
+# 不变量: 未知合同词表值必须报错不默认；NOT_RUN 不是 PASS；来源只记录声明不验证；
+#          GLB 范围只接受二进制容器，plain JSON 不得被标为 GLB；读取上限配置不得 panic。
 
 [package]
 name = "assetweft-core"
@@ -17,3 +18,9 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+# 成熟标准解析器：glTF 2.0/GLB 官方 Rust 实现；不使用 import（图片/URI）能力，仅做容器与结构解析。
+gltf = { version = "1.4.1", default-features = false }
+# 成熟哈希库，不自造 SHA-256。
+sha2 = "0.11.1"
+
+[dev-dependencies]

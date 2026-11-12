@@ -1,5 +1,5 @@
-# 职责: assetweft-core 共享应用库骨架与独立验证入口（合同锁定词表 + AW-017 文件验证）。
-# 依赖: 仅 std、gltf 1.4.1（成熟 glTF 2.0/GLB 解析）、sha2 0.11.1（SHA-256）。
+# 职责: 共享核心的合同词表、独立文件验证与 SQLite 文件持久化原型。
+# 依赖: std、gltf 1.4.1、sha2 0.11.1、rusqlite 0.42.0 bundled；版本由锁文件固定。
 # 调用方: 将来的 CLI/桌面/验证入口；当前由本 crate 单元测试、集成测试与 C1 调用。
 # 不变量: 未知合同词表值必须报错不默认；NOT_RUN 不是 PASS；来源只记录声明不验证；
 #          GLB 范围只接受二进制容器，plain JSON 不得被标为 GLB；读取上限配置不得 panic。
@@ -22,5 +22,8 @@ workspace = true
 gltf = { version = "1.4.1", default-features = false }
 # 成熟哈希库，不自造 SHA-256。
 sha2 = "0.11.1"
+
+# AW-004:A fixed bundled SQLite build; preserve the reviewed validation dependencies.
+rusqlite = { version = "=0.42.0", features = ["bundled"] }
 
 [dev-dependencies]

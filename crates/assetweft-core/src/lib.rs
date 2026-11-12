@@ -1,10 +1,13 @@
-//! 职责: AssetWeft 共享应用库骨架；当前只实现交付合同 §10.2 的锁定词表（模式与声明状态分开）。
-//! 依赖: 仅 Rust std。
+//! 职责: 共享应用库入口；导出合同锁定词表、SQLite 原型和独立文件验证模块。
+//! 依赖: 词表使用 std；子模块分别使用 rusqlite、gltf 与 sha2。
 //! 调用方: 将来的 CLI、桌面与验证入口；当前由本模块单元测试和 C1 调用。
 //! 不变量: 未知合同值必须返回错误，不得静默默认；`NOT_DEFINED` 是"未定义摘要"的声明状态，
 //!          不是第三种 lock_mode；大小写与空白不做宽松归一化（合同字段值必须逐字匹配）。
 
 #![forbid(unsafe_code)]
+
+/// AW-004:A SQLite 文件持久化原型；不依赖验证模块或模型执行。
+pub mod sqlite;
 
 /// AW-017:A 独立文件验证入口与最小 ValidationReport；不依赖 SQLite/模型/Agent。
 pub mod validation;

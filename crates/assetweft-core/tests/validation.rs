@@ -305,3 +305,109 @@ fn animation_targeting_unbound_skin_joint_does_not_satisfy_animated_character() 
     assert_eq!(item.status, CheckStatus::NotRun);
     assert!(item.detail.contains("orphan animation"));
 }
+
+// TEST_FIXTURE chunk assembly; depends on glb_from_json, called only by regressions.
+// Invariant: preserve payloads and update the declared length after each append.
+fn append_chunk(bytes: &mut Vec<u8>, ty: &[u8; 4], payload: &[u8]) {
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(ty);
+    bytes.extend_from_slice(payload);
+    let len = bytes.len() as u32;
+    bytes[8..12].copy_from_slice(&len.to_le_bytes());
+}
+
+fn duplicate_known_chunk_fails_container(ty: &[u8; 4]) {
+    let mut bytes = json_only_glb(r#"{"asset":{"version":"2.0"}}"#);
+    append_chunk(&mut bytes, b"BIN\0", &[0; 4]);
+    append_chunk(&mut bytes, ty, &[0; 4]);
+    let report = validate_bytes(&bytes, RoleRequirement::StaticMesh, source());
+    assert_eq!(report.format_status, CheckStatus::Fail, "duplicate {ty:?}");
+    assert_eq!(report.role.status, CheckStatus::NotRun);
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.id == "format.glb_container" && c.status == CheckStatus::Fail)
+    );
+}
+
+#[test]
+fn duplicate_known_bin_fails_container() {
+    duplicate_known_chunk_fails_container(b"BIN\0");
+}
+
+#[test]
+fn duplicate_known_json_fails_container() {
+    duplicate_known_chunk_fails_container(b"JSON");
+}
+
+#[test]
+fn known_chunk_order_and_unknown_tail_contract() {
+    for tail in [vec![], vec![b"BIN\0"], vec![b"BIN\0", b"TEST", b"TEST"]] {
+        let mut bytes = json_only_glb(r#"{"asset":{"version":"2.0"}}"#);
+        for ty in tail {
+            append_chunk(&mut bytes, ty, &[0; 4]);
+        }
+        assert_eq!(
+            validate_bytes(&bytes, RoleRequirement::StaticMesh, source()).format_status,
+            CheckStatus::Pass
+        );
+    }
+    for tail in [
+        vec![b"JSON"],
+        vec![b"TEST", b"BIN\0"],
+        vec![b"BIN\0", b"TEST", b"BIN\0"],
+        vec![b"BIN\0", b"TEST", b"JSON"],
+    ] {
+        let mut bytes = json_only_glb(r#"{"asset":{"version":"2.0"}}"#);
+        for ty in tail {
+            append_chunk(&mut bytes, ty, &[0; 4]);
+        }
+        assert_eq!(
+            validate_bytes(&bytes, RoleRequirement::StaticMesh, source()).format_status,
+            CheckStatus::Fail
+        );
+    }
+}
+
+#[test]
+fn malformed_chunk_inputs_fail_without_panicking() {
+    let good = json_only_glb(r#"{"asset":{"version":"2.0"}}"#);
+    let mut cases = Vec::new();
+    for n in 0..good.len() {
+        cases.push(good[..n].to_vec());
+    }
+    for len in [0u32, 12, u32::MAX] {
+        let mut bytes = good.clone();
+        bytes[8..12].copy_from_slice(&len.to_le_bytes());
+        cases.push(bytes);
+    }
+    for len in [1u32, 3, u32::MAX - 3, u32::MAX] {
+        let mut bytes = good.clone();
+        bytes[12..16].copy_from_slice(&len.to_le_bytes());
+        cases.push(bytes);
+    }
+    let mut first_bin = good.clone();
+    first_bin[16..20].copy_from_slice(b"BIN\0");
+    cases.push(first_bin);
+    let mut trailing_header = good.clone();
+    trailing_header.extend_from_slice(&[0; 4]);
+    let len = trailing_header.len() as u32;
+    trailing_header[8..12].copy_from_slice(&len.to_le_bytes());
+    cases.push(trailing_header);
+    for bytes in cases {
+        let report = validate_bytes(&bytes, RoleRequirement::StaticMesh, source());
+        assert_eq!(report.format_status, CheckStatus::Fail);
+        assert_eq!(report.role.status, CheckStatus::NotRun);
+    }
+}
+
+// Synthetic JSON-only container derived from the established fixture helper.
+fn json_only_glb(json: &str) -> Vec<u8> {
+    let mut bytes = glb_from_json(json);
+    let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    bytes.truncate(20 + json_len);
+    let len = bytes.len() as u32;
+    bytes[8..12].copy_from_slice(&len.to_le_bytes());
+    bytes
+}

@@ -1,0 +1,6 @@
+; Responsibility: isolated static import trial. Dependencies: Godot 4.7.2. Caller: local CLI. Invariant: no network or user assets.
+config_version=5
+[application]
+config/name="AssetWeft static integration fixture"
+[rendering]
+renderer/rendering_method="gl_compatibility"

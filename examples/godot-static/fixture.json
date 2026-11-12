@@ -1,0 +1,17 @@
+{
+  "source_class": "TEST_FIXTURE",
+  "provenance": "Analytically constructed for AW031:A; no external asset source",
+  "license": "CC0-1.0",
+  "units": "metres; right-handed glTF 2.0",
+  "positions": [[0,0,0],[1,0,0],[0,1,0]],
+  "indices": [0,1,2],
+  "node_translation": [1,2,3],
+  "node_scale": [2,3,1],
+  "expected_world_bounds_position": [1,2,3],
+  "expected_world_bounds_size": [2,3,0],
+  "tolerance": "Godot Vector3.is_equal_approx (relative approximately 1e-5)",
+  "material": {"name":"AnalyticGreen","base_color":[0,1,0,1],"metallic":0,"roughness":1},
+  "textures": [],
+  "external_dependencies": [],
+  "triangle_sha256": "44e32648c9f09f1ee221b89b7da61dd29aecf4227cf6c704dd73ca3ab89c93c1"
+}

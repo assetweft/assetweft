@@ -330,7 +330,7 @@ fn check_glb_container(bytes: &[u8]) -> Result<(), String> {
         ));
     }
     let mut offset = 12usize;
-    let mut first = true;
+    let mut chunk_index = 0usize;
     while offset < bytes.len() {
         if offset + 8 > bytes.len() {
             return Err("truncated chunk header".to_owned());
@@ -342,10 +342,18 @@ fn check_glb_container(bytes: &[u8]) -> Result<(), String> {
             bytes[offset + 3],
         ]) as usize;
         let ty = &bytes[offset + 4..offset + 8];
-        if first && ty != b"JSON" {
+        if chunk_index == 0 && ty != b"JSON" {
             return Err("first GLB chunk must be JSON".to_owned());
         }
-        first = false;
+        // glTF 2.0.1 §4.4.3: JSON exactly once at index 0, optional BIN
+        // only at index 1. Unknown extension chunks remain allowed in the tail.
+        if ty == b"JSON" && chunk_index != 0 {
+            return Err("JSON chunk must occur exactly once, first".to_owned());
+        }
+        if ty == b"BIN\0" && chunk_index != 1 {
+            return Err("BIN chunk may occur only once, second".to_owned());
+        }
+        chunk_index += 1;
         if !len.is_multiple_of(4) {
             return Err(format!("chunk length {len} is not 4-byte aligned"));
         }

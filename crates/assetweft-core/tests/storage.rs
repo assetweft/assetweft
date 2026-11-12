@@ -291,3 +291,59 @@ fn different_database_in_same_directory_cannot_collect_another_librarys_objects(
     ));
     assert!(first.managed_object("v").unwrap().is_some());
 }
+
+#[test]
+fn metadata_reference_obeys_collection_lease_and_preserves_typed_errors() {
+    use assetweft_core::library::LibraryError;
+    use std::fs::OpenOptions;
+    let (d, _db, mut writer) = fixture();
+    let bytes = b"orphan awaiting collection";
+    let v = sample("new-reference", bytes);
+    fs::create_dir(d.path().join("objects")).unwrap();
+    let object = d.path().join("objects").join(&v.content_hash);
+    fs::write(&object, bytes).unwrap();
+
+    // Hold the exact exclusive file lease that collect keeps across SQLite commit
+    // and unlink. No SQLite lock is held: this deterministically targets the gap
+    // from P1-AW010-01, rather than getting Busy from unrelated SQL contention.
+    let lock_path = d.path().join(".aw-storage.lock");
+    let lease = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .unwrap();
+    let result = writer.add_asset_version(&v);
+    assert!(
+        matches!(result, Err(LibraryError::Busy(_))),
+        "metadata inserted during collector lease: {result:?}"
+    );
+    assert_eq!(writer.asset_version(&v.version_id).unwrap(), None);
+    assert!(object.exists());
+    assert!(
+        lock_path.exists(),
+        "failed writer must not remove collector lease"
+    );
+    drop(lease);
+    fs::remove_file(&lock_path).unwrap();
+
+    // Once the collector lease is released, ordinary metadata still inserts and
+    // its hash protects an existing unregistered object against actual collect.
+    writer.add_asset_version(&v).unwrap();
+    assert_eq!(
+        writer.collect_object(&v.content_hash).unwrap(),
+        Collection::Protected
+    );
+    assert!(object.exists());
+    assert_eq!(writer.managed_object(&v.version_id).unwrap(), None);
+    assert!(matches!(
+        writer.add_asset_version(&v),
+        Err(LibraryError::Constraint(_))
+    ));
+    assert!(!lock_path.exists(), "SQL failure must release writer lease");
+
+    // Metadata-only insertion still permits absent bytes; it never claims managed.
+    let absent = sample("absent", b"bytes are not stored");
+    writer.add_asset_version(&absent).unwrap();
+    assert_eq!(writer.managed_object("absent").unwrap(), None);
+    assert!(!d.path().join("objects").join(&absent.content_hash).exists());
+}

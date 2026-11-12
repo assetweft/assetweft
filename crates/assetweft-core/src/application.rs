@@ -3,6 +3,7 @@
 //! Callers: future CLI and desktop adapters; integration tests exercise the public API.
 //! Invariants: no SQL or transaction escapes this module or the library repository;
 //! validation is bounded, and no transaction is held while validation runs.
+//! Hash-reference insertion takes the storage lease before SQLite, like object collection.
 
 use crate::library::{self, AssetVersion, ComponentReference, LibraryError};
 use crate::sqlite::{self, ConnectionConfig, ProtoError};
@@ -120,8 +121,10 @@ impl Application {
     /// Records an asset identity and one metadata-only version in a short transaction.
     ///
     /// # Errors
-    /// Rejects invalid fields, unsupported schema, duplicates and database errors.
+    /// Rejects invalid fields, unsupported schema, duplicates, storage-lease Busy/IO and database errors.
     pub fn add_asset_version(&mut self, version: &AssetVersion) -> Result<(), LibraryError> {
+        library::validate(version)?;
+        let _guard = crate::storage::reference_guard(&self.library_root)?;
         library::add_asset_version(&mut self.connection, version)
     }
 

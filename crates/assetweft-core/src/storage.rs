@@ -1,7 +1,7 @@
 //! Responsibility: bounded managed CAS commits and explicit orphan collection.
 //! Dependencies: sha2, tempfile, std filesystem and the typed library transaction helpers.
 //! Callers: Application; filesystem is a private local library, not an adversarial shared tree.
-//! Invariants: publish before DB, never replace objects, serialize GC with commits/pins.
+//! Invariants: publish before DB, never replace objects, serialize GC with every hash-reference insertion and protection update.
 //! A crash may leave a lock/temp/orphan; no automatic stale-lock breaking or power-loss claim.
 use crate::library::{self, AssetVersion, LibraryError};
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -57,19 +57,39 @@ impl From<rusqlite::Error> for StorageError {
 }
 
 // Exclusive create establishes ownership. Drop removes only a successfully created lock.
-struct Guard(PathBuf, File);
+pub(crate) struct Guard(PathBuf, File);
 impl Drop for Guard {
     fn drop(&mut self) {
         let _ = self.1.sync_all();
         let _ = fs::remove_file(&self.0);
     }
 }
-fn lock(root: &Path) -> Result<Guard, StorageError> {
+// Both metadata-only references and managed operations use the same lease primitive.
+// Global order: storage lease, then SQLite transaction. Never acquire it inside a tx.
+fn acquire(root: &Path) -> io::Result<Guard> {
     let path = root.join(".aw-storage.lock");
-    match OpenOptions::new().write(true).create_new(true).open(&path) {
-        Ok(file) => Ok(Guard(path, file)),
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map(|file| Guard(path, file))
+}
+fn lock(root: &Path) -> Result<Guard, StorageError> {
+    match acquire(root) {
+        Ok(guard) => Ok(guard),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(StorageError::Busy),
         Err(e) => Err(e.into()),
+    }
+}
+/// Coordinates metadata hash references without requiring managed bytes or owner binding.
+/// commit_object already holds this lease and uses the internal insert_version directly.
+pub(crate) fn reference_guard(root: &Path) -> Result<Guard, LibraryError> {
+    match acquire(root) {
+        Ok(guard) => Ok(guard),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            Err(LibraryError::Busy(e.to_string()))
+        }
+        Err(e) => Err(LibraryError::Io(e.to_string())),
     }
 }
 // A directory may hold multiple SQLite files, but its objects belong to exactly one.
@@ -312,5 +332,19 @@ pub(crate) fn collect(
         Ok(()) => Ok(Collection::Removed),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Collection::Absent),
         Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_reference_lease_retains_io_error_type() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("not a directory");
+        fs::write(&file, b"sentinel").unwrap();
+        assert!(matches!(reference_guard(&file), Err(LibraryError::Io(_))));
+        assert_eq!(fs::read(file).unwrap(), b"sentinel");
     }
 }

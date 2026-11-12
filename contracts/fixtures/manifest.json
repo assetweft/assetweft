@@ -1,0 +1,20 @@
+{
+  "$comment": "AW-003:A gate 期望清单。期望值只存在于本文件，fixtures.json 的文档内不含任何期望字段，避免自证。测试溯源在 fixtures.json 外包装 test_fixture。VALID 仅表示合同文档通过声明范围内的机器检查（docs/CONTRACTS.md §8 机器格式通过与视觉/生成/引擎通过分开），不等于任何资产/AI/引擎执行 PASS。错误名沿用 §10.5。",
+  "schema": "aw003-fixture-manifest/1.0.0",
+  "expectations": [
+    { "id": "valid/s1_contract_only", "expect": "VALID", "reason": "S1 文件/契约检查：engine_version=UNKNOWN 不阻断；NOT_RUN 项不冒充 PASS" },
+    { "id": "valid/s2_semantic_notrun", "expect": "VALID", "reason": "SEMANTIC 规范化器 NOT_IMPLEMENTED + PARTIAL 摘要 -> 锁定比较 NOT_RUN，不判 whole-mesh PASS" },
+    { "id": "valid/s3_shape_only", "expect": "VALID", "reason": "S3 字段按消费段齐备；BYTE 锁按 lock_mode 前后摘要相等；engine_import 仍 NOT_RUN" },
+    { "id": "valid/non_fixture_shape", "expect": "VALID", "reason": "非 fixture 产品合同形状：文档无 fixture 字段，schema 仍可检验；TEST_FIXTURE 溯源只在外包装" },
+    { "id": "invalid/bad_ref", "expect": "FAIL", "reason": "坏引用：locked_components 引用未声明角色 rig (§2)" },
+    { "id": "invalid/bad_hash", "expect": "INVALID_INPUT", "reason": "非法数值：file.sha256 不是 64 位十六进制 (§10.5 码2)" },
+    { "id": "invalid/unknown_cost_zero", "expect": "INVALID_INPUT", "reason": "未知费用填 0 而非 null/unknown (§5；AGENTS 不把未知费用填零)" },
+    { "id": "invalid/lock_editable_conflict", "expect": "LOCK_VIOLATION", "reason": "锁定/可编辑范围冲突：mesh 同时出现在两处 (§3/§10.4，§10.5 码4)" },
+    { "id": "invalid/digest_mismatch", "expect": "LOCK_VIOLATION", "reason": "按预声明 BYTE lock_mode 比较自身前后摘要不等 (§10.2/§10.4 S2)" },
+    { "id": "invalid/partial_wholemesh_pass", "expect": "FAIL", "reason": "PARTIAL 摘要不得 Whole-Mesh 语义 PASS (§10.2 规则3)" },
+    { "id": "invalid/semantic_unknown_normalizer_pass", "expect": "FAIL", "reason": "未知/未实现规范化器必须 NOT_RUN，不得报 PASS (§8/§10.2 规则2)" },
+    { "id": "invalid/undeclared_component_source", "expect": "FAIL", "reason": "P1 回归：components[].source 指向未声明文件 (§2 组件引用)" },
+    { "id": "invalid/component_hash_mismatch", "expect": "FAIL", "reason": "P1 回归：components[].content_hash 与所引用文件声明 sha256 不符（不读文件字节）" },
+    { "id": "invalid/absolute_public_ref", "expect": "INVALID_INPUT", "reason": "P1 回归：本地绝对路径不得出现在公共引用字段（AW-003 公开数据不泄露磁盘路径）" }
+  ]
+}

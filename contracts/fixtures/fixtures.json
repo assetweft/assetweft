@@ -1,0 +1,1323 @@
+{
+  "$comment": "AW-003:A 合同实例集合。全部为 TEST_FIXTURE / metadata_only：字段是合同形状的元数据，不代表真实 GLB/Rig/Skin/Motion、F0 输入、AI 生成、引擎导入或视觉验收成功。H_A/H_B/H_C 是占位的 64 位十六进制摘要，不是任何真实文件字节的哈希。期望值不在本文件内，见 manifest.json（避免把同一生产常量抄进测试后自证）。 定向回归(4)：非fixture产品形状、未声明组件source、组件content_hash不符、本地绝对公共引用；TEST_FIXTURE 溯源一律放在外包装 test_fixture，文档内 fixture 仅为可选 annotation。",
+  "schema": "aw003-fixture-set/1.0.0",
+  "hash_legend": {
+    "H_A": "1111111111111111111111111111111111111111111111111111111111111111",
+    "H_B": "2222222222222222222222222222222222222222222222222222222222222222",
+    "H_C": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "fixtures": [
+    {
+      "id": "valid/s1_contract_only",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "S1 file/contract-only shape; engine_version=UNKNOWN must not block this check"
+        },
+        "stage": "S1",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-s1",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; F0 INPUT_NOT_SUPPLIED; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          }
+        ],
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "file-and-contract-only; no engine/generation execution",
+          "items": [
+            {
+              "check": "reference_integrity",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only: role and file references declared; machine-format check only"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation",
+            "gltf_validator"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "S1 file/contract-only shape; engine_version=UNKNOWN must not block this check"
+      }
+    },
+    {
+      "id": "valid/s2_semantic_notrun",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "S2 SEMANTIC lock with unimplemented normalizer must be NOT_RUN; PARTIAL must not be whole-mesh PASS"
+        },
+        "stage": "S2",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-s2",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; F0 INPUT_NOT_SUPPLIED; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "path": "metadata://fixture/motion.bin",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          },
+          {
+            "role": "motion",
+            "version_id": "ver:fixture-motion-1",
+            "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source": "metadata://fixture/motion.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [
+            "motion"
+          ],
+          "locked_components": [
+            {
+              "role": "mesh",
+              "lock_mode": "SEMANTIC",
+              "canonicalization": {
+                "id": "canon:skeleton-tree",
+                "version": "0.0.0-unimplemented",
+                "status": "NOT_IMPLEMENTED"
+              },
+              "digest_scope": "PARTIAL",
+              "baseline_digest": null,
+              "after_digest": null
+            }
+          ]
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "contract-document/lock-declaration only; no normalizer, no engine",
+          "items": [
+            {
+              "check": "reference_integrity",
+              "target": "asset",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only references declared"
+            },
+            {
+              "check": "semantic_lock_comparison",
+              "target": "mesh",
+              "status": "NOT_RUN",
+              "digest_scope": "PARTIAL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "canonicalization NOT_IMPLEMENTED and PARTIAL scope -> NOT_RUN; no whole-mesh semantic PASS"
+            }
+          ],
+          "not_run": [
+            "semantic_lock_comparison",
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin",
+            "metadata://fixture/motion.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "S2 SEMANTIC lock with unimplemented normalizer must be NOT_RUN; PARTIAL must not be whole-mesh PASS"
+      }
+    },
+    {
+      "id": "valid/s3_shape_only",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "S3 field-splitting shape only; engine_version is a metadata-only placeholder, NOT a real engine; engine_import stays NOT_RUN"
+        },
+        "stage": "S3",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-s3",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; F0 INPUT_NOT_SUPPLIED; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "path": "metadata://fixture/motion.bin",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          },
+          {
+            "role": "motion",
+            "version_id": "ver:fixture-motion-1",
+            "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source": "metadata://fixture/motion.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [
+            "motion"
+          ],
+          "locked_components": [
+            {
+              "role": "mesh",
+              "lock_mode": "BYTE",
+              "canonicalization": null,
+              "digest_scope": "FULL",
+              "baseline_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "after_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        },
+        "increment": {
+          "base_version": "ver:fixture-001-s1",
+          "input_refs": [
+            "metadata://fixture/mesh.bin"
+          ],
+          "output_contract": "TEST_FIXTURE:metadata-only-no-real-output",
+          "budget": {
+            "max_calls": 0,
+            "cost_status": "unknown",
+            "cost_value": null
+          },
+          "allowed_environment": "METADATA_ONLY_NO_EXECUTION"
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "TEST_FIXTURE:engine/0.0.0 (metadata-only placeholder, not a real engine)",
+          "scope": "contract-document shape only; no engine import executed",
+          "items": [
+            {
+              "check": "byte_lock_comparison",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "baseline_digest == after_digest under BYTE; metadata-only placeholder digests"
+            },
+            {
+              "check": "engine_import",
+              "target": "asset",
+              "status": "NOT_RUN",
+              "digest_scope": "NOT_APPLICABLE",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "engine import NOT_RUN; placeholder version is not an engine result"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin",
+            "metadata://fixture/motion.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "S3 field-splitting shape only; engine_version is a metadata-only placeholder, NOT a real engine; engine_import stays NOT_RUN"
+      }
+    },
+    {
+      "id": "invalid/bad_ref",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "bad reference: locked_components refers to undeclared role rig"
+        },
+        "stage": "S2",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-badref",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [],
+          "locked_components": [
+            {
+              "role": "rig",
+              "lock_mode": "BYTE",
+              "canonicalization": null,
+              "digest_scope": "FULL",
+              "baseline_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "after_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "contract-document only",
+          "items": [
+            {
+              "check": "byte_lock_comparison",
+              "target": "rig",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only placeholder"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "bad reference: locked_components refers to undeclared role rig"
+      }
+    },
+    {
+      "id": "invalid/bad_hash",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "illegal value: file sha256 is not a 64-hex digest"
+        },
+        "stage": "S1",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-badhash",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "deadbeef"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          }
+        ],
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "file-and-contract-only",
+          "items": [
+            {
+              "check": "reference_integrity",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "illegal value: file sha256 is not a 64-hex digest"
+      }
+    },
+    {
+      "id": "invalid/unknown_cost_zero",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "illegal value: unknown cost filled with 0 instead of null"
+        },
+        "stage": "S3",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-cost",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "path": "metadata://fixture/motion.bin",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          },
+          {
+            "role": "motion",
+            "version_id": "ver:fixture-motion-1",
+            "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source": "metadata://fixture/motion.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [
+            "motion"
+          ],
+          "locked_components": [
+            {
+              "role": "mesh",
+              "lock_mode": "BYTE",
+              "canonicalization": null,
+              "digest_scope": "FULL",
+              "baseline_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "after_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        },
+        "increment": {
+          "base_version": "ver:fixture-001-s1",
+          "input_refs": [
+            "metadata://fixture/mesh.bin"
+          ],
+          "output_contract": "TEST_FIXTURE:metadata-only-no-real-output",
+          "budget": {
+            "max_calls": 0,
+            "cost_status": "unknown",
+            "cost_value": 0
+          },
+          "allowed_environment": "METADATA_ONLY_NO_EXECUTION"
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "TEST_FIXTURE:engine/0.0.0 (metadata-only placeholder)",
+          "scope": "contract-document shape only",
+          "items": [
+            {
+              "check": "byte_lock_comparison",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only placeholder"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin",
+            "metadata://fixture/motion.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "illegal value: unknown cost filled with 0 instead of null"
+      }
+    },
+    {
+      "id": "invalid/lock_editable_conflict",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "lock/editable range conflict: mesh is both editable and locked"
+        },
+        "stage": "S3",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-conflict",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "path": "metadata://fixture/motion.bin",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          },
+          {
+            "role": "motion",
+            "version_id": "ver:fixture-motion-1",
+            "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source": "metadata://fixture/motion.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [
+            "mesh"
+          ],
+          "locked_components": [
+            {
+              "role": "mesh",
+              "lock_mode": "BYTE",
+              "canonicalization": null,
+              "digest_scope": "FULL",
+              "baseline_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "after_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        },
+        "increment": {
+          "base_version": "ver:fixture-001-s1",
+          "input_refs": [
+            "metadata://fixture/mesh.bin"
+          ],
+          "output_contract": "TEST_FIXTURE:metadata-only-no-real-output",
+          "budget": {
+            "max_calls": 0,
+            "cost_status": "unknown",
+            "cost_value": null
+          },
+          "allowed_environment": "METADATA_ONLY_NO_EXECUTION"
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "TEST_FIXTURE:engine/0.0.0 (metadata-only placeholder)",
+          "scope": "contract-document shape only",
+          "items": [
+            {
+              "check": "byte_lock_comparison",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only placeholder"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin",
+            "metadata://fixture/motion.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "lock/editable range conflict: mesh is both editable and locked"
+      }
+    },
+    {
+      "id": "invalid/digest_mismatch",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "per-lock_mode digest comparison: BYTE baseline != after"
+        },
+        "stage": "S3",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-mismatch",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "path": "metadata://fixture/motion.bin",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          },
+          {
+            "role": "motion",
+            "version_id": "ver:fixture-motion-1",
+            "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source": "metadata://fixture/motion.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [
+            "motion"
+          ],
+          "locked_components": [
+            {
+              "role": "mesh",
+              "lock_mode": "BYTE",
+              "canonicalization": null,
+              "digest_scope": "FULL",
+              "baseline_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "after_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "increment": {
+          "base_version": "ver:fixture-001-s1",
+          "input_refs": [
+            "metadata://fixture/mesh.bin"
+          ],
+          "output_contract": "TEST_FIXTURE:metadata-only-no-real-output",
+          "budget": {
+            "max_calls": 0,
+            "cost_status": "unknown",
+            "cost_value": null
+          },
+          "allowed_environment": "METADATA_ONLY_NO_EXECUTION"
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "TEST_FIXTURE:engine/0.0.0 (metadata-only placeholder)",
+          "scope": "contract-document shape only",
+          "items": [
+            {
+              "check": "byte_lock_comparison",
+              "target": "mesh",
+              "status": "LOCK_VIOLATION",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "baseline/after differ under BYTE"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin",
+            "metadata://fixture/motion.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "per-lock_mode digest comparison: BYTE baseline != after"
+      }
+    },
+    {
+      "id": "invalid/partial_wholemesh_pass",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "PARTIAL digest must not be reported as Whole-Mesh semantic PASS"
+        },
+        "stage": "S2",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-partial",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "path": "metadata://fixture/motion.bin",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          },
+          {
+            "role": "motion",
+            "version_id": "ver:fixture-motion-1",
+            "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source": "metadata://fixture/motion.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [
+            "motion"
+          ],
+          "locked_components": [
+            {
+              "role": "mesh",
+              "lock_mode": "SEMANTIC",
+              "canonicalization": {
+                "id": "canon:mesh-geometry",
+                "version": "0.0.0-unimplemented",
+                "status": "NOT_IMPLEMENTED"
+              },
+              "digest_scope": "PARTIAL",
+              "baseline_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "after_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "contract-document only",
+          "items": [
+            {
+              "check": "semantic_lock_comparison",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "PARTIAL",
+              "claims_whole_mesh_semantics": true,
+              "evidence": "illegal claim: PARTIAL digest reported as Whole-Mesh semantic PASS"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin",
+            "metadata://fixture/motion.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "PARTIAL digest must not be reported as Whole-Mesh semantic PASS"
+      }
+    },
+    {
+      "id": "invalid/semantic_unknown_normalizer_pass",
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "SEMANTIC lock with NOT_IMPLEMENTED normalizer must be NOT_RUN, not PASS"
+        },
+        "stage": "S2",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-normalizer",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "path": "metadata://fixture/motion.bin",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          },
+          {
+            "role": "motion",
+            "version_id": "ver:fixture-motion-1",
+            "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "source": "metadata://fixture/motion.bin"
+          }
+        ],
+        "lock_declaration": {
+          "editable_components": [
+            "motion"
+          ],
+          "locked_components": [
+            {
+              "role": "mesh",
+              "lock_mode": "SEMANTIC",
+              "canonicalization": {
+                "id": "canon:unspecified",
+                "version": "0.0.0-unimplemented",
+                "status": "NOT_IMPLEMENTED"
+              },
+              "digest_scope": "FULL",
+              "baseline_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "after_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ]
+        },
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "contract-document only",
+          "items": [
+            {
+              "check": "semantic_lock_comparison",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "illegal claim: unimplemented normalizer reported as PASS"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin",
+            "metadata://fixture/motion.bin"
+          ]
+        }
+      },
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "SEMANTIC lock with NOT_IMPLEMENTED normalizer must be NOT_RUN, not PASS"
+      }
+    },
+    {
+      "id": "valid/non_fixture_shape",
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "non-fixture product-contract shape; schema does not require fixture field; TEST_FIXTURE provenance lives in the outer envelope"
+      },
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "stage": "S1",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-s1",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; F0 INPUT_NOT_SUPPLIED; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/mesh.bin"
+          }
+        ],
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "file-and-contract-only; no engine/generation execution",
+          "items": [
+            {
+              "check": "reference_integrity",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only: role and file references declared; machine-format check only"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation",
+            "gltf_validator"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin"
+          ]
+        }
+      }
+    },
+    {
+      "id": "invalid/undeclared_component_source",
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "components[].source references an undeclared file"
+      },
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "S1 file/contract-only shape; engine_version=UNKNOWN must not block this check"
+        },
+        "stage": "S1",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-s1",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; F0 INPUT_NOT_SUPPLIED; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "metadata://fixture/UNDECLARED.bin"
+          }
+        ],
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "file-and-contract-only; no engine/generation execution",
+          "items": [
+            {
+              "check": "reference_integrity",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only: role and file references declared; machine-format check only"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation",
+            "gltf_validator"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin"
+          ]
+        }
+      }
+    },
+    {
+      "id": "invalid/component_hash_mismatch",
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "components[].content_hash != referenced file declared sha256"
+      },
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "S1 file/contract-only shape; engine_version=UNKNOWN must not block this check"
+        },
+        "stage": "S1",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-s1",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; F0 INPUT_NOT_SUPPLIED; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "metadata://fixture/mesh.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+            "source": "metadata://fixture/mesh.bin"
+          }
+        ],
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "file-and-contract-only; no engine/generation execution",
+          "items": [
+            {
+              "check": "reference_integrity",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only: role and file references declared; machine-format check only"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation",
+            "gltf_validator"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "metadata://fixture/mesh.bin"
+          ]
+        }
+      }
+    },
+    {
+      "id": "invalid/absolute_public_ref",
+      "test_fixture": {
+        "marker": "TEST_FIXTURE",
+        "metadata_only": true,
+        "note": "local absolute path must be rejected by the public-reference boundary"
+      },
+      "document": {
+        "contract_id": "AW-CONTRACT-001",
+        "schema_version": "1.0.0",
+        "fixture": {
+          "marker": "TEST_FIXTURE",
+          "metadata_only": true,
+          "note": "S1 file/contract-only shape; engine_version=UNKNOWN must not block this check"
+        },
+        "stage": "S1",
+        "asset": {
+          "asset_id": "asset:fixture-001",
+          "version_id": "ver:fixture-001-s1",
+          "content_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "input": {
+          "input_id": "F0:TEST_FIXTURE",
+          "authorization": {
+            "declaration": "metadata-only TEST_FIXTURE; F0 INPUT_NOT_SUPPLIED; no rights granted",
+            "authorized": false
+          },
+          "license": {
+            "id": "UNKNOWN",
+            "usage_scope": "metadata-only"
+          },
+          "files": [
+            {
+              "path": "/Users/TEST_FIXTURE_PRIVATE/example.bin",
+              "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "source_format": "UNKNOWN",
+          "units": "UNKNOWN",
+          "known_correct": null
+        },
+        "components": [
+          {
+            "role": "mesh",
+            "version_id": "ver:fixture-mesh-1",
+            "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "source": "/Users/TEST_FIXTURE_PRIVATE/example.bin"
+          }
+        ],
+        "validation_report": {
+          "checker_version": "contract_check.mjs/1.0.0",
+          "engine_version": "UNKNOWN",
+          "scope": "file-and-contract-only; no engine/generation execution",
+          "items": [
+            {
+              "check": "reference_integrity",
+              "target": "mesh",
+              "status": "PASS",
+              "digest_scope": "FULL",
+              "claims_whole_mesh_semantics": false,
+              "evidence": "metadata-only: role and file references declared; machine-format check only"
+            }
+          ],
+          "not_run": [
+            "engine_import",
+            "real_generation",
+            "gltf_validator"
+          ],
+          "manual_handling": [],
+          "artifact_refs": [
+            "/Users/TEST_FIXTURE_PRIVATE/example.bin"
+          ]
+        }
+      }
+    }
+  ]
+}

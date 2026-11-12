@@ -353,7 +353,7 @@ fn issue(code: IssueCode, field_path: impl Into<String>, message: impl Into<Stri
 }
 
 fn nonblank(value: &Option<String>) -> bool {
-    value.as_ref().is_some_and(|s| !s.is_empty())
+    value.as_ref().is_some_and(|s| !s.trim().is_empty())
 }
 
 /// 唯一可调用验证入口：UI/Agent 提交同一 `GenerationSpecRequest` + 同一 `TrustedContext`。

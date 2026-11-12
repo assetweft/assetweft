@@ -304,3 +304,68 @@ fn reordered_lock_conflict_reports_actual_numeric_index() {
         );
     }
 }
+
+/// Check each required free-text declaration independently, retaining exact wire bytes.
+fn required_text_regression(path: &str, set: impl Fn(&mut Case, &str)) {
+    let mut positive = case("valid_pending_inference");
+    assert!(validate(&positive.request, &positive.context).is_declaration_consistent());
+    // Surrounding whitespace on a nonempty declaration must not be normalized away.
+    set(&mut positive, " \tfixture:declared-value\n");
+    let before = format!("{:?}{:?}", positive.request, positive.context);
+    assert!(validate(&positive.request, &positive.context).is_declaration_consistent());
+    assert_eq!(
+        format!("{:?}{:?}", positive.request, positive.context),
+        before
+    );
+    for blank in [" ", "\t\r\n", "\u{2003}\u{00a0}"] {
+        let mut negative = case("valid_pending_inference");
+        set(&mut negative, blank);
+        let out = validate(&negative.request, &negative.context);
+        assert_eq!(out.status, STATUS_REJECTED, "{path}: {:?}", out.issues);
+        assert_eq!(out.issues.len(), 1, "{path}: {:?}", out.issues);
+        assert_eq!(out.issues[0].code, IssueCode::InputIncomplete, "{path}");
+        assert_eq!(out.issues[0].field_path, path);
+    }
+}
+
+#[test]
+fn required_base_version_rejects_whitespace() {
+    required_text_regression("base_version", |c, value| {
+        c.request.base_version = Some(value.into())
+    });
+}
+
+#[test]
+fn required_reference_id_rejects_whitespace() {
+    required_text_regression("references[0].reference_id", |c, value| {
+        c.request.references[0].reference_id = Some(value.into())
+    });
+}
+
+#[test]
+fn required_output_contract_rejects_whitespace() {
+    required_text_regression("output_contract", |c, value| {
+        c.request.output_contract = Some(value.into())
+    });
+}
+
+#[test]
+fn required_environment_rejects_whitespace() {
+    required_text_regression("allowed_environment", |c, value| {
+        c.request.allowed_environment = Some(value.into())
+    });
+}
+
+#[test]
+fn required_completion_path_rejects_whitespace() {
+    required_text_regression("completion[0].path", |c, value| {
+        c.request.completion[0].path = Some(value.into())
+    });
+}
+
+#[test]
+fn required_trusted_contract_id_rejects_whitespace() {
+    required_text_regression("context.contract_id", |c, value| {
+        c.context.contract_id = Some(value.into())
+    });
+}

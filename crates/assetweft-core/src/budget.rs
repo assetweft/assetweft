@@ -3,6 +3,7 @@
 //! Invariants: no provider, authentication or money transfer; IMMEDIATE transactions end
 //! before callbacks. ATTEMPTING is uncertain after interruption, never retryable. UNKNOWN
 //! retains its reservation. Only an explicit authoritative receipt settles/reclaims it.
+//! Cancelling PREPARING releases locally, atomically with its non-replayable terminal state.
 //! Units are integer counts in their declared scale, never converted. Shell can bypass this
 //! policy. Request fingerprints are caller declarations, not provider idempotency guarantees.
 use crate::library::{LibraryError, require_current};
@@ -240,9 +241,14 @@ pub(crate) fn unknown(c: &mut Connection, id: &str) -> Result<()> {
 pub(crate) fn cancel(c: &mut Connection, id: &str) -> Result<()> {
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_current(&tx)?;
-    if tx.execute("UPDATE aw_budget_intents SET cancelled=1 WHERE id=?1", [id])? != 1 {
-        return Err(invalid("unknown call"));
+    let i = intent(&tx, id)?.ok_or_else(|| invalid("unknown call"))?;
+    // Claim takes the same write lock: PREPARING proves no callback was submitted.
+    // This is a local release, not a synthesized provider/query receipt. Terminal
+    // states cannot release twice; ATTEMPTING/UNKNOWN still require reconciliation.
+    if i.state == State::Preparing {
+        settle(&tx, &i, 0, "RELEASED")?;
     }
+    tx.execute("UPDATE aw_budget_intents SET cancelled=1 WHERE id=?1", [id])?;
     tx.commit()?;
     Ok(())
 }

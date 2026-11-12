@@ -131,9 +131,16 @@ fn interrupted_attempt_is_uncertain_and_workflow_stays_running() {
         .unwrap()
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
+    a.cancel_call("c").unwrap();
+    a.cancel_call("c").unwrap();
+    assert_eq!(a.call_intent("c").unwrap().unwrap().charge, None);
+    assert_eq!(a.budget_balance("a").unwrap().reserved, 10);
+    assert!(a.reserve_call(&request("blocked-after-panic", 1)).is_err());
     a.reconcile_call("c", &receipt("unknown", Resolution::Unresolved))
         .unwrap();
     assert_eq!(a.call_intent("c").unwrap().unwrap().state, State::Unknown);
+    a.cancel_call("c").unwrap();
+    assert_eq!(a.budget_balance("a").unwrap().reserved, 10);
     assert_eq!(
         a.workflow_steps("r").unwrap()[0].state,
         assetweft_core::workflow::State::Running
@@ -145,6 +152,9 @@ fn interrupted_attempt_is_uncertain_and_workflow_stays_running() {
     )
     .unwrap();
     assert_eq!(a.budget_balance("a").unwrap().reserved, 0);
+    a.cancel_call("c").unwrap();
+    let b = a.budget_balance("a").unwrap();
+    assert_eq!((b.reserved, b.spent), (0, 0));
     assert!(
         !a.submit_test_fixture("c", || panic!("released is not retryable"))
             .unwrap()
@@ -268,7 +278,7 @@ fn units_unknown_zero_bounds_and_receipts_are_preserved() {
     assert!(a.reserve_call(&r).is_err());
 }
 #[test]
-fn callback_holds_no_transaction_and_cancel_does_not_release() {
+fn callback_holds_no_transaction_and_uncertain_cancel_does_not_release() {
     let d = tempdir().unwrap();
     let p = d.path().join("db");
     let mut a = setup(&p);
@@ -287,6 +297,7 @@ fn callback_holds_no_transaction_and_cancel_does_not_release() {
     );
     assert_eq!(a.budget_balance("a").unwrap().reserved, 10);
     a.cancel_call("other").unwrap();
+    assert_eq!(a.budget_balance("a").unwrap().reserved, 6);
     assert!(
         !a.submit_test_fixture("other", || panic!("cancelled"))
             .unwrap()
@@ -355,4 +366,124 @@ fn migration_004_rollback_and_faithful_v3_evolution() {
         .unwrap();
     assert!(Application::open(&p2).is_err());
     assert!(a.approve_budget(&allowance(Unit::Token, 2)).is_err());
+}
+
+#[test]
+fn preparing_cancel_releases_once_across_reopen() {
+    let d = tempdir().unwrap();
+    let p = d.path().join("db");
+    let mut a = setup(&p);
+    let approved = allowance(Unit::Token, 10);
+    a.approve_budget(&approved).unwrap();
+    let r = request("never-submitted", 10);
+    a.reserve_call(&r).unwrap();
+    a.cancel_call(&r.id).unwrap();
+    let b = a.budget_balance("a").unwrap();
+    assert_eq!((b.reserved, b.spent), (0, 0));
+    a.reserve_call(&request("replacement", 10)).unwrap();
+    for _ in 0..2 {
+        a.close().unwrap();
+        a = setup(&p);
+        a.cancel_call(&r.id).unwrap();
+        let i = a.reserve_call(&r).unwrap();
+        assert_eq!(i.request, r);
+        assert_eq!(i.state, State::Released);
+        assert!(i.cancelled);
+        assert_eq!(i.charge, Some(0));
+        assert!(a.call_receipts(&r.id).unwrap().is_empty());
+        assert!(!a.submit_test_fixture(&r.id, || panic!("replayed")).unwrap());
+        let b = a.budget_balance("a").unwrap();
+        assert_eq!((b.reserved, b.spent), (10, 0));
+        assert_eq!(b.allowance, approved);
+    }
+    let mut changed = r.clone();
+    changed.input_fingerprint.push_str("changed");
+    assert!(a.reserve_call(&changed).is_err());
+    assert!(
+        a.reconcile_call(
+            &r.id,
+            &receipt("fabricated", Resolution::AuthoritativeNoCharge)
+        )
+        .is_err()
+    );
+    assert!(a.cancel_call("missing").is_err());
+    a.cancel_call("replacement").unwrap();
+    assert_eq!(a.budget_balance("a").unwrap().reserved, 0);
+}
+
+#[test]
+fn ordered_connections_cancel_and_claim_conserve_capacity() {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+    // Channels order both winners without timing assumptions; callbacks run after claim commits.
+    for cancel_first in [true, false] {
+        let d = tempdir().unwrap();
+        let p = d.path().join("db");
+        let mut a = setup(&p);
+        a.approve_budget(&allowance(Unit::Token, 10)).unwrap();
+        a.reserve_call(&request("race", 10)).unwrap();
+        let (ready_tx, ready_rx) = sync_channel(1);
+        let (go_tx, go_rx) = sync_channel(1);
+        let count = Arc::new(AtomicUsize::new(0));
+        let worker_count = count.clone();
+        let worker = std::thread::spawn(move || {
+            let mut b = Application::open(&p).unwrap();
+            if cancel_first {
+                ready_tx.send(()).unwrap();
+                go_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            b.submit_test_fixture("race", || {
+                worker_count.fetch_add(1, Ordering::SeqCst);
+                if !cancel_first {
+                    ready_tx.send(()).unwrap();
+                    go_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+            })
+            .unwrap()
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        a.cancel_call("race").unwrap();
+        let i = a.call_intent("race").unwrap().unwrap();
+        assert!(i.cancelled);
+        assert_eq!(
+            i.state,
+            if cancel_first {
+                State::Released
+            } else {
+                State::Attempting
+            }
+        );
+        let b = a.budget_balance("a").unwrap();
+        assert_eq!(
+            (b.reserved, b.spent),
+            (if cancel_first { 0 } else { 10 }, 0)
+        );
+        go_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), !cancel_first);
+        assert_eq!(count.load(Ordering::SeqCst), usize::from(!cancel_first));
+        if !cancel_first {
+            assert_eq!(
+                a.call_intent("race").unwrap().unwrap().state,
+                State::Unknown
+            );
+            a.cancel_call("race").unwrap();
+            assert_eq!(a.budget_balance("a").unwrap().reserved, 10);
+            assert!(a.reserve_call(&request("blocked", 1)).is_err());
+            let q = receipt("final", Resolution::Confirmed { charge: 4 });
+            a.reconcile_call("race", &q).unwrap();
+            a.reconcile_call("race", &q).unwrap();
+            a.cancel_call("race").unwrap();
+            assert_eq!(a.call_intent("race").unwrap().unwrap().charge, Some(4));
+            assert_eq!(a.call_receipts("race").unwrap(), vec![q]);
+        }
+        a.cancel_call("race").unwrap();
+        assert!(
+            !a.submit_test_fixture("race", || panic!("second submit"))
+                .unwrap()
+        );
+        let b = a.budget_balance("a").unwrap();
+        assert_eq!((b.reserved, b.spent), (0, if cancel_first { 0 } else { 4 }));
+        a.reserve_call(&request("reuse", if cancel_first { 10 } else { 6 }))
+            .unwrap();
+    }
 }

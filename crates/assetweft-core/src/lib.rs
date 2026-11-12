@@ -8,6 +8,7 @@
 
 /// AW-008:A shared application lifecycle and bounded validation entry.
 pub mod application;
+pub mod budget;
 
 /// AW-022:A 静态几何引用检查；不解析外部资源。
 pub mod geometry;

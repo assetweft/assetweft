@@ -257,3 +257,52 @@ impl Application {
             .map_err(|(_connection, error)| error)
     }
 }
+
+// M2 typed policy entry; callbacks below are explicitly local TEST_FIXTURE only.
+impl Application {
+    /// Records immutable caller-declared capacity; not authenticated consent.
+    pub fn approve_budget(&mut self, a: &crate::budget::Allowance) -> Result<(), LibraryError> {
+        crate::budget::approve(&mut self.connection, a)
+    }
+    pub fn budget_balance(&self, id: &str) -> Result<crate::budget::Balance, LibraryError> {
+        crate::budget::balance(&self.connection, id)
+    }
+    pub fn reserve_call(
+        &mut self,
+        r: &crate::budget::Request,
+    ) -> Result<crate::budget::Intent, LibraryError> {
+        crate::budget::reserve(&mut self.connection, r)
+    }
+    pub fn call_intent(&self, id: &str) -> Result<Option<crate::budget::Intent>, LibraryError> {
+        crate::budget::intent(&self.connection, id)
+    }
+    /// One local counted callback, outside transactions. Panic leaves ATTEMPTING (uncertain).
+    /// A returned callback also remains UNKNOWN until a separate explicit query receipt.
+    /// No real provider execution or provider-side idempotency is implemented.
+    pub fn submit_test_fixture(
+        &mut self,
+        id: &str,
+        callback: impl FnOnce(),
+    ) -> Result<bool, LibraryError> {
+        if !crate::budget::claim(&mut self.connection, id)? {
+            return Ok(false);
+        }
+        callback();
+        crate::budget::unknown(&mut self.connection, id)?;
+        Ok(true)
+    }
+    /// Cancellation blocks a preparing call but never releases uncertain reservations.
+    pub fn cancel_call(&mut self, id: &str) -> Result<(), LibraryError> {
+        crate::budget::cancel(&mut self.connection, id)
+    }
+    pub fn reconcile_call(
+        &mut self,
+        id: &str,
+        r: &crate::budget::Receipt,
+    ) -> Result<(), LibraryError> {
+        crate::budget::reconcile(&mut self.connection, id, r)
+    }
+    pub fn call_receipts(&self, id: &str) -> Result<Vec<crate::budget::Receipt>, LibraryError> {
+        crate::budget::receipts(&self.connection, id)
+    }
+}

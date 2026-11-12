@@ -237,7 +237,7 @@ fn migration_005_rollback_preserves_v4_and_future_is_rejected() {
             .unwrap(),
         "legacy"
     );
-    raw.execute("UPDATE aw_schema_version SET version=6", [])
+    raw.execute("UPDATE aw_schema_version SET version=7", [])
         .unwrap();
     assert!(Application::open(&path).is_err());
 }

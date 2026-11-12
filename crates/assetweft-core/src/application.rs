@@ -208,6 +208,7 @@ impl Application {
         &mut self,
         reference: &ComponentReference,
     ) -> Result<(), LibraryError> {
+        let _guard = crate::storage::reference_guard(&self.library_root)?;
         library::add_component_reference(&mut self.connection, reference)
     }
 
@@ -304,5 +305,66 @@ impl Application {
     }
     pub fn call_receipts(&self, id: &str) -> Result<Vec<crate::budget::Receipt>, LibraryError> {
         crate::budget::receipts(&self.connection, id)
+    }
+}
+
+impl Application {
+    /// Stages measured managed BYTE components. Never authorizes publication.
+    /// # Errors
+    /// Rejects semantic locks, changed locked refs, corrupt bytes and invalid descriptors.
+    pub fn propose_candidate(
+        &mut self,
+        proposal: &crate::candidate::Proposal,
+    ) -> Result<crate::candidate::Candidate, LibraryError> {
+        crate::candidate::propose(&mut self.connection, &self.library_root, proposal)
+    }
+    /// Reads the immutable staged descriptor and its explicit validation scope.
+    /// # Errors
+    /// Returns schema, database or malformed identity errors.
+    pub fn candidate(&self, id: &str) -> Result<Option<crate::candidate::Candidate>, LibraryError> {
+        crate::candidate::read(&self.connection, id)
+    }
+    /// Runs the predeclared fixture structure contract and conditionally advances current.
+    /// Returns an immutable historic receipt on replay, not a fresh validation claim.
+    /// # Errors
+    /// Returns missing/corrupt bytes, schema, lease or transaction errors.
+    pub fn attempt_accept_candidate(
+        &mut self,
+        id: &str,
+    ) -> Result<crate::candidate::Acceptance, LibraryError> {
+        crate::candidate::attempt(&mut self.connection, &self.library_root, id)
+    }
+    /// Reads the durable terminal receipt, including conflicts and its candidate-bound report.
+    /// # Errors
+    /// Returns schema, identity or stored encoding errors.
+    pub fn candidate_attempt(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::candidate::Acceptance>, LibraryError> {
+        crate::candidate::attempt_record(&self.connection, id)
+    }
+    /// Initializes an absent fixture-only current head at revision zero after GLB checks.
+    /// # Errors
+    /// Rejects required unimplemented quality, unsupported roles, existing head and IO/DB errors.
+    pub fn initialize_candidate_current(
+        &mut self,
+        version: &str,
+        contract: &crate::candidate::FixtureContract,
+    ) -> Result<crate::candidate::Current, LibraryError> {
+        crate::candidate::initialize_current(
+            &mut self.connection,
+            &self.library_root,
+            version,
+            contract,
+        )
+    }
+    /// Reads the local fixture current version, revision, and immutable declared contract.
+    /// # Errors
+    /// Returns schema, identity or database errors.
+    pub fn candidate_current(
+        &self,
+        asset: &str,
+    ) -> Result<Option<crate::candidate::Current>, LibraryError> {
+        crate::candidate::current(&self.connection, asset)
     }
 }

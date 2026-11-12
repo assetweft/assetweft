@@ -292,7 +292,7 @@ impl Application {
         crate::budget::unknown(&mut self.connection, id)?;
         Ok(true)
     }
-    /// Cancellation blocks a preparing call but never releases uncertain reservations.
+    /// Cancellation releases a never-submitted preparing call, but retains uncertain reservations.
     pub fn cancel_call(&mut self, id: &str) -> Result<(), LibraryError> {
         crate::budget::cancel(&mut self.connection, id)
     }

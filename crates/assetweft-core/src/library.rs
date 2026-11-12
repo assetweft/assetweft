@@ -8,7 +8,7 @@ use crate::sqlite::ProtoError;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{error::Error, fmt};
 
-const CURRENT_SCHEMA: i64 = 2;
+const CURRENT_SCHEMA: i64 = 3;
 const INITIAL_SQL: &str = include_str!("library/001_initial.sql");
 
 /// File availability known to this metadata-only repository. No ready state is issued.
@@ -197,6 +197,13 @@ pub(crate) fn initialize(conn: &mut Connection) -> Result<(), LibraryError> {
         tx.execute_batch(include_str!("library/002_objects.sql"))?;
         tx.execute(
             "UPDATE aw_schema_version SET version=2 WHERE singleton=1",
+            [],
+        )?;
+    }
+    if version(&tx)? == Some(2) {
+        tx.execute_batch(include_str!("library/003_workflow.sql"))?;
+        tx.execute(
+            "UPDATE aw_schema_version SET version=3 WHERE singleton=1",
             [],
         )?;
     }

@@ -1,0 +1,3 @@
+CREATE TABLE aw_workflow_runs (id TEXT PRIMARY KEY, cancelled INTEGER NOT NULL CHECK(cancelled IN (0,1)));
+CREATE TABLE aw_workflow_steps (run_id TEXT NOT NULL REFERENCES aw_workflow_runs(id), id TEXT NOT NULL, ordinal INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('PENDING','RUNNING','SUCCEEDED','FAILED')), raw TEXT, evidence TEXT, PRIMARY KEY(run_id,id), UNIQUE(run_id,ordinal));
+CREATE TABLE aw_workflow_dependencies (run_id TEXT NOT NULL, step_id TEXT NOT NULL, dependency_id TEXT NOT NULL, PRIMARY KEY(run_id,step_id,dependency_id), FOREIGN KEY(run_id,step_id) REFERENCES aw_workflow_steps(run_id,id), FOREIGN KEY(run_id,dependency_id) REFERENCES aw_workflow_steps(run_id,id));

@@ -1,6 +1,6 @@
 //! 职责: 检查单个 GLB 的静态几何引用并返回结构摘要，不读取外部资源。
 //! 依赖: validation 的有界读取与容器检查、gltf 1.4.1、std。
-//! 调用方: 核心库消费者与 geometry 集成测试。
+//! 调用方: 核心库消费者、CLI inspect JSON 与 geometry 集成测试。
 //! 不变量: 输入声明未知不等于标准约定；解析不代表渲染成功；外部 URI 不解析。
 
 use crate::validation::{
@@ -10,7 +10,7 @@ use crate::validation::{
 use std::path::Path;
 
 /// 节点局部变换；矩阵保留原始值，避免不可靠的分解。
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub enum LocalTransform {
     Matrix([[f32; 4]; 4]),
     Trs {
@@ -19,14 +19,14 @@ pub enum LocalTransform {
         scale: [f32; 3],
     },
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Node {
     pub index: usize,
     pub mesh: Option<usize>,
     pub children: Vec<usize>,
     pub transform: LocalTransform,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Primitive {
     pub mesh: usize,
     pub primitive: usize,
@@ -34,7 +34,7 @@ pub struct Primitive {
     pub attributes: Vec<(String, usize)>,
     pub indices: Option<usize>,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub enum Resource {
     Embedded {
         available: bool,
@@ -46,25 +46,25 @@ pub enum Resource {
         length: usize,
     },
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct BufferView {
     pub buffer: usize,
     pub offset: usize,
     pub length: usize,
     pub within_declared_buffer: bool,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Accessor {
     pub view: Option<usize>,
     pub offset: usize,
     pub sparse: bool,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Material {
     pub index: usize,
     pub textures: Vec<(&'static str, usize)>,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct GeometryReport {
     pub input_units: &'static str,
     pub input_coordinates: &'static str,

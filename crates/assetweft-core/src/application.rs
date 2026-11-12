@@ -368,3 +368,43 @@ impl Application {
         crate::candidate::current(&self.connection, asset)
     }
 }
+
+// M1 opinions remain separate from M2 candidate acceptance.
+impl Application {
+    /// Appends an exact-version opinion; duplicate feedback IDs fail without overwriting.
+    /// # Errors
+    /// Rejects invalid bounds, missing/mismatched versions, duplicates and database failures.
+    pub fn append_feedback(
+        &mut self,
+        feedback: &crate::history::Feedback,
+    ) -> Result<crate::history::FeedbackRecord, LibraryError> {
+        crate::history::append(&mut self.connection, feedback)
+    }
+    /// Returns bounded newest-first history; absent assets/versions yield an empty list.
+    /// # Errors
+    /// Rejects invalid bounds, schema errors and unknown stored decisions.
+    pub fn feedback_history(
+        &mut self,
+        query: crate::history::HistoryQuery<'_>,
+    ) -> Result<Vec<crate::history::FeedbackRecord>, LibraryError> {
+        crate::history::history(&mut self.connection, query)
+    }
+    /// Latest opinion for an asset or exact version, independent of candidate/current status.
+    /// # Errors
+    /// Returns invalid identity, schema or database errors.
+    pub fn latest_feedback(
+        &mut self,
+        asset_id: &str,
+        version_id: Option<&str>,
+    ) -> Result<Option<crate::history::FeedbackRecord>, LibraryError> {
+        Ok(self
+            .feedback_history(crate::history::HistoryQuery {
+                asset_id,
+                version_id,
+                before_sequence: None,
+                limit: 1,
+            })?
+            .into_iter()
+            .next())
+    }
+}

@@ -1,0 +1,247 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "职责(responsibility): 机读表示现行 docs/CONTRACTS.md §1-§10 首条交付合同 AW-CONTRACT-001 所需的最小字段：输入(§10.3)、组件引用(§2)、锁定声明(§10.2)、增量规格(§3/§10.4)、检查报告(§8)与错误语义(§10.5)。依赖(dependencies): JSON Schema draft-07；开发期校验器 Ajv 8.17.1；Node 不是 Rust 产品运行时。调用方(callers): tools/contract_check.mjs；.github/workflows/contracts.yml（定义已准备，本卡未触发 → NOT_RUN）。不变量(invariants): TEST_FIXTURE/metadata_only 溯源放在 fixtures.json 的外包装 test_fixture 或文档内可选 fixture annotation，schema 不强制产品合同带该字段（可被非 fixture 消费者使用）；UNKNOWN/NOT_RUN 不得默认 PASS；PARTIAL 摘要不得 Whole-Mesh 语义 PASS；SEMANTIC 规范化器未实现只能 NOT_RUN；每组件按预声明 lock_mode 比自身前后摘要；公共引用不得暴露本地绝对/UNC/file/遍历/带凭据 URL；引擎版本 UNKNOWN 不阻断 S1/S2 文件/契约检查。本 schema 只描述合同文档形状，形状校验不授予任何授权、不证明真实 GLB/Rig/F0/AI 生成/引擎成功。",
+  "title": "AW-CONTRACT-001 minimal first-delivery contract instance (AW-003:A)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_id", "schema_version", "stage", "asset", "input", "components", "validation_report"],
+  "properties": {
+    "contract_id": { "type": "string", "const": "AW-CONTRACT-001" },
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["marker", "metadata_only", "note"],
+      "properties": {
+        "marker": { "type": "string", "const": "TEST_FIXTURE" },
+        "metadata_only": { "type": "boolean", "const": true },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stage": { "type": "string", "enum": ["S1", "S2", "S3"] },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "version_id", "content_hash"],
+      "properties": {
+        "asset_id": { "type": "string", "minLength": 1 },
+        "version_id": { "type": "string", "minLength": 1 },
+        "content_hash": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_id", "authorization", "license", "files", "source_format", "units", "known_correct"],
+      "properties": {
+        "input_id": { "type": "string", "minLength": 1 },
+        "authorization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["declaration", "authorized"],
+          "properties": {
+            "declaration": { "type": "string", "minLength": 1 },
+            "authorized": { "type": "boolean" }
+          }
+        },
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "usage_scope"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "usage_scope": { "type": "string", "minLength": 1 }
+          }
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "sha256": { "$ref": "#/definitions/sha256" }
+            }
+          }
+        },
+        "source_format": { "type": "string", "minLength": 1 },
+        "units": {
+          "oneOf": [
+            { "type": "string", "const": "UNKNOWN" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["length_unit", "axis", "bind_pose"],
+              "properties": {
+                "length_unit": { "type": "string", "minLength": 1 },
+                "axis": { "type": "string", "minLength": 1 },
+                "bind_pose": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        },
+        "known_correct": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["confirmed_by", "confirmed_at", "standard"],
+              "properties": {
+                "confirmed_by": { "type": "string", "minLength": 1 },
+                "confirmed_at": { "type": "string", "minLength": 1 },
+                "standard": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "version_id", "content_hash", "source"],
+        "properties": {
+          "role": { "$ref": "#/definitions/role" },
+          "version_id": { "type": "string", "minLength": 1 },
+          "content_hash": { "$ref": "#/definitions/sha256" },
+          "source": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "lock_declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["editable_components", "locked_components"],
+      "properties": {
+        "editable_components": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/role" }
+        },
+        "locked_components": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "lock_mode", "canonicalization", "digest_scope", "baseline_digest", "after_digest"],
+            "properties": {
+              "role": { "$ref": "#/definitions/role" },
+              "lock_mode": { "$ref": "#/definitions/lock_mode" },
+              "canonicalization": { "$ref": "#/definitions/canonicalization" },
+              "digest_scope": { "$ref": "#/definitions/digest_scope" },
+              "baseline_digest": { "$ref": "#/definitions/sha256_or_null" },
+              "after_digest": { "$ref": "#/definitions/sha256_or_null" }
+            }
+          }
+        }
+      }
+    },
+    "increment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_version", "input_refs", "output_contract", "budget", "allowed_environment"],
+      "properties": {
+        "base_version": { "type": "string", "minLength": 1 },
+        "input_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "output_contract": { "type": "string", "minLength": 1 },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_calls", "cost_status", "cost_value"],
+          "properties": {
+            "max_calls": { "type": "integer", "minimum": 0 },
+            "cost_status": { "type": "string", "enum": ["unknown", "known"] },
+            "cost_value": {
+              "oneOf": [
+                { "type": "number", "minimum": 0 },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "allowed_environment": { "type": "string", "minLength": 1 }
+      }
+    },
+    "validation_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checker_version", "engine_version", "scope", "items", "not_run", "manual_handling", "artifact_refs"],
+      "properties": {
+        "checker_version": { "type": "string", "minLength": 1 },
+        "engine_version": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string", "minLength": 1 },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["check", "target", "status", "digest_scope", "claims_whole_mesh_semantics", "evidence"],
+            "properties": {
+              "check": { "type": "string", "minLength": 1 },
+              "target": { "$ref": "#/definitions/item_target" },
+              "status": { "$ref": "#/definitions/status" },
+              "digest_scope": { "$ref": "#/definitions/digest_scope" },
+              "claims_whole_mesh_semantics": { "type": "boolean" },
+              "evidence": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "not_run": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "manual_handling": { "type": "array", "items": { "type": "string" } },
+        "artifact_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  },
+  "definitions": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sha256_or_null": {
+      "oneOf": [
+        { "$ref": "#/definitions/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "role": {
+      "type": "string",
+      "enum": ["mesh", "materials", "rig", "motion", "vfx", "audio", "dialogue"]
+    },
+    "item_target": {
+      "type": "string",
+      "enum": ["mesh", "materials", "rig", "motion", "vfx", "audio", "dialogue", "asset"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "NOT_RUN", "WAIVED", "INPUT_INCOMPLETE", "LOCK_VIOLATION", "NONDETERMINISTIC"]
+    },
+    "digest_scope": {
+      "type": "string",
+      "enum": ["FULL", "PARTIAL", "NOT_DEFINED", "NOT_APPLICABLE"]
+    },
+    "lock_mode": {
+      "type": "string",
+      "enum": ["BYTE", "SEMANTIC"]
+    },
+    "canonicalization": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "status"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 },
+            "status": { "type": "string", "enum": ["IMPLEMENTED", "NOT_IMPLEMENTED"] }
+          }
+        }
+      ]
+    }
+  }
+}

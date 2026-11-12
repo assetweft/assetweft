@@ -1,0 +1,22 @@
+{
+  "name": "assetweft-contract-check",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AW-003:A local development-only contract fixture checker. Node/Ajv are dev tooling, NOT the Rust product runtime.",
+  "scripts": {
+    "check": "node tools/contract_check.mjs --manifest contracts/fixtures/manifest.json --fixtures contracts/fixtures/fixtures.json --schema contracts/first-delivery-contract.schema.json",
+    "test": "node --test tools/contract_check.test.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.17.1"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "x-aw003": {
+    "responsibility": "pin the single dev dependency (Ajv 8.17.1) used by the contract fixture gate",
+    "dependencies": "npm registry (version/integrity verified before install); existing Node 24 toolchain",
+    "callers": "tools/contract_check.mjs, .github/workflows/contracts.yml (CI NOT_RUN)",
+    "invariants": "no runtime dependency for the Rust product; no install scripts that add global runtimes or drivers"
+  }
+}

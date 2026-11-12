@@ -1,4 +1,4 @@
-//! 职责: 共享应用库入口；导出合同词表、应用与本地资产库、验证和几何检查模块。
+//! 职责: 共享应用库入口；导出合同词表、应用与本地资产库、验证、几何和 Rig 数值检查模块。
 //! 依赖: 词表使用 std；子模块分别使用 rusqlite、gltf 与 sha2。
 //! 调用方: 将来的 CLI、桌面与验证入口；当前由本模块单元测试和 C1 调用。
 //! 不变量: 未知合同值必须返回错误，不得静默默认；`NOT_DEFINED` 是"未定义摘要"的声明状态，
@@ -16,6 +16,9 @@ pub mod geometry;
 pub mod library;
 /// Managed immutable content storage behind Application.
 pub mod storage;
+
+/// AW-022:B partial bound-skin numeric inspection; no pose evaluation.
+pub mod rig;
 
 /// AW-004:A SQLite 文件持久化原型；不依赖验证模块或模型执行。
 pub mod sqlite;

@@ -4,3 +4,7 @@
 pub(crate) mod application;
 pub mod domain;
 pub(crate) mod ports;
+pub(crate) mod workflow_application;
+pub mod workflow_domain;
+pub(crate) mod workflow_ports;
+pub(crate) mod workflow_sqlite;

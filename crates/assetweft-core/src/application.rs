@@ -182,12 +182,7 @@ impl Application {
         run: &str,
         driver: impl FnOnce(&str) -> crate::workflow::Outcome,
     ) -> Result<bool, LibraryError> {
-        let Some(id) = self.claim_workflow_step(run)? else {
-            return Ok(false);
-        };
-        let outcome = driver(&id);
-        self.finish_workflow_step(run, &id, &outcome)?;
-        Ok(true)
+        crate::workflow::run(&mut self.connection, run, driver)
     }
     /// Prevents future claims; does not stop a running callback or assert remote billing stopped.
     /// # Errors

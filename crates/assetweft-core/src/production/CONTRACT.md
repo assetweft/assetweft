@@ -30,3 +30,26 @@ candidate.rs as explicit migration debt. Other Production workflows/budget/histo
 Catalog versions and references, schema/migrations and product acceptance scope
 are outside this batch. Existing real-file candidate integration tests remain
 unchanged; port substitutes test orchestration only, not SQLite correctness.
+
+## Persistent workflows (W2a)
+
+`workflow_domain` owns the SAME Step/Outcome/State/StepRecord values explicitly
+re-exported by `workflow`, graph/bounds validation, persisted state/result policy
+and ordinal ready/dependency policy. `workflow_application` owns create/read/
+claim/finish/cancel/run use cases through WorkflowQuery/WorkflowRuns. Their error
+is an associated stable application category, with PolicyError translated at the
+concrete boundary; no DB handle, SQL row count or vendor type enters core.
+
+`workflow_sqlite` is the sole runtime writer of aw_workflow_runs,
+aw_workflow_steps and aw_workflow_dependencies. It retains original SQL/parameters,
+IMMEDIATE transaction and schema checks. The existing SQL ready projection is
+confirmed by pure core policy against records/dependencies read within that SAME
+transaction; claim is committed before returning. Cancellation prevents future
+claims without changing results. RUNNING blocks all further claims until explicit
+finish/reconciliation; outcome recording failure or driver panic does not replay.
+Original wire/types/errors and ordinal order remain stable. `workflow` composes
+adapters/use cases; Application delegates the actual driver orchestration there.
+No automatic invocation, remote execution, paid inference or new functionality.
+Existing true-file workflow integration assertions remain unchanged; pure port
+checks establish sequencing only. Full current-head CI and independent review
+remain root-owned, not established by this local migration.

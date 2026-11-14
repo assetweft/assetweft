@@ -1,6 +1,6 @@
 //! Responsibility: Catalog SQLite immutable metadata and exact-reference persistence.
 //! Dependencies: rusqlite, existing library migration/error guard and storage retention lease.
-//! Callers: compatibility Application and still-unmigrated concrete adapters via library forwards.
+//! Callers: Application metadata use cases, Production staging/acceptance/initialization adapters and Catalog objects_sqlite.
 //! Invariants: lease before IMMEDIATE; asset+version atomic; borrowed insertion never commits.
 use super::{
     domain::{self, AssetVersion, ComponentReference, ComponentRole, MetadataError, Presence},

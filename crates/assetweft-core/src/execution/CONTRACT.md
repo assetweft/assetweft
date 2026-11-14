@@ -23,15 +23,15 @@ private connection with the adapter; the legacy free function forwards to it.
 Core has no RootApplication/LibraryError/rusqlite/filesystem/transport imports.
 No tables are owned here, and no schema/SQL/dependency changes are required.
 
-Actual consumers: root Application submit_executor_local_test_fixture and legacy
-executor_runtime free function; tests/executor.rs (4), tests/executor_runtime.rs (7)
-exercise old paths including real-file budget/workflow assembly. Consumption's
+Actual consumers: root Application submit_executor_local_test_fixture and the
+legacy executor_runtime free function; existing executor/executor_runtime tests
+exercise those paths including real-file budget/workflow assembly. Consumption's
 own domain/use cases remain authoritative for allowance/identity/claim policies.
-Compatibility facades remain until root W6 migrates consumers; Consumption's older
-contract consumer note is historical at this card's base and is root W7 sync debt.
+Legacy `executor`/`executor_runtime` re-export the SAME items; Application
+assembles the concrete adapter directly.
 
 Quote zero is unauthenticated fixture declaration, not provider admission or rights.
 Protocol scale >9 is explicitly UnsupportedScale for ledger use, overflow remains
 AmountOverflow, None usage stays unknown. No rounding, settlement, retry, download,
-model/provider/auth/paid behavior is added. Issue #28 remains OPEN; full affected
-workflow/budget/CLI CI, review and whole migration/product acceptance are root debt.
+model/provider/auth/paid behavior is added. Issue #28 remains OPEN; affected
+workflow/budget/CLI CI, review and whole product acceptance remain root-owned.

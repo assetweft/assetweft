@@ -9,6 +9,8 @@
 | 核查与更新日期 | 2026-11-11 |
 | 状态 | **V1.2 架构基线全面锁定与全量审计通过**（合入 Owner Q1–Q8 拍板决议、SQLite 3 WAL 默认、Unreal OpenUSD+Remote Control 直推、GitHub OAuth+Models 生态绑定、免安装三级模型算力体系与工作台内嵌 Copilot/MCP 统一桥接） |
 
+> **状态与导航（2026-11-14）**：本文是 2026-11-11 的历史产品架构基线（M1–M6 六模块、21 张目标表、AW-001..040 任务卡），保留其产品设计与审计记录，不表示这些目录、表或卡已完成。当前实际源码按五个限界上下文组织，源码级入口是 `crates/assetweft-core/src/{catalog,production,consumption,execution,assurance}/CONTRACT.md`，其中记录实际 API、表写者、事务/锁顺序、消费者与未实现项。产品设计目标与迁移顺序不在本文件复制，也不据此宣称整体 DDD 或产品验收完成。
+
 ---
 
 ## 1. 模块划分与单向依赖拓扑

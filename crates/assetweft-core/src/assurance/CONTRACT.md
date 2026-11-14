@@ -71,3 +71,13 @@ No adapter implementation is made public. Internal CLI/Application/staging and
 example consumer import migration remains a subsequent batch; this entry move
 does not complete whole-DDD migration or improve F0, rights, numerical scope,
 engine, provider, production or authorization evidence.
+
+## Canonical consumer exports (W6C2)
+
+`assurance::{read_bounded, ValidationError}` publicly re-exports the SAME
+file_input items as legacy `validation`; the concrete module stays crate-private.
+Application, CLI, Production specification/staging and the rig_blender example
+consume Assurance values and existing checks directly. CLI specification values
+come from Production; Application executor composition uses Execution and
+Consumption owners. Legacy public compatibility exports remain identical items.
+This supersedes only the preceding deferred consumer migration statement.

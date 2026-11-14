@@ -11,6 +11,8 @@ pub(crate) mod file_input;
 pub(crate) mod gltf_checks;
 mod ports;
 
+pub use file_input::{ValidationError, read_bounded};
+
 pub use domain::{
     CHECKER_VERSION, CheckItem, CheckStatus, NOT_RUN_ITEMS, RoleRequirement, RoleResult,
     SUPPORTED_FORMAT, SourceClass, SourceDeclaration, UnknownSourceClass, ValidationLimits,

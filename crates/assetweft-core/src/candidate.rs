@@ -1,15 +1,15 @@
-//! Responsibility: M2 immutable BYTE candidates and fixture-only acceptance orchestration.
-//! Dependencies: M1 typed versions/CAS, Catalog SQLite head adapter, SQLite migration 005, serde.
-//! Callers: Application and candidate integration tests.
+//! Responsibility: M2 immutable BYTE candidates and fixture staging, initialization and controlled byte validation.
+//! Dependencies: M1 typed versions/CAS, Catalog initialization adapter, Production values, migration 005.
+//! Callers: Application, single-database acceptance adapter and candidate integration tests.
 //! Invariants: immutable descriptors, exact role sets, measured managed bytes; no
 //! unauthorized pointer mutation, semantic fallback or caller-provided PASS; GLB structure only.
+use crate::production::domain::report_passes;
 use crate::{
     LockMode,
     library::{self, ComponentRole, LibraryError},
     storage,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -23,72 +23,11 @@ pub struct Proposal {
     pub contract: Option<FixtureContract>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ComponentSnapshot {
-    pub role: String,
-    pub version: String,
-    pub measured_sha256: String,
-}
-
-/// Claims stay in the referenced immutable M1 version; this is only byte evidence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Candidate {
-    pub id: String,
-    pub base_version: String,
-    pub candidate_version: String,
-    pub expected_revision: i64,
-    pub editable: Vec<String>,
-    pub base: Vec<ComponentSnapshot>,
-    pub proposed: Vec<ComponentSnapshot>,
-    pub source: String,
-    pub scope: String,
-    pub not_run: Vec<String>,
-    #[serde(default)]
-    pub contract: Option<FixtureContract>,
-}
-
-/// Compatibility paths for Catalog-owned head values.
 pub use crate::catalog::domain::{Current, FixtureContract};
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ComponentEvidence {
-    pub role: String,
-    pub version_id: String,
-    pub sha256: String,
-    pub checker_version: String,
-    pub requirement: String,
-    pub format_status: String,
-    pub role_status: String,
-    pub not_run: Vec<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcceptanceReport {
-    pub scope: String,
-    pub source: String,
-    pub components: Vec<ComponentEvidence>,
-    pub not_run: Vec<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Acceptance {
-    NotRun {
-        candidate: Candidate,
-        reason: String,
-        report: Option<AcceptanceReport>,
-    },
-    Rejected {
-        candidate: Candidate,
-        report: AcceptanceReport,
-    },
-    Accepted {
-        candidate: Candidate,
-        current: Current,
-        report: AcceptanceReport,
-    },
-    Conflict {
-        candidate: Candidate,
-        current: Current,
-        report: AcceptanceReport,
-    },
-}
+/// Compatibility paths for Production and Catalog owned values.
+pub use crate::production::domain::{
+    Acceptance, AcceptanceReport, Candidate, ComponentEvidence, ComponentSnapshot,
+};
 
 fn id_ok(id: &str) -> bool {
     !id.is_empty()
@@ -294,10 +233,10 @@ fn wait_storage<T>(
         }
     }
 }
-fn guard(root: &Path) -> Result<storage::Guard, LibraryError> {
+pub(crate) fn guard(root: &Path) -> Result<storage::Guard, LibraryError> {
     wait_storage(|| storage::reference_guard(root))
 }
-fn measured(
+pub(crate) fn measured(
     conn: &mut Connection,
     root: &Path,
     id: &str,
@@ -318,7 +257,7 @@ fn measured(
         Ok(value) => value.ok_or_else(|| invalid("unmanaged component")),
     })
 }
-fn check_refs(
+pub(crate) fn check_refs(
     conn: &mut Connection,
     owner: &str,
     measured: &[ComponentSnapshot],
@@ -334,7 +273,7 @@ fn check_refs(
     }
     Ok(())
 }
-fn validate_components(
+pub(crate) fn validate_components(
     conn: &mut Connection,
     root: &Path,
     snapshots: &[ComponentSnapshot],
@@ -410,13 +349,6 @@ fn validate_components(
     }
     Ok(report)
 }
-fn report_passes(report: &AcceptanceReport, count: usize) -> bool {
-    report.components.len() == count
-        && report
-            .components
-            .iter()
-            .all(|r| r.format_status == "PASS" && r.role_status == "PASS")
-}
 /// Bootstrap only an absent fixture current; never reset an existing head/revision.
 pub(crate) fn initialize_current(
     conn: &mut Connection,
@@ -464,111 +396,4 @@ pub(crate) fn attempt_record(
         .optional()?;
     raw.map(|s| serde_json::from_str(&s).map_err(|_| invalid("stored acceptance receipt")))
         .transpose()
-}
-fn record(conn: &Connection, id: &str, result: &Acceptance) -> Result<(), LibraryError> {
-    let json = serde_json::to_string(result).map_err(|_| invalid("acceptance encoding"))?;
-    conn.execute(
-        "INSERT INTO aw_candidate_attempts(candidate_id,receipt) VALUES(?1,?2)",
-        params![id, json],
-    )?;
-    Ok(())
-}
-pub(crate) fn attempt(
-    conn: &mut Connection,
-    root: &Path,
-    id: &str,
-) -> Result<Acceptance, LibraryError> {
-    if let Some(old) = attempt_record(conn, id)? {
-        return Ok(old);
-    }
-    let candidate = read(conn, id)?.ok_or_else(|| invalid("missing candidate"))?;
-    let pending = match &candidate.contract {
-        None => Some("no predeclared GLB structure contract"),
-        Some(c) if !c.required_quality.is_empty() => Some("required quality NOT_RUN"),
-        _ => None,
-    };
-    let report = if pending.is_none() {
-        Some(validate_components(
-            conn,
-            root,
-            &candidate.proposed,
-            candidate.contract.as_ref().expect("checked contract"),
-        )?)
-    } else {
-        None
-    };
-    // Also remeasure locked/base bytes, including components unchanged by the proposal.
-    if pending.is_none() {
-        for s in &candidate.base {
-            if measured(conn, root, &s.version)?.content_hash != s.measured_sha256 {
-                return Err(invalid("base byte drift"));
-            }
-        }
-    }
-    let _guard = guard(root)?;
-    check_refs(conn, &candidate.base_version, &candidate.base)?;
-    check_refs(conn, &candidate.candidate_version, &candidate.proposed)?;
-    let owner = library::asset_version(conn, &candidate.base_version)?
-        .ok_or_else(|| invalid("base version"))?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    library::require_current(&tx)?;
-    if let Some(old) = attempt_record(&tx, id)? {
-        return Ok(old);
-    }
-    let result = if let Some(reason) = pending {
-        Acceptance::NotRun {
-            candidate,
-            reason: reason.into(),
-            report: None,
-        }
-    } else {
-        let report = report.expect("validation ran");
-        if report.components.len() != candidate.proposed.len() {
-            Acceptance::NotRun {
-                candidate,
-                reason: "unsupported component role/source/format NOT_RUN".into(),
-                report: Some(report),
-            }
-        } else if !report_passes(&report, candidate.proposed.len()) {
-            Acceptance::Rejected { candidate, report }
-        } else if let Some(head) = crate::catalog::sqlite_store::current(&tx, &owner.asset_id)? {
-            if Some(&head.contract) != candidate.contract.as_ref() {
-                Acceptance::NotRun {
-                    candidate,
-                    reason: "current contract mismatch".into(),
-                    report: Some(report),
-                }
-            } else {
-                let (changed, current) = crate::catalog::sqlite_store::advance(
-                    &tx,
-                    &owner.asset_id,
-                    &candidate.base_version,
-                    candidate.expected_revision,
-                    &candidate.candidate_version,
-                )?;
-                if changed == 1 {
-                    Acceptance::Accepted {
-                        candidate,
-                        current,
-                        report,
-                    }
-                } else {
-                    Acceptance::Conflict {
-                        candidate,
-                        current,
-                        report,
-                    }
-                }
-            }
-        } else {
-            Acceptance::NotRun {
-                candidate,
-                reason: "current not initialized".into(),
-                report: Some(report),
-            }
-        }
-    };
-    record(&tx, id, &result)?;
-    tx.commit()?;
-    Ok(result)
 }

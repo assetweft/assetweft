@@ -428,7 +428,11 @@ impl Application {
         &mut self,
         feedback: &crate::history::Feedback,
     ) -> Result<crate::history::FeedbackRecord, LibraryError> {
-        crate::history::append(&mut self.connection, feedback)
+        crate::catalog::feedback::append(
+            &mut crate::catalog::sqlite_feedback::SqliteFeedback(&mut self.connection),
+            feedback,
+        )
+        .map_err(Into::into)
     }
     /// Returns bounded newest-first history; absent assets/versions yield an empty list.
     /// # Errors
@@ -437,7 +441,11 @@ impl Application {
         &mut self,
         query: crate::history::HistoryQuery<'_>,
     ) -> Result<Vec<crate::history::FeedbackRecord>, LibraryError> {
-        crate::history::history(&mut self.connection, query)
+        crate::catalog::feedback::history(
+            &mut crate::catalog::sqlite_feedback::SqliteFeedback(&mut self.connection),
+            query,
+        )
+        .map_err(Into::into)
     }
     /// Latest opinion for an asset or exact version, independent of candidate/current status.
     /// # Errors
@@ -447,15 +455,12 @@ impl Application {
         asset_id: &str,
         version_id: Option<&str>,
     ) -> Result<Option<crate::history::FeedbackRecord>, LibraryError> {
-        Ok(self
-            .feedback_history(crate::history::HistoryQuery {
-                asset_id,
-                version_id,
-                before_sequence: None,
-                limit: 1,
-            })?
-            .into_iter()
-            .next())
+        crate::catalog::feedback::latest(
+            &mut crate::catalog::sqlite_feedback::SqliteFeedback(&mut self.connection),
+            asset_id,
+            version_id,
+        )
+        .map_err(Into::into)
     }
 }
 

@@ -29,7 +29,7 @@ a lease. Duplicate receipts, readonly/unknown-schema errors, UNKNOWN/MISSING
 metadata and fixture-only scope retain their existing handling.
 
 AssetHead and immutable version/reference ownership now reside in Catalog.
-Object and feedback ownership still use storage/history modules. No production acceptance,
+Object ownership still uses storage; feedback ownership now resides in Catalog. No production acceptance,
 validation capability, schema migration or broader D1 completion is implied.
 
 Hexagonal migration status: these Connection/Transaction functions remain
@@ -86,7 +86,25 @@ The borrowed helper is concrete adapter collaboration, not a semantic core port.
 library::validate/asset_version/component_references are explicit compatibility
 forwards to Catalog for candidate snapshots, measurement/validation and acceptance
 owner lookup. Their orchestration is unchanged. Managed-object ownership,
-initialization/staging, feedback/history, Production workflow/budget/executor,
+initialization/staging, Production workflow/budget/executor,
 full port migration and overall DDD acceptance remain debt. Existing integration
 tests are unchanged; pure use-case substitutes prove validation/delegation only,
 while focused real-file tests check lease/error ordering and facade translations.
+
+## Exact-version feedback
+
+Catalog domain owns Decision, Feedback, FeedbackRecord, HistoryQuery and their
+existing constants and pure ordered validation. Legacy history paths re-export
+the identical values. feedback::{append,history,latest} depend only on the
+purpose-owned Feedback capability and domain values; Application composes
+SqliteFeedback and translates the existing stable MetadataError categories
+losslessly to LibraryError. No connection or vendor error crosses this port.
+
+sqlite_feedback owns unchanged INSERT/SELECT, parameters, row decoding, schema
+check and transaction lifecycle. Append validation precedes IMMEDIATE and schema
+check; exact asset/version existence remains enforced atomically by migration
+006's binding trigger. Append-only/update/delete triggers and sequence semantics
+are unchanged. History uses a deferred checked transaction, descending local
+sequence and strict before cursor. latest is exactly history with limit one.
+Migration/connection infrastructure remains in library/sqlite; this is disclosed
+adapter coupling. Opinions never imply candidate acceptance, rights or readiness.

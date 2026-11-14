@@ -2,8 +2,8 @@
 //!        唯一可调用验证入口 `validate(request, context)`；只做声明一致性对照，外加少量线性
 //!        `recipe_examples()`（明确 NOT_EXECUTED）。不是 CLI 包装、节点/DAG 平台、调度器或 LLM 解析器。
 //! 依赖: std、serde 1.0.229 / serde_json 1.0.154（已锁的成熟 wire 解析，不是第二套验证引擎）；
-//!        复用 crate 既有 `LockMode`/`LockStatus`（lib.rs）与 `SourceClass`/`SourceDeclaration`（validation.rs）。
-//! 调用方: 将来 CLI/桌面/Agent 共用此类型与 `validate`；本卡由 `tests/generation_spec.rs` 与 C1 调用。
+//!        复用 crate 既有 `LockMode`/`LockStatus`（lib.rs）与 `SourceClass`/`SourceDeclaration`（Assurance）。
+//! 调用方: CLI/桌面/Agent 共用此类型与 `validate`；本卡由 `tests/generation_spec.rs` 与 C1 调用。
 //! 不变量:
 //!  1. 请求来自不可信方；锁定范围以**调用方预声明**的 `TrustedContext.declared_locks` 为准，
 //!     请求删空/省略/篡改/冲突 locked 范围一律 `LOCK_VIOLATION` 并附明确原因，绝不自删锁获得授权。
@@ -18,7 +18,7 @@
 
 use serde::Deserialize;
 
-use crate::validation::{SourceClass, SourceDeclaration};
+use crate::assurance::{SourceClass, SourceDeclaration};
 use crate::{LockMode, LockStatus};
 
 /// 本验证器版本（与 crate 版本一致）；报告只表示声明一致性，不表示能力验收。

@@ -1,15 +1,15 @@
 //! Responsibility: shared application entry and SQLite connection lifecycle.
-//! Dependencies: the existing SQLite configuration and bounded file validation modules.
+//! Dependencies: the SQLite configuration, Assurance checks and owning context composition.
 //! Callers: future CLI and desktop adapters; integration tests exercise the public API.
 //! Invariants: no SQL or transaction escapes this module or the library repository;
 //! validation is bounded, and no transaction is held while validation runs.
 //! Hash-reference insertion takes the storage lease before SQLite, like object collection.
 
+use crate::assurance::{
+    RoleRequirement, SourceDeclaration, ValidationError, ValidationLimits, ValidationReport,
+};
 use crate::library::{self, AssetVersion, ComponentReference, LibraryError};
 use crate::sqlite::{self, ConnectionConfig, ProtoError};
-use crate::validation::{
-    self, RoleRequirement, SourceDeclaration, ValidationError, ValidationLimits, ValidationReport,
-};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -327,7 +327,7 @@ impl Application {
         source: SourceDeclaration,
         limits: ValidationLimits,
     ) -> Result<ValidationReport, ValidationError> {
-        validation::validate_file(path, requirement, source, limits)
+        crate::assurance::checks::validate_file(path, requirement, source, limits)
     }
 
     /// Closes the connection. On failure the returned error is from rusqlite; the
@@ -563,12 +563,15 @@ impl Application {
     /// Typed LOCAL TEST_FIXTURE engineering only; not authenticated provider admission.
     /// # Errors
     /// Returns preflight failures; post-invocation recording errors retain the backend result.
-    pub fn submit_executor_local_test_fixture<B: crate::executor::Backend>(
+    pub fn submit_executor_local_test_fixture<B: crate::execution::ports::Backend>(
         &mut self,
-        executor: &mut crate::executor::Executor<B>,
-        budget: &crate::budget::Request,
-        request: &crate::executor::SubmitRequest,
-    ) -> Result<crate::executor_runtime::Submission, crate::executor_runtime::PreflightError> {
+        executor: &mut crate::execution::application::Executor<B>,
+        budget: &crate::consumption::domain::Request,
+        request: &crate::execution::domain::SubmitRequest,
+    ) -> Result<
+        crate::execution::consumption_adapter::Submission,
+        crate::execution::consumption_adapter::PreflightError,
+    > {
         crate::execution::runtime_application::submit_local_test_fixture(
             &mut crate::execution::consumption_adapter::ConsumptionBudgetOnce(&mut self.connection),
             executor,

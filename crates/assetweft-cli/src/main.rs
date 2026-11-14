@@ -1,9 +1,9 @@
 //! Responsibility: M6 bounded read-only CLI and v1 JSON wire DTOs.
-//! Dependencies: clap grammar, serde wire parsing, existing core APIs.
+//! Dependencies: clap grammar, serde wire parsing, Assurance checks and Production specification APIs.
 //! Callers: humans, automation, C1 black-box tests.
 //! Invariants: one JSON line stdout; no generation, DB, shell or network calls;
 //! supplied context is a declaration, never authenticated by this process.
-use assetweft_core::{generation_spec as spec, geometry, validation as val};
+use assetweft_core::{assurance as val, production::specification as spec};
 use clap::{Arg, Command, error::ErrorKind, value_parser};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -156,7 +156,7 @@ fn run() -> (i32, Value) {
     match command {
         "inspect" => {
             let path = args.get_one::<PathBuf>("file").expect("required");
-            match geometry::inspect_file(path, limits) {
+            match val::checks::inspect_geometry_file(path, limits) {
                 Ok(report) => finish(
                     0,
                     "PASS",
@@ -177,7 +177,7 @@ fn run() -> (i32, Value) {
                 "animated-character" => val::RoleRequirement::AnimatedCharacter,
                 _ => val::RoleRequirement::StaticMesh,
             };
-            let report = match val::validate_file(
+            let report = match val::checks::validate_file(
                 args.get_one::<PathBuf>("file").expect("required"),
                 role,
                 val::SourceDeclaration::declared(val::SourceClass::Unknown),

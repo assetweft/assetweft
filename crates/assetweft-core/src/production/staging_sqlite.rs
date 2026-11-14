@@ -1,5 +1,5 @@
 //! Responsibility: concrete SQLite candidate freeze/read and bounded managed-byte verification.
-//! Dependencies: Catalog concrete reads, CAS lease, rusqlite and validation; callers: Application, acceptance and initialization adapters.
+//! Dependencies: Catalog concrete reads, CAS lease, rusqlite and Assurance checks; callers: Application, acceptance and initialization adapters.
 //! Invariants: encoding before lease, reference recheck under lease before IMMEDIATE, unchanged SQL/parameters, no replay.
 use super::{
     domain::{AcceptanceReport, Candidate, ComponentEvidence, ComponentSnapshot},
@@ -195,8 +195,8 @@ pub(crate) fn validate_components(
     snapshots: &[ComponentSnapshot],
     contract: &FixtureContract,
 ) -> Result<AcceptanceReport, LibraryError> {
-    use crate::validation::{
-        self, RoleRequirement, SourceClass, SourceDeclaration, ValidationLimits,
+    use crate::assurance::{
+        RoleRequirement, SourceClass, SourceDeclaration, ValidationLimits, checks,
     };
     check_contract(contract).map_err(LibraryError::from)?;
     let mut report = AcceptanceReport {
@@ -240,7 +240,7 @@ pub(crate) fn validate_components(
         }
         // CAS verification supplies a safe hash/path; bounded validator re-reads and hashes
         // the actual file. No SQL transaction spans parsing, no external URI is resolved.
-        let checked = validation::validate_file(
+        let checked = checks::validate_file(
             &root.join("objects").join(&object.content_hash),
             role,
             SourceDeclaration::declared(SourceClass::TestFixture),

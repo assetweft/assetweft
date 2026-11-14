@@ -1,12 +1,9 @@
 //! Responsibility: optional, bounded Blender 5.1.2 GLB skin roundtrip tool.
-//! Dependencies: existing rig guard, gltf/serde/sha2/tempfile, external explicit Blender.
+//! Dependencies: Assurance rig checks, gltf/serde/sha2/tempfile, external explicit Blender.
 //! Callers: opt-in local M3 fixture checks. No Python runtime required by core.
 //! Invariants: fixed embedded script; no shell/foreign script; new output directory;
 //! immutable staged input, no URI/texture/extension/animation/morph processing.
-use assetweft_core::{
-    rig,
-    validation::{self, CheckStatus, ValidationLimits},
-};
+use assetweft_core::assurance::{self, CheckStatus, ValidationLimits};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -51,8 +48,8 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
     if !binary.is_absolute() {
         return Err("Blender binary path must be explicit and absolute".into());
     }
-    let bytes = validation::read_bounded(Path::new(&a[1]), ValidationLimits::default())?;
-    let r = rig::inspect_bytes(&bytes);
+    let bytes = assurance::read_bounded(Path::new(&a[1]), ValidationLimits::default())?;
+    let r = assurance::checks::inspect_rig_bytes(&bytes);
     if r.validation.format_status != CheckStatus::Pass
         || r.bound_nodes.len() != 1
         || r.checks.iter().any(|c| c.status != CheckStatus::Pass)
@@ -162,10 +159,10 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
     if !status.success() || timeout {
         return Err(format!("Blender failed: {receipt}").into());
     }
-    let result = validation::read_bounded(&out.join("result.json"), ValidationLimits::default())?;
+    let result = assurance::read_bounded(&out.join("result.json"), ValidationLimits::default())?;
     let result: Value = serde_json::from_slice(&result)?;
-    let output = validation::read_bounded(&out.join("roundtrip.glb"), ValidationLimits::default())?;
-    let rr = rig::inspect_bytes(&output);
+    let output = assurance::read_bounded(&out.join("roundtrip.glb"), ValidationLimits::default())?;
+    let rr = assurance::checks::inspect_rig_bytes(&output);
     if rr.validation.format_status != CheckStatus::Pass
         || rr.bound_nodes.len() != 1
         || rr.checks.iter().any(|c| c.status != CheckStatus::Pass)

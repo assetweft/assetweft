@@ -464,6 +464,11 @@ impl Application {
         budget: &crate::budget::Request,
         request: &crate::executor::SubmitRequest,
     ) -> Result<crate::executor_runtime::Submission, crate::executor_runtime::PreflightError> {
-        crate::executor_runtime::submit_local_test_fixture(self, executor, budget, request)
+        crate::execution::runtime_application::submit_local_test_fixture(
+            &mut crate::execution::consumption_adapter::ConsumptionBudgetOnce(&mut self.connection),
+            executor,
+            budget,
+            request,
+        )
     }
 }

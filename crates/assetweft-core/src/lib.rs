@@ -206,6 +206,7 @@ mod tests {
     }
 }
 
+pub mod execution;
 /// Declared synchronous executor protocol; no runtime admission.
 pub mod executor;
 

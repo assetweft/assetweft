@@ -17,11 +17,13 @@ fixture source, GLB structure, measured managed bytes, locked references and the
 predeclared contract before registration. Initialization is idempotent only for
 the same version, revision zero and contract; it cannot reset an existing head.
 Advance matches both expected version and revision and checks revision overflow.
-The returned changed-row count distinguishes Accepted from Conflict.
+The changed-row count remains adapter-internal; the single-database acceptance
+adapter translates it into Production Accepted or Conflict. Catalog imports no
+Production acceptance types.
 
-Candidate orchestration acquires the storage lease before opening its Immediate
-SQLite transaction, then lends that transaction to Catalog. Head advance and
-candidate attempt receipt are committed together by that caller; receipt failure
+The single-database acceptance adapter acquires the storage lease before opening
+its Immediate SQLite transaction, then lends that transaction to Catalog. Head
+advance and candidate attempt receipt are committed together by that adapter; receipt failure
 rolls back the head. The adapter never opens or commits a transaction or waits for
 a lease. Duplicate receipts, readonly/unknown-schema errors, UNKNOWN/MISSING
 metadata and fixture-only scope retain their existing handling.
@@ -30,11 +32,10 @@ This batch covers AssetHead only. Version/object/reference and feedback ownershi
 still use their existing library/storage/history modules. No production acceptance,
 validation capability, schema migration or broader D1 completion is implied.
 
-Hexagonal migration status: these Connection/Transaction functions are adapter-internal
-APIs, not semantic application output ports. Production orchestration and the
-compatibility Application facade still depend on this concrete adapter in this
-first ownership-only batch. A later use-case separation must invoke a dedicated
-acceptance-commit port whose SQLite implementation coordinates head CAS and the
-attempt receipt internally in one transaction; database types must not cross that
-semantic port, and Catalog must not depend on Production result types. This batch
-does not claim to complete that separation.
+Hexagonal migration status: these Connection/Transaction functions remain
+adapter-internal APIs. The Production acceptance use case depends on its own
+semantic CommitAcceptance port; sqlite/acceptance coordinates Catalog CAS and the
+Production attempt receipt internally in one transaction. The compatibility facade
+still reads this adapter directly, and candidate initialization still borrows its
+transaction. Version/reference/staging and initialization separation remain future
+batches; this does not claim overall DDD completion.

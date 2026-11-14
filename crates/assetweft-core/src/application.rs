@@ -361,7 +361,14 @@ impl Application {
         &mut self,
         id: &str,
     ) -> Result<crate::candidate::Acceptance, LibraryError> {
-        crate::candidate::attempt(&mut self.connection, &self.library_root, id)
+        crate::production::application::attempt(
+            &mut crate::sqlite::acceptance::SqliteAcceptance {
+                conn: &mut self.connection,
+                root: &self.library_root,
+            },
+            id,
+        )
+        .map_err(Into::into)
     }
     /// Reads the durable terminal receipt, including conflicts and its candidate-bound report.
     /// # Errors

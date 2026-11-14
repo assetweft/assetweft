@@ -76,3 +76,13 @@ migration debt; no new Catalog head API is introduced. This section supersedes t
 older staging-debt sentence above only for the proposal/read paths migrated here.
 Unchanged candidate integration tests exercise SQLite/CAS behavior; pure substitute
 tests prove use-case ordering/policy only. Full CI and independent review are root-owned.
+
+`specification` owns the pure GenerationSpecRequest/TrustedContext values,
+`validate` declaration policy and `recipe_examples`. Legacy `generation_spec`
+explicitly re-exports the same items. Shared LockMode/LockStatus remain shared;
+this module adds no persistence, port or execution capability. Serde shape,
+field-path diagnostics, exact whitespace handling and trusted-lock indexing
+are unchanged. Declaration consistency is neither rights confirmation nor
+semantic canonicalization execution; INPUT_INCOMPLETE, lock mismatch and
+NOT_EXECUTED outcomes retain their existing CLI mappings. Conflicting duplicate
+trusted identities (issue 18, P2) remain outside this ownership-only change.

@@ -3,7 +3,6 @@
 //! Callers: Application and legacy consumers; invariants: identical public types and signatures.
 pub use crate::catalog::backup_domain::{Limits, Manifest, Object, Progress};
 use crate::{library, storage};
-use rusqlite::Connection;
 use std::path::Path;
 #[derive(Debug)]
 pub enum BackupError {
@@ -44,17 +43,6 @@ impl From<crate::catalog::backup_domain::PolicyError> for BackupError {
             crate::catalog::backup_domain::PolicyError::Limit => Self::Limit,
         }
     }
-}
-pub(crate) fn create(
-    conn: &Connection,
-    root: &Path,
-    dest: &Path,
-    limits: Limits,
-    progress: &mut dyn FnMut(Progress) -> bool,
-) -> Result<Manifest, BackupError> {
-    crate::catalog::backup_application::create(
-        &mut crate::catalog::backup_sqlite::BackupSession::new(conn, root, dest, limits, progress),
-    )
 }
 /// Restores format 1/schema 6 only into a destination that must not exist.
 /// # Errors

@@ -216,9 +216,11 @@ impl Application {
     /// # Errors
     /// Rejects invalid fields, unsupported schema, duplicates, storage-lease Busy/IO and database errors.
     pub fn add_asset_version(&mut self, version: &AssetVersion) -> Result<(), LibraryError> {
-        library::validate(version)?;
-        let _guard = crate::storage::reference_guard(&self.library_root)?;
-        library::add_asset_version(&mut self.connection, version)
+        let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::new(
+            &mut self.connection,
+            &self.library_root,
+        );
+        crate::catalog::application::register_version(&mut metadata, version).map_err(Into::into)
     }
 
     /// Reads a version by stable identity.
@@ -226,7 +228,11 @@ impl Application {
     /// # Errors
     /// Returns schema, unknown state, or database errors.
     pub fn asset_version(&mut self, id: &str) -> Result<Option<AssetVersion>, LibraryError> {
-        library::asset_version(&mut self.connection, id)
+        let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::new(
+            &mut self.connection,
+            &self.library_root,
+        );
+        crate::catalog::application::exact_version(&mut metadata, id).map_err(Into::into)
     }
 
     /// Associates a component role with an existing version.
@@ -237,8 +243,12 @@ impl Application {
         &mut self,
         reference: &ComponentReference,
     ) -> Result<(), LibraryError> {
-        let _guard = crate::storage::reference_guard(&self.library_root)?;
-        library::add_component_reference(&mut self.connection, reference)
+        let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::with_reference_lease(
+            &mut self.connection,
+            &self.library_root,
+        )?;
+        crate::catalog::application::register_reference(&mut metadata, reference)
+            .map_err(Into::into)
     }
 
     /// Reads explicitly versioned component references for an asset version.
@@ -249,7 +259,11 @@ impl Application {
         &mut self,
         version_id: &str,
     ) -> Result<Vec<ComponentReference>, LibraryError> {
-        library::component_references(&mut self.connection, version_id)
+        let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::new(
+            &mut self.connection,
+            &self.library_root,
+        );
+        crate::catalog::application::exact_references(&mut metadata, version_id).map_err(Into::into)
     }
 
     /// Reads SQLite's internal schema cookie as a connection health check. This is

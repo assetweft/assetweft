@@ -86,3 +86,25 @@ are unchanged. Declaration consistency is neither rights confirmation nor
 semantic canonicalization execution; INPUT_INCOMPLETE, lock mismatch and
 NOT_EXECUTED outcomes retain their existing CLI mappings. Conflicting duplicate
 trusted identities (issue 18, P2) remain outside this ownership-only change.
+
+## Fixture initialization and receipt reads (W2d)
+
+`initialization_application::{initialize,read}` now owns the real bootstrap and
+receipt query use cases through Initialization/AttemptRead. It reuses SAME Catalog
+Current/FixtureContract and Production snapshot/report/Acceptance values. Policy
+retains identity, contract, required-quality, owner source/identity, snapshot and
+report-pass order. Only this use case constructs VerifiedInitialization: private
+fields, no clone/serde/constructor, borrowed version/contract and owned measured
+snapshots, consumed once by the adapter. Public callers cannot submit PASS reports.
+
+The concrete `sqlite/initialization.rs` adapter (explicitly mounted from Production)
+uses the existing bounded managed-byte snapshot/validator, then holds the shared
+storage lease, rechecks exact references, opens IMMEDIATE, calls unchanged borrowed
+Catalog initialization and commits once. No parsing is moved into the transaction;
+current0 idempotency, existing-head errors and exact diagnostics remain unchanged.
+AttemptRead retains require_current before the original receipt SELECT/parameters
+and deserialize error. Legacy candidate is assembly/helper forwarding only for
+these paths. This supersedes the preceding initialization/receipt debt statements;
+other workflow/specification/composition migrations and whole DDD acceptance remain
+separate. Pure tests establish policy/order only; unchanged candidate real-file
+tests exercise actual SQLite/CAS. Full CI and independent review remain root-owned.

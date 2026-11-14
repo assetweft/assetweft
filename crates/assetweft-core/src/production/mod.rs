@@ -12,3 +12,6 @@ pub(crate) mod workflow_application;
 pub mod workflow_domain;
 pub(crate) mod workflow_ports;
 pub(crate) mod workflow_sqlite;
+
+/// Pure generation declarations, validation policy and unexecuted recipe examples.
+pub mod specification;

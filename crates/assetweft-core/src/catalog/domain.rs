@@ -160,3 +160,73 @@ pub(crate) fn validate_reference(r: &ComponentReference) -> Result<(), MetadataE
     validate_version_id(&r.owner_version_id)?;
     validate_version_id(&r.component_version_id)
 }
+
+// Exact-version feedback values and pure input policy.
+pub const MAX_REASON_BYTES: usize = 2048;
+pub const MAX_HISTORY_LIMIT: u16 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Accept,
+    Reject,
+}
+impl Decision {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "ACCEPT",
+            Self::Reject => "REJECT",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feedback {
+    pub feedback_id: String,
+    pub asset_id: String,
+    pub version_id: String,
+    pub decision: Decision,
+    /// None means no reason; otherwise 1–2048 UTF-8 bytes, nonblank, no NUL.
+    pub reason: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedbackRecord {
+    pub sequence: i64,
+    pub feedback: Feedback,
+}
+/// Newest first, scoped to an asset and optionally an exact version.
+/// Continue with before_sequence = last returned sequence; new appends do not shift pages.
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryQuery<'a> {
+    pub asset_id: &'a str,
+    pub version_id: Option<&'a str>,
+    pub before_sequence: Option<i64>,
+    pub limit: u16,
+}
+fn identity(id: &str) -> bool {
+    !id.trim().is_empty()
+        && id.len() <= 256
+        && !id.contains(['/', '\\', '\0'])
+        && id != "."
+        && id != ".."
+}
+pub(crate) fn validate_feedback(f: &Feedback) -> Result<(), MetadataError> {
+    if !identity(&f.feedback_id) || !identity(&f.asset_id) || !identity(&f.version_id) {
+        return Err(MetadataError::InvalidInput("feedback identity"));
+    }
+    if f.reason
+        .as_ref()
+        .is_some_and(|r| r.trim().is_empty() || r.len() > MAX_REASON_BYTES || r.contains('\0'))
+    {
+        return Err(MetadataError::InvalidInput("feedback reason"));
+    }
+    Ok(())
+}
+pub(crate) fn validate_history(q: HistoryQuery<'_>) -> Result<(), MetadataError> {
+    if !identity(q.asset_id) || q.version_id.is_some_and(|id| !identity(id)) {
+        return Err(MetadataError::InvalidInput("feedback query identity"));
+    }
+    if q.limit == 0 || q.limit > MAX_HISTORY_LIMIT || q.before_sequence.is_some_and(|s| s <= 0) {
+        return Err(MetadataError::InvalidInput("feedback query bounds"));
+    }
+    Ok(())
+}

@@ -7,3 +7,6 @@ pub(crate) mod sqlite_store;
 pub(crate) mod application;
 pub(crate) mod ports;
 pub(crate) mod sqlite_metadata;
+
+pub(crate) mod feedback;
+pub(crate) mod sqlite_feedback;

@@ -25,9 +25,30 @@ NOT_RUN. Format failure leaves role NOT_RUN with no inferred missing components.
 Unbound skin and orphan animation do not satisfy rig/motion. Parse success and
 role success do not imply numerical/visual/engine quality or verified rights.
 Checker version, scope, NOT_RUN list, report field order and diagnostics remain.
-Pure numerical geometry/rig work remains in its existing modules.
+Geometry and Rig report types now belong to `geometry_domain` and `rig_domain`;
+legacy modules re-export the identical types and only assemble concrete adapters.
+Geometry application reads bounded input, validates the same bytes through the
+existing format capability, invokes `GeometryStructure`, then applies pure report
+policy. SDK mapping preserves matrix/TRS, original indices and unresolved URI
+strings, including data URI. UNKNOWN declarations and format conventions remain
+separate; this is a STRUCTURE summary, not geometry value computation.
 
-Remaining migration debt: legacy geometry/rig consumers, other Assurance
+Rig application owns bounded-read and validation-before-numeric sequencing.
+`RigNumeric` is the actual GLB traversal/streaming capability: SDK readers and BIN
+slicing remain in `rig_gltf`; it calls the single pure forest, joint/attribute,
+layout, affine-matrix and per-vertex policy implementations in `rig_domain`.
+No large matrix/weight arrays are cloned. Original check order, messages, actual
+mesh-node skin binding selection and early returns remain. Layout policy checks
+subtraction/multiplication/addition, relative and absolute component alignment,
+vertex four-byte requirements, and forbids any IBM stride without inventing
+16-byte alignment. Quantized raw sums stay exact; float tolerance counts nonzero
+influences; zero-weight joint indices still require range validity.
+Geometry read errors retain the original ValidationError payload at the legacy
+composition boundary. Core capabilities expose no Path/io/SDK/concrete errors.
+Unsupported external/sparse/viewless/extension/multiple-set data stays NOT_RUN;
+invalid format never produces numeric PASS. No pose/rest/semantic/engine claims.
+
+Remaining migration debt: internal consumers still use legacy compatibility paths, other Assurance
 measurement/export/engine capabilities and broader context migration are outside
 this bounded card. Full affected CLI/geometry/rig execution, public current-SHA
 CI, independent review, protected merge and postmerge checks belong to root.

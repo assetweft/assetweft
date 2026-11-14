@@ -13,6 +13,7 @@ pub mod budget;
 pub mod candidate;
 /// Asset head domain and persistence ownership.
 pub mod catalog;
+pub mod consumption;
 
 /// AW-022:A 静态几何引用检查；不解析外部资源。
 pub mod geometry;

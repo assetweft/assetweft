@@ -8,6 +8,8 @@
 
 /// AW-008:A shared application lifecycle and bounded validation entry.
 pub mod application;
+/// Bounded validation policy and adapters.
+pub mod assurance;
 pub mod budget;
 /// Managed component staging and conditional fixture-only GLB structure acceptance.
 pub mod candidate;

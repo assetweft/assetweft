@@ -1,4 +1,4 @@
-//! Responsibility: managed-object compatibility composition and the shared concrete retention lease.
+//! Responsibility: managed-object compatibility values/errors and shared concrete retention lease.
 //! Dependencies: Catalog object use cases/adapter, library errors and std filesystem.
 //! Callers: Application; filesystem is a private local library, not an adversarial shared tree.
 //! Invariants: publish before DB, never replace objects, serialize GC with every hash-reference insertion and protection update.
@@ -109,15 +109,6 @@ pub(crate) fn bind(conn: &Connection, root: &Path) -> Result<(), StorageError> {
         Err(e) => return Err(e.into()),
     }
     Ok(())
-}
-// Concrete compatibility composition: all policy/use cases are owned by Catalog.
-pub(crate) fn managed(
-    conn: &mut Connection,
-    root: &Path,
-    id: &str,
-) -> Result<Option<StoredObject>, StorageError> {
-    let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, io::empty());
-    crate::catalog::objects_application::managed(&mut adapter, id)
 }
 #[cfg(test)]
 mod tests {

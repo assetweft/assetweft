@@ -148,20 +148,3 @@ pub(crate) fn initialize(conn: &mut Connection) -> Result<(), LibraryError> {
     tx.commit()?;
     Ok(())
 }
-// Concrete compatibility forwards for candidate/acceptance/storage pending migration.
-// SQLite read transactions and checked borrowed insertion are owned by Catalog.
-pub(crate) fn validate(v: &AssetVersion) -> Result<(), LibraryError> {
-    crate::catalog::domain::validate_version(v).map_err(Into::into)
-}
-pub(crate) fn asset_version(
-    conn: &mut Connection,
-    id: &str,
-) -> Result<Option<AssetVersion>, LibraryError> {
-    crate::catalog::sqlite_metadata::asset_version(conn, id)
-}
-pub(crate) fn component_references(
-    conn: &mut Connection,
-    id: &str,
-) -> Result<Vec<ComponentReference>, LibraryError> {
-    crate::catalog::sqlite_metadata::component_references(conn, id)
-}

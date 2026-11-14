@@ -1,5 +1,5 @@
 //! Responsibility: concrete SQLite candidate freeze/read and bounded managed-byte verification.
-//! Dependencies: Catalog concrete reads, CAS lease, rusqlite and validation; callers: staging facade and acceptance helper forwards.
+//! Dependencies: Catalog concrete reads, CAS lease, rusqlite and validation; callers: Application, acceptance and initialization adapters.
 //! Invariants: encoding before lease, reference recheck under lease before IMMEDIATE, unchanged SQL/parameters, no replay.
 use super::{
     domain::{AcceptanceReport, Candidate, ComponentEvidence, ComponentSnapshot},
@@ -23,9 +23,9 @@ pub(crate) struct SqliteStaging<'a> {
 }
 impl Staging for SqliteStaging<'_> {
     fn owners(&mut self, base: &str, proposed: &str) -> Result<Owners, StagingError> {
-        let base = library::asset_version(self.conn, base)?
+        let base = crate::catalog::sqlite_metadata::asset_version(self.conn, base)?
             .ok_or(StagingError::InvalidInput("base version"))?;
-        let proposed = library::asset_version(self.conn, proposed)?
+        let proposed = crate::catalog::sqlite_metadata::asset_version(self.conn, proposed)?
             .ok_or(StagingError::InvalidInput("candidate version"))?;
         Ok(Owners {
             base_source: base.source,
@@ -54,7 +54,7 @@ fn freeze(
         (&candidate.base_version, &candidate.base),
         (&candidate.candidate_version, &candidate.proposed),
     ] {
-        let refs = library::component_references(conn, owner)?;
+        let refs = crate::catalog::sqlite_metadata::component_references(conn, owner)?;
         if refs.len() != measured.len()
             || refs
                 .iter()
@@ -101,7 +101,7 @@ pub(crate) fn snapshot(
     root: &Path,
     owner: &str,
 ) -> Result<Vec<ComponentSnapshot>, LibraryError> {
-    let refs = library::component_references(conn, owner)?;
+    let refs = crate::catalog::sqlite_metadata::component_references(conn, owner)?;
     super::staging_domain::component_count(refs.len()).map_err(LibraryError::from)?;
     let mut result: Vec<ComponentSnapshot> = Vec::new();
     for r in refs {
@@ -111,8 +111,9 @@ pub(crate) fn snapshot(
             &r.component_version_id,
         )
         .map_err(LibraryError::from)?;
-        let metadata = library::asset_version(conn, &r.component_version_id)?
-            .ok_or_else(|| invalid("component metadata"))?;
+        let metadata =
+            crate::catalog::sqlite_metadata::asset_version(conn, &r.component_version_id)?
+                .ok_or_else(|| invalid("component metadata"))?;
         super::staging_domain::component_source(&metadata.source).map_err(LibraryError::from)?;
         let object = measured(conn, root, &r.component_version_id)?;
         result.push(ComponentSnapshot {
@@ -150,20 +151,26 @@ pub(crate) fn measured(
     root: &Path,
     id: &str,
 ) -> Result<storage::StoredObject, LibraryError> {
-    let metadata = library::asset_version(conn, id)?.ok_or_else(|| invalid("managed metadata"))?;
-    library::validate(&metadata)?;
+    let metadata = crate::catalog::sqlite_metadata::asset_version(conn, id)?
+        .ok_or_else(|| invalid("managed metadata"))?;
+    crate::catalog::domain::validate_version(&metadata).map_err(LibraryError::from)?;
     let path = root.join("objects").join(&metadata.content_hash);
     let info = std::fs::symlink_metadata(path).map_err(|e| LibraryError::Io(e.to_string()))?;
     if !info.file_type().is_file() || info.len() > 16 * 1024 * 1024 {
         return Err(invalid("bounded managed regular file"));
     }
-    wait_storage(|| match storage::managed(conn, root, id) {
-        Err(storage::StorageError::Busy) => {
-            Err(LibraryError::Busy("storage lease deadline".into()))
+    wait_storage(|| {
+        match crate::catalog::objects_application::managed(
+            &mut crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, std::io::empty()),
+            id,
+        ) {
+            Err(storage::StorageError::Busy) => {
+                Err(LibraryError::Busy("storage lease deadline".into()))
+            }
+            Err(storage::StorageError::Library(e)) => Err(e),
+            Err(e) => Err(LibraryError::Io(e.to_string())),
+            Ok(value) => value.ok_or_else(|| invalid("unmanaged component")),
         }
-        Err(storage::StorageError::Library(e)) => Err(e),
-        Err(e) => Err(LibraryError::Io(e.to_string())),
-        Ok(value) => value.ok_or_else(|| invalid("unmanaged component")),
     })
 }
 pub(crate) fn check_refs(
@@ -171,7 +178,7 @@ pub(crate) fn check_refs(
     owner: &str,
     measured: &[ComponentSnapshot],
 ) -> Result<(), LibraryError> {
-    let refs = library::component_references(conn, owner)?;
+    let refs = crate::catalog::sqlite_metadata::component_references(conn, owner)?;
     if refs.len() != measured.len()
         || refs
             .iter()
@@ -223,7 +230,7 @@ pub(crate) fn validate_components(
         if object.byte_length > contract.max_component_bytes {
             return Err(invalid("component byte limit"));
         }
-        let metadata = library::asset_version(conn, &s.version)?
+        let metadata = crate::catalog::sqlite_metadata::asset_version(conn, &s.version)?
             .ok_or_else(|| invalid("component version"))?;
         if metadata.source != "TEST_FIXTURE" || metadata.source_format != "GLB" {
             report

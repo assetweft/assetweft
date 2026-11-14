@@ -110,7 +110,12 @@ impl Application {
         &mut self,
         id: &str,
     ) -> Result<Option<crate::storage::StoredObject>, crate::storage::StorageError> {
-        crate::storage::managed(&mut self.connection, &self.library_root, id)
+        let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(
+            &mut self.connection,
+            &self.library_root,
+            std::io::empty(),
+        );
+        crate::catalog::objects_application::managed(&mut adapter, id)
     }
     /// Sets real object retention constraints; clearing them requires caller evidence.
     /// # Errors
@@ -423,13 +428,26 @@ impl Application {
         &mut self,
         proposal: &crate::candidate::Proposal,
     ) -> Result<crate::candidate::Candidate, LibraryError> {
-        crate::candidate::propose(&mut self.connection, &self.library_root, proposal)
+        crate::production::staging_application::propose(
+            &mut crate::production::staging_sqlite::SqliteStaging {
+                conn: &mut self.connection,
+                root: &self.library_root,
+            },
+            proposal,
+        )
+        .map_err(Into::into)
     }
     /// Reads the immutable staged descriptor and its explicit validation scope.
     /// # Errors
     /// Returns schema, database or malformed identity errors.
     pub fn candidate(&self, id: &str) -> Result<Option<crate::candidate::Candidate>, LibraryError> {
-        crate::candidate::read(&self.connection, id)
+        crate::production::staging_application::read(
+            &mut crate::production::staging_sqlite::SqliteCandidateRead {
+                conn: &self.connection,
+            },
+            id,
+        )
+        .map_err(Into::into)
     }
     /// Runs the predeclared fixture structure contract and conditionally advances current.
     /// Returns an immutable historic receipt on replay, not a fresh validation claim.
@@ -455,7 +473,13 @@ impl Application {
         &self,
         id: &str,
     ) -> Result<Option<crate::candidate::Acceptance>, LibraryError> {
-        crate::candidate::attempt_record(&self.connection, id)
+        crate::production::initialization_application::read(
+            &mut crate::production::initialization_sqlite::SqliteAttemptRead {
+                conn: &self.connection,
+            },
+            id,
+        )
+        .map_err(Into::into)
     }
     /// Initializes an absent fixture-only current head at revision zero after GLB checks.
     /// # Errors
@@ -465,12 +489,15 @@ impl Application {
         version: &str,
         contract: &crate::candidate::FixtureContract,
     ) -> Result<crate::candidate::Current, LibraryError> {
-        crate::candidate::initialize_current(
-            &mut self.connection,
-            &self.library_root,
+        crate::production::initialization_application::initialize(
+            &mut crate::production::initialization_sqlite::SqliteInitialization {
+                conn: &mut self.connection,
+                root: &self.library_root,
+            },
             version,
             contract,
         )
+        .map_err(Into::into)
     }
     /// Reads the local fixture current version, revision, and immutable declared contract.
     /// # Errors

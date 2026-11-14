@@ -10,3 +10,8 @@ pub(crate) mod sqlite_metadata;
 
 pub(crate) mod feedback;
 pub(crate) mod sqlite_feedback;
+
+pub(crate) mod objects_application;
+pub mod objects_domain;
+pub(crate) mod objects_ports;
+pub(crate) mod objects_sqlite;

@@ -53,3 +53,26 @@ No automatic invocation, remote execution, paid inference or new functionality.
 Existing true-file workflow integration assertions remain unchanged; pure port
 checks establish sequencing only. Full current-head CI and independent review
 remain root-owned, not established by this local migration.
+
+## Candidate staging ownership (W2b)
+
+`staging_domain::Proposal` is the SAME value re-exported at `candidate::Proposal`.
+Pure staging policy owns identity/revision/fixture-contract/editable validation,
+component identity/source checks and exact role/lock descriptor construction.
+`staging_application::{propose,read}` are actual use cases; Staging supplies exact
+Catalog owner facts and measured snapshots and freezes an internally constructed
+FrozenProposal. CandidateRead supplies the read-only query. Neither port exposes
+SQLite, paths, CAS handles or trusted acceptance reports. AcceptanceError's stable
+categories are reused internally without changing the accepted acceptance core.
+
+`staging_sqlite` owns descriptor SQL/encoding and bounded managed-byte helpers.
+Freeze encodes before storage lease, rechecks ordered references under that lease,
+then opens IMMEDIATE, checks current schema and compares the exact stored encoded
+value before inserting/committing. Existing triggers retain frozen references;
+no write replay, SQL/parameter/check ordering or acceptance authority is added.
+Legacy candidate helpers explicitly forward to this concrete adapter for acceptance.
+Initialization/current-head composition and receipt query remain concrete legacy
+migration debt; no new Catalog head API is introduced. This section supersedes the
+older staging-debt sentence above only for the proposal/read paths migrated here.
+Unchanged candidate integration tests exercise SQLite/CAS behavior; pure substitute
+tests prove use-case ordering/policy only. Full CI and independent review are root-owned.

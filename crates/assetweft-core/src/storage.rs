@@ -1,5 +1,5 @@
 //! Responsibility: bounded managed CAS commits and explicit orphan collection.
-//! Dependencies: sha2, tempfile, std filesystem and the typed library transaction helpers.
+//! Dependencies: sha2, tempfile, std filesystem and the library schema guard and Catalog borrowed insertion.
 //! Callers: Application; filesystem is a private local library, not an adversarial shared tree.
 //! Invariants: publish before DB, never replace objects, serialize GC with every hash-reference insertion and protection update.
 //! A crash may leave a lock/temp/orphan; no automatic stale-lock breaking or power-loss claim.
@@ -243,7 +243,7 @@ pub(crate) fn commit(
     if size != written as i64 {
         return Err(StorageError::Corrupt);
     }
-    library::insert_version(&tx, v)?;
+    crate::catalog::sqlite_metadata::insert_version(&tx, v)?;
     tx.execute(
         "INSERT INTO aw_managed_versions(version_id,content_hash) VALUES(?1,?2)",
         params![v.version_id, v.content_hash],

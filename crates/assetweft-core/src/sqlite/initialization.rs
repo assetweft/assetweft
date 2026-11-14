@@ -1,6 +1,6 @@
 //! Responsibility: real SQLite/CAS fixture initialization and persisted receipt query.
 //! Dependencies: Production semantic ports, bounded staging IO, Catalog borrowed head adapter.
-//! Callers: candidate composition facade; invariants: validation outside transaction, lease→refs→IMMEDIATE→commit; no replay.
+//! Callers: Application and acceptance adapter; invariants: validation outside transaction, lease→refs→IMMEDIATE→commit; no replay.
 use crate::{
     library::{self, LibraryError},
     production::{
@@ -21,7 +21,7 @@ pub(crate) struct SqliteInitialization<'a> {
 }
 impl Initialization for SqliteInitialization<'_> {
     fn base_owner(&mut self, version: &str) -> Result<BaseOwner, InitializationError> {
-        let owner = library::asset_version(self.conn, version)?
+        let owner = crate::catalog::sqlite_metadata::asset_version(self.conn, version)?
             .ok_or(InitializationError::InvalidInput("base version"))?;
         Ok(BaseOwner {
             asset_id: owner.asset_id,

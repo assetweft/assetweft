@@ -1,9 +1,8 @@
 //! Responsibility: single-database atomic Production acceptance adapter.
-//! Dependencies: candidate byte/receipt IO, Catalog SQLite adapter, storage lease and rusqlite.
+//! Dependencies: Production byte/receipt IO, Catalog SQLite adapter, storage lease and rusqlite.
 //! Callers: compatibility Application; invariant: lease before IMMEDIATE, CAS and receipt in one commit, no replay.
 use crate::catalog::domain::FixtureContract;
 use crate::{
-    candidate,
     catalog::sqlite_store,
     library::{self, LibraryError},
     production::{
@@ -33,22 +32,35 @@ fn record(conn: &Connection, id: &str, result: &Acceptance) -> Result<(), Librar
 
 impl AcceptanceInputs for SqliteAcceptance<'_> {
     fn existing_receipt(&mut self, id: &str) -> Result<Option<Acceptance>, AcceptanceError> {
-        candidate::attempt_record(self.conn, id).map_err(Into::into)
+        crate::production::initialization_application::read(
+            &mut crate::production::initialization_sqlite::SqliteAttemptRead { conn: self.conn },
+            id,
+        )
+        .map_err(LibraryError::from)
+        .map_err(Into::into)
     }
     fn candidate(&mut self, id: &str) -> Result<Option<Candidate>, AcceptanceError> {
-        candidate::read(self.conn, id).map_err(Into::into)
+        crate::production::staging_application::read(
+            &mut crate::production::staging_sqlite::SqliteCandidateRead { conn: self.conn },
+            id,
+        )
+        .map_err(LibraryError::from)
+        .map_err(Into::into)
     }
     fn validate_proposed(
         &mut self,
         snapshots: &[ComponentSnapshot],
         contract: &FixtureContract,
     ) -> Result<AcceptanceReport, AcceptanceError> {
-        candidate::validate_components(self.conn, self.root, snapshots, contract)
-            .map_err(Into::into)
+        crate::production::staging_sqlite::validate_components(
+            self.conn, self.root, snapshots, contract,
+        )
+        .map_err(Into::into)
     }
     fn remeasure_base(&mut self, snapshots: &[ComponentSnapshot]) -> Result<(), AcceptanceError> {
         for s in snapshots {
-            if candidate::measured(self.conn, self.root, &s.version)?.content_hash
+            if crate::production::staging_sqlite::measured(self.conn, self.root, &s.version)?
+                .content_hash
                 != s.measured_sha256
             {
                 return Err(AcceptanceError::InvalidInput("base byte drift"));
@@ -69,16 +81,30 @@ impl SqliteAcceptance<'_> {
     fn commit(&mut self, decision: VerifiedAcceptance) -> Result<Acceptance, LibraryError> {
         let candidate = decision.candidate();
         let id = candidate.id.clone();
-        let _guard = candidate::guard(self.root)?;
-        candidate::check_refs(self.conn, &candidate.base_version, &candidate.base)?;
-        candidate::check_refs(self.conn, &candidate.candidate_version, &candidate.proposed)?;
-        let owner = library::asset_version(self.conn, &candidate.base_version)?
-            .ok_or_else(|| invalid("base version"))?;
+        let _guard = crate::production::staging_sqlite::guard(self.root)?;
+        crate::production::staging_sqlite::check_refs(
+            self.conn,
+            &candidate.base_version,
+            &candidate.base,
+        )?;
+        crate::production::staging_sqlite::check_refs(
+            self.conn,
+            &candidate.candidate_version,
+            &candidate.proposed,
+        )?;
+        let owner =
+            crate::catalog::sqlite_metadata::asset_version(self.conn, &candidate.base_version)?
+                .ok_or_else(|| invalid("base version"))?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         library::require_current(&tx)?;
-        if let Some(old) = candidate::attempt_record(&tx, &id)? {
+        if let Some(old) = crate::production::initialization_application::read(
+            &mut crate::production::initialization_sqlite::SqliteAttemptRead { conn: &tx },
+            &id,
+        )
+        .map_err(LibraryError::from)?
+        {
             return Ok(old);
         }
         let head = if decision.needs_head() {

@@ -13,7 +13,7 @@ pub(crate) struct VerifiedAcceptance {
     decision: Decision,
 }
 enum Decision {
-    Terminal(Acceptance),
+    Terminal(Box<Acceptance>),
     Eligible(AcceptanceReport),
 }
 pub(crate) enum CommitPlan {
@@ -30,7 +30,7 @@ impl VerifiedAcceptance {
     /// Evaluate the current head observed inside the atomic commit boundary.
     pub(crate) fn resolve(self, head: Option<Current>) -> CommitPlan {
         let report = match self.decision {
-            Decision::Terminal(result) => return CommitPlan::Terminal(result),
+            Decision::Terminal(result) => return CommitPlan::Terminal(*result),
             Decision::Eligible(report) => report,
         };
         let candidate = self.candidate;
@@ -72,11 +72,11 @@ pub(crate) fn attempt(
         _ => None,
     };
     let decision = if let Some(reason) = pending {
-        Decision::Terminal(Acceptance::NotRun {
+        Decision::Terminal(Box::new(Acceptance::NotRun {
             candidate: candidate.clone(),
             reason: reason.into(),
             report: None,
-        })
+        }))
     } else {
         let report = ports.validate_proposed(
             &candidate.proposed,
@@ -84,16 +84,16 @@ pub(crate) fn attempt(
         )?;
         ports.remeasure_base(&candidate.base)?;
         if report.components.len() != candidate.proposed.len() {
-            Decision::Terminal(Acceptance::NotRun {
+            Decision::Terminal(Box::new(Acceptance::NotRun {
                 candidate: candidate.clone(),
                 reason: "unsupported component role/source/format NOT_RUN".into(),
                 report: Some(report),
-            })
+            }))
         } else if !report_passes(&report, candidate.proposed.len()) {
-            Decision::Terminal(Acceptance::Rejected {
+            Decision::Terminal(Box::new(Acceptance::Rejected {
                 candidate: candidate.clone(),
                 report,
-            })
+            }))
         } else {
             Decision::Eligible(report)
         }

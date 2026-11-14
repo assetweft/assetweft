@@ -1,6 +1,6 @@
-//! Responsibility: SQLite migration, facade diagnostics and legacy concrete metadata forwards.
-//! Dependencies: configured application connection, rusqlite and the versioned 001–006 SQL migrations (M1 objects, M2 workflow/budget).
-//! Callers: Application's typed entry points. No connection or SQL is exposed here.
+//! Responsibility: SQLite migration chain (schema 1–6) and LibraryError diagnostics.
+//! Dependencies: rusqlite, the versioned 001–006 SQL migrations and Catalog type re-exports (M1 objects, M2 workflow/budget).
+//! Callers: Application connection setup, concrete owner adapters requiring schema guards and compatibility consumers.
 //! Invariants: IDs are caller-supplied, versions are immutable, no state claims a file is
 //! ready by itself; managed bytes use storage, references are exact, migrations atomic.
 

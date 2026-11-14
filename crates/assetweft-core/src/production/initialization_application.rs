@@ -1,5 +1,5 @@
 //! Responsibility: fixture bootstrap policy/orchestration and acceptance receipt read use case.
-//! Dependencies: Production policy/values and own semantic ports; callers: legacy composition facade.
+//! Dependencies: Production policy/values and own semantic ports; callers: Application and the Production acceptance adapter.
 //! Invariants: identity→contract→quality→owner→snapshot→real validation→sealed commit; no IO types.
 use super::{
     domain::{Acceptance, ComponentSnapshot, report_passes},

@@ -24,14 +24,16 @@ owns head SQL; the cross-context adapter translates changed rows to Accepted or
 Conflict. Receipt/encoding/insert failures roll back head changes; writes never
 replay. String diagnostics and all LibraryError categories round trip at the facade.
 
-Compatibility Application assembles the adapter and use case. Proposal, staging,
-initialization, descriptor/receipt queries and controlled validation IO remain in
-candidate.rs as explicit migration debt. Other Production workflows/budget/history,
-Catalog versions and references, schema/migrations and product acceptance scope
-are outside this batch. Existing real-file candidate integration tests remain
-unchanged; port substitutes test orchestration only, not SQLite correctness.
+Application assembles the adapter and use case directly for attempt, proposal,
+staging, initialization, descriptor/receipt queries and controlled validation IO;
+`candidate.rs` is only a compatibility value re-export surface. Production owns
+only the workflow, staging and attempt tables described below; budget stays in
+Consumption, Catalog versions and references stay in Catalog, and schema/migrations/
+product acceptance scope are unchanged. Existing real-file candidate integration
+tests remain unchanged; port substitutes test orchestration only, not SQLite
+correctness.
 
-## Persistent workflows (W2a)
+## Persistent workflows
 
 `workflow_domain` owns the SAME Step/Outcome/State/StepRecord values explicitly
 re-exported by `workflow`, graph/bounds validation, persisted state/result policy
@@ -51,10 +53,10 @@ Original wire/types/errors and ordinal order remain stable. `workflow` composes
 adapters/use cases; Application delegates the actual driver orchestration there.
 No automatic invocation, remote execution, paid inference or new functionality.
 Existing true-file workflow integration assertions remain unchanged; pure port
-checks establish sequencing only. Full current-head CI and independent review
-remain root-owned, not established by this local migration.
+checks establish sequencing only. Full current-head CI and independent review are
+root-owned.
 
-## Candidate staging ownership (W2b)
+## Candidate staging ownership
 
 `staging_domain::Proposal` is the SAME value re-exported at `candidate::Proposal`.
 Pure staging policy owns identity/revision/fixture-contract/editable validation,
@@ -70,12 +72,10 @@ Freeze encodes before storage lease, rechecks ordered references under that leas
 then opens IMMEDIATE, checks current schema and compares the exact stored encoded
 value before inserting/committing. Existing triggers retain frozen references;
 no write replay, SQL/parameter/check ordering or acceptance authority is added.
-Legacy candidate helpers explicitly forward to this concrete adapter for acceptance.
-Initialization/current-head composition and receipt query remain concrete legacy
-migration debt; no new Catalog head API is introduced. This section supersedes the
-older staging-debt sentence above only for the proposal/read paths migrated here.
-Unchanged candidate integration tests exercise SQLite/CAS behavior; pure substitute
-tests prove use-case ordering/policy only. Full CI and independent review are root-owned.
+Application assembles `staging_sqlite` with the `staging_application` use cases;
+no legacy private forward and no new Catalog head API is introduced. Unchanged
+candidate integration tests exercise SQLite/CAS behavior; pure substitute tests
+prove use-case ordering/policy only.
 
 `specification` owns the pure GenerationSpecRequest/TrustedContext values,
 `validate` declaration policy and `recipe_examples`. Legacy `generation_spec`
@@ -87,7 +87,7 @@ semantic canonicalization execution; INPUT_INCOMPLETE, lock mismatch and
 NOT_EXECUTED outcomes retain their existing CLI mappings. Conflicting duplicate
 trusted identities (issue 18, P2) remain outside this ownership-only change.
 
-## Fixture initialization and receipt reads (W2d)
+## Fixture initialization and receipt reads
 
 `initialization_application::{initialize,read}` now owns the real bootstrap and
 receipt query use cases through Initialization/AttemptRead. It reuses SAME Catalog
@@ -103,8 +103,6 @@ storage lease, rechecks exact references, opens IMMEDIATE, calls unchanged borro
 Catalog initialization and commits once. No parsing is moved into the transaction;
 current0 idempotency, existing-head errors and exact diagnostics remain unchanged.
 AttemptRead retains require_current before the original receipt SELECT/parameters
-and deserialize error. Legacy candidate is assembly/helper forwarding only for
-these paths. This supersedes the preceding initialization/receipt debt statements;
-other workflow/specification/composition migrations and whole DDD acceptance remain
-separate. Pure tests establish policy/order only; unchanged candidate real-file
-tests exercise actual SQLite/CAS. Full CI and independent review remain root-owned.
+and deserialize error. Application assembles these use cases with the mounted
+`initialization_sqlite` adapter; no legacy forward remains. Pure tests establish
+policy/order only; unchanged candidate real-file tests exercise actual SQLite/CAS.

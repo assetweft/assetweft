@@ -28,17 +28,15 @@ rolls back the head. The adapter never opens or commits a transaction or waits f
 a lease. Duplicate receipts, readonly/unknown-schema errors, UNKNOWN/MISSING
 metadata and fixture-only scope retain their existing handling.
 
-AssetHead and immutable version/reference ownership now reside in Catalog.
-Managed-object and feedback ownership now reside in Catalog. No production acceptance,
-validation capability, schema migration or broader D1 completion is implied.
-
-Hexagonal migration status: these Connection/Transaction functions remain
-adapter-internal APIs. The Production acceptance use case depends on its own
-semantic CommitAcceptance port; sqlite/acceptance coordinates Catalog CAS and the
-Production attempt receipt internally in one transaction. The compatibility facade
-reads via HeadQuery; candidate initialization still borrows its
-transaction. Staging and initialization separation remain future
-batches; this does not claim overall DDD completion.
+Catalog owns AssetHead, immutable version/reference, managed objects and feedback
+values. Connection/Transaction functions in `sqlite_metadata`, `sqlite_store` and
+`objects_sqlite` remain adapter-internal APIs; they do not imply production
+acceptance, validation capability or schema migration. The Production acceptance
+use case depends on its own semantic CommitAcceptance port; `sqlite/acceptance`
+coordinates Catalog CAS and the Production attempt receipt internally in one
+transaction. Application reads heads via HeadQuery and assembles the Catalog
+registration/reference use cases directly; initialization still borrows the
+caller's transaction. No overall DDD or product acceptance is claimed.
 
 
 ## Immutable metadata and exact references
@@ -83,12 +81,14 @@ lease+transaction boundary (or Catalog's checked registration transaction).
 Object/version/managed-binding registration rollback remains one transaction.
 The borrowed helper is concrete adapter collaboration, not a semantic core port.
 
-library::validate/asset_version/component_references are explicit compatibility
-forwards to Catalog for candidate snapshots, measurement/validation and acceptance
-owner lookup. Their orchestration is unchanged. Initialization/staging, Production workflow/budget/executor,
-full port migration and overall DDD acceptance remain debt. Existing integration
-tests are unchanged; pure use-case substitutes prove validation/delegation only,
-while focused real-file tests check lease/error ordering and facade translations.
+Application assembles `catalog::application` use cases with the concrete
+`SqliteMetadata` adapter directly; `library` retains only migration/schema,
+LibraryError and compatibility type re-exports. Candidate snapshots,
+measurement/validation and acceptance owner lookup call the owner adapters
+(`sqlite_metadata`, `sqlite_store`, `head_sqlite`) without private forwards.
+Existing integration tests are unchanged; pure use-case substitutes prove
+validation/delegation only, while focused real-file tests check lease/error
+ordering and facade translations.
 
 ## Exact-version feedback
 
@@ -133,10 +133,11 @@ objects stay protected. SQL commit precedes unlink with the lease still held;
 failures may leave an orphan, never grant missing bytes readiness. No stale-lock
 breaking, schema change, retry or deletion scope expansion is introduced.
 
-The unchanged Application methods compose via thin storage compatibility functions.
-Concrete storage errors/lease/binding remain infrastructure, not core ports.
-Full current-head CI, independent review, crash/powerloss/Windows and real-asset
-acceptance remain outside this author's focused local evidence.
+The unchanged Application methods assemble the `objects_application` use cases
+with the concrete `objects_sqlite` adapter. Concrete storage errors/lease/binding
+remain infrastructure, not core ports. Current-head CI, independent review,
+crash/power-loss/Windows and real-asset acceptance are root-owned and not
+established by these contract notes.
 
 ## Protected backup and fresh restore
 
@@ -159,6 +160,7 @@ no successful manifest. Metadata-only UNKNOWN/MISSING does not become ready byte
 
 head_application validates exact asset identity before HeadQuery. head_sqlite owns
 the original schema guard, SELECT and contract decoding; borrowed sqlite_store
-current forwards through the same use case. initialize/advance retain their concrete
-transaction APIs and atomic Production acceptance behavior; their further use-case
-migration is not claimed here. No dependency/schema/SQL migration or new gate.
+current forwards through the same use case. initialize/advance remain concrete
+crate-private transaction APIs consumed by the Production acceptance and
+initialization use cases under their existing lease+transaction boundaries. No
+dependency/schema/SQL migration or new gate.

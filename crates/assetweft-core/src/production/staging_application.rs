@@ -1,5 +1,5 @@
 //! Responsibility: proposal/read use cases and sealed internally produced descriptor.
-//! Dependencies: staging domain and semantic capability only; callers: candidate composition facade.
+//! Dependencies: staging domain and semantic capability only; callers: Application and the Production acceptance adapter.
 //! Invariants: input policy precedes IO, exact owner checks precede measurement, lock policy precedes freeze.
 use super::{
     domain::Candidate,

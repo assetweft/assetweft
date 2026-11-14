@@ -29,7 +29,7 @@ a lease. Duplicate receipts, readonly/unknown-schema errors, UNKNOWN/MISSING
 metadata and fixture-only scope retain their existing handling.
 
 AssetHead and immutable version/reference ownership now reside in Catalog.
-Object ownership still uses storage; feedback ownership now resides in Catalog. No production acceptance,
+Managed-object and feedback ownership now reside in Catalog. No production acceptance,
 validation capability, schema migration or broader D1 completion is implied.
 
 Hexagonal migration status: these Connection/Transaction functions remain
@@ -85,8 +85,7 @@ The borrowed helper is concrete adapter collaboration, not a semantic core port.
 
 library::validate/asset_version/component_references are explicit compatibility
 forwards to Catalog for candidate snapshots, measurement/validation and acceptance
-owner lookup. Their orchestration is unchanged. Managed-object ownership,
-initialization/staging, Production workflow/budget/executor,
+owner lookup. Their orchestration is unchanged. Initialization/staging, Production workflow/budget/executor,
 full port migration and overall DDD acceptance remain debt. Existing integration
 tests are unchanged; pure use-case substitutes prove validation/delegation only,
 while focused real-file tests check lease/error ordering and facade translations.
@@ -108,3 +107,33 @@ are unchanged. History uses a deferred checked transaction, descending local
 sequence and strict before cursor. latest is exactly history with limit one.
 Migration/connection infrastructure remains in library/sqlite; this is disclosed
 adapter coupling. Opinions never imply candidate acceptance, rights or readiness.
+
+
+## Managed objects and retention
+
+Catalog objects_domain owns the identical StoredObject/Collection values, strict
+hash/limit/completeness/digest policies and protected-collection decision.
+storage re-exports these values; StorageError retains original Io/Library payloads.
+objects_application owns commit/managed/protect/collect. ManagedObjects is a narrow
+publication/retention capability with opaque failure and staged receipt associated
+types: core never imports paths, readers, SQLite or SDK errors, and never examines
+an adapter failure. Adapter errors pass through unchanged, preserving diagnostics.
+Commit validates metadata then byte limits, stages bounded verified bytes, then
+publishes/registers. A failed stage cannot register. Managed metadata absence is None.
+
+objects_sqlite captures connection/root/stream at composition. It owns original
+object SQL, bounded temp streaming, actual SHA256, full reread and hard_link publish
+before short checked IMMEDIATE registration. Object/version/managed links share
+the existing Catalog borrowed insert helper and one transaction. No nested lease
+or commit is added. The sole storage Guard/reference_guard/bind implementation
+remains shared by metadata, backup and candidate adapters. GC/protect take that
+lease before IMMEDIATE; GC invokes pure collection policy on the original current
+SQL protection predicate inside this transaction. Referenced/pinned/default unique
+objects stay protected. SQL commit precedes unlink with the lease still held;
+failures may leave an orphan, never grant missing bytes readiness. No stale-lock
+breaking, schema change, retry or deletion scope expansion is introduced.
+
+The unchanged Application methods compose via thin storage compatibility functions.
+Concrete storage errors/lease/binding remain infrastructure, not core ports.
+Full current-head CI, independent review, crash/powerloss/Windows and real-asset
+acceptance remain outside this author's focused local evidence.

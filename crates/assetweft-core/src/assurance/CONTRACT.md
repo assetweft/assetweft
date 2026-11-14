@@ -52,3 +52,22 @@ Remaining migration debt: internal consumers still use legacy compatibility path
 measurement/export/engine capabilities and broader context migration are outside
 this bounded card. Full affected CLI/geometry/rig execution, public current-SHA
 CI, independent review, protected merge and postmerge checks belong to root.
+
+## Public check composition (W6C1)
+
+`assurance::checks` now owns the existing concrete `validate_file`,
+`validate_bytes`, `inspect_geometry_file`, `inspect_geometry_bytes`,
+`inspect_rig_file` and `inspect_rig_bytes` entry functions. It assembles only
+FileInput and the existing GLB adapters and calls the unchanged application
+use cases. `GeometryError` is defined once here as a concrete composition
+error, preserving its Debug derive and Read(ValidationError)/Invalid(String)
+payloads; no concrete IO error is introduced into the pure core.
+
+This supersedes the earlier description of legacy modules assembling adapters:
+`validation`, `geometry` and `rig` explicitly re-export the same function items
+(with inspect aliases) and the same public values, including GeometryError.
+`validation::read_bounded` and `ValidationError` remain unchanged exports.
+No adapter implementation is made public. Internal CLI/Application/staging and
+example consumer import migration remains a subsequent batch; this entry move
+does not complete whole-DDD migration or improve F0, rights, numerical scope,
+engine, provider, production or authorization evidence.

@@ -328,12 +328,7 @@ impl Application {
         id: &str,
         callback: impl FnOnce(),
     ) -> Result<bool, LibraryError> {
-        if !crate::budget::claim(&mut self.connection, id)? {
-            return Ok(false);
-        }
-        callback();
-        crate::budget::unknown(&mut self.connection, id)?;
-        Ok(true)
+        crate::budget::submit_test_fixture(&mut self.connection, id, callback)
     }
     /// Cancellation releases a never-submitted preparing call, but retains uncertain reservations.
     pub fn cancel_call(&mut self, id: &str) -> Result<(), LibraryError> {

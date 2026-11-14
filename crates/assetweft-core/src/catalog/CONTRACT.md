@@ -12,7 +12,7 @@ It owns all runtime reads, initial inserts and conditional updates of
 `aw_candidate_current`; migration SQL and frozen-reference triggers remain intact.
 There is no generic repository or public raw-database API.
 
-The compatibility Application facade currently reads directly through this adapter API. Candidate orchestration validates
+The compatibility Application facade reads via the semantic HeadQuery use case. Candidate orchestration validates
 fixture source, GLB structure, measured managed bytes, locked references and the
 predeclared contract before registration. Initialization is idempotent only for
 the same version, revision zero and contract; it cannot reset an existing head.
@@ -36,7 +36,7 @@ Hexagonal migration status: these Connection/Transaction functions remain
 adapter-internal APIs. The Production acceptance use case depends on its own
 semantic CommitAcceptance port; sqlite/acceptance coordinates Catalog CAS and the
 Production attempt receipt internally in one transaction. The compatibility facade
-still reads this adapter directly, and candidate initialization still borrows its
+reads via HeadQuery; candidate initialization still borrows its
 transaction. Staging and initialization separation remain future
 batches; this does not claim overall DDD completion.
 
@@ -137,3 +137,28 @@ The unchanged Application methods compose via thin storage compatibility functio
 Concrete storage errors/lease/binding remain infrastructure, not core ports.
 Full current-head CI, independent review, crash/powerloss/Windows and real-asset
 acceptance remain outside this author's focused local evidence.
+
+## Protected backup and fresh restore
+
+backup_domain owns the identical public Limits, Progress, Object and Manifest
+values (legacy backup::* re-exports), bounded byte/identity policy and format
+1/schema 6 validation. backup_application uses ProtectedBackup and FreshRestore
+semantic capabilities: protected snapshot, exact registered-object copy, then
+manifest publication; restore reads/validates the manifest, verifies the closed
+snapshot and registered set, copies into a fresh target, then publishes completion.
+No path, connection, transaction, file or IO dependency crosses these ports.
+Associated errors preserve the original public BackupError diagnostic payloads.
+
+backup_sqlite captures paths/connections/callbacks, retains the single existing
+reference_guard through snapshot/copy/publication, and uses the existing bind.
+SQLite stepping, schema/integrity checks, snapshot object query, sidecar rejection,
+chunked hashing/copy, progress/deadline order, owner isolation and no-clobber
+publication remain concrete. The clock starts at the original boundary; no
+transaction spans filesystem copy or callback. Failed/cancelled operations leave
+no successful manifest. Metadata-only UNKNOWN/MISSING does not become ready bytes.
+
+head_application validates exact asset identity before HeadQuery. head_sqlite owns
+the original schema guard, SELECT and contract decoding; borrowed sqlite_store
+current forwards through the same use case. initialize/advance retain their concrete
+transaction APIs and atomic Production acceptance behavior; their further use-case
+migration is not claimed here. No dependency/schema/SQL migration or new gate.

@@ -405,7 +405,11 @@ impl Application {
         &self,
         asset: &str,
     ) -> Result<Option<crate::candidate::Current>, LibraryError> {
-        crate::catalog::sqlite_store::current(&self.connection, asset)
+        crate::catalog::head_application::current(
+            &mut crate::catalog::head_sqlite::SqliteHead(&self.connection),
+            asset,
+        )
+        .map_err(Into::into)
     }
 }
 

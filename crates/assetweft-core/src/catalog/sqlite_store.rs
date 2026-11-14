@@ -1,43 +1,16 @@
-//! Responsibility: sole runtime SQL owner of aw_candidate_current.
-//! Dependencies: Catalog values, library schema guard/errors and rusqlite.
-//! Callers: Application reads and candidate fixture acceptance orchestration.
+//! Responsibility: borrowed head writes and compatibility exact-query composition.
+//! Dependencies: Catalog query use case/adapter, library errors and rusqlite.
+//! Callers: candidate fixture initialization and acceptance orchestration.
 //! Invariants: writes borrow caller transaction; no lease acquisition or commit here.
 use super::domain::{Current, FixtureContract};
-use crate::library::{self, LibraryError};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use crate::library::LibraryError;
+use rusqlite::{Connection, Transaction, params};
 fn invalid(s: &'static str) -> LibraryError {
     LibraryError::InvalidInput(s)
 }
-fn id_ok(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 256
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-        && id != "."
-        && id != ".."
-}
 pub(crate) fn current(conn: &Connection, asset: &str) -> Result<Option<Current>, LibraryError> {
-    if !id_ok(asset) {
-        return Err(invalid("asset identity"));
-    }
-    library::require_current(conn)?;
-    let raw: Option<(String, i64, String)> = conn
-        .query_row(
-            "SELECT version_id,revision,contract FROM aw_candidate_current WHERE asset_id=?1",
-            [asset],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    raw.map(|(version_id, revision, contract)| {
-        Ok(Current {
-            asset_id: asset.into(),
-            version_id,
-            revision,
-            contract: serde_json::from_str(&contract).map_err(|_| invalid("stored contract"))?,
-        })
-    })
-    .transpose()
+    super::head_application::current(&mut super::head_sqlite::SqliteHead(conn), asset)
+        .map_err(Into::into)
 }
 /// Register a checked fixture head without resetting an existing head.
 pub(crate) fn initialize(

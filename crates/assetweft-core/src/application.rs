@@ -394,7 +394,7 @@ impl Application {
         &self,
         asset: &str,
     ) -> Result<Option<crate::candidate::Current>, LibraryError> {
-        crate::candidate::current(&self.connection, asset)
+        crate::catalog::sqlite_store::current(&self.connection, asset)
     }
 }
 

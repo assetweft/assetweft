@@ -302,6 +302,13 @@ fn glb_conditional_accept_stale_conflict_reopen_and_exact_history() {
     stale.candidate_version = "other".into();
     a.propose_candidate(&stale).unwrap();
     let result = a.attempt_accept_candidate(&p.id).unwrap();
+    // Both paths name the same Catalog-owned value without wire conversion.
+    if let Acceptance::Accepted { current, .. } = &result {
+        let head: &assetweft_core::catalog::domain::Current = current;
+        let _: &assetweft_core::candidate::Current = head;
+        let contract: &assetweft_core::catalog::domain::FixtureContract = &head.contract;
+        let _: &assetweft_core::candidate::FixtureContract = contract;
+    }
     assert!(
         matches!(&result,Acceptance::Accepted{current,report,..} if current.version_id=="proposed" && current.revision==1 && report.components[0].format_status=="PASS" && report.components[0].role_status=="PASS" && report.not_run.contains(&"QUALITY".into()))
     );

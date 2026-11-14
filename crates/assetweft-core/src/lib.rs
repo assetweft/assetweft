@@ -11,6 +11,8 @@ pub mod application;
 pub mod budget;
 /// Managed component staging and conditional fixture-only GLB structure acceptance.
 pub mod candidate;
+/// Asset head domain and persistence ownership.
+pub mod catalog;
 
 /// AW-022:A 静态几何引用检查；不解析外部资源。
 pub mod geometry;

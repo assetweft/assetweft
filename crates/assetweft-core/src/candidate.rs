@@ -1,5 +1,5 @@
-//! Responsibility: M2 immutable BYTE candidates and conditional fixture-only current revisions.
-//! Dependencies: M1 typed versions/CAS, SQLite migration 005, serde wire snapshots.
+//! Responsibility: M2 immutable BYTE candidates and fixture-only acceptance orchestration.
+//! Dependencies: M1 typed versions/CAS, Catalog SQLite head adapter, SQLite migration 005, serde.
 //! Callers: Application and candidate integration tests.
 //! Invariants: immutable descriptors, exact role sets, measured managed bytes; no
 //! unauthorized pointer mutation, semantic fallback or caller-provided PASS; GLB structure only.
@@ -47,21 +47,8 @@ pub struct Candidate {
     pub contract: Option<FixtureContract>,
 }
 
-/// Predeclared fixture-only contract. Required quality items cannot be satisfied here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FixtureContract {
-    /// Must be TEST_FIXTURE_GLB_STRUCTURE_V1; never a production acceptance contract.
-    pub contract_id: String,
-    pub max_component_bytes: u64,
-    pub required_quality: Vec<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Current {
-    pub asset_id: String,
-    pub version_id: String,
-    pub revision: i64,
-    pub contract: FixtureContract,
-}
+/// Compatibility paths for Catalog-owned head values.
+pub use crate::catalog::domain::{Current, FixtureContract};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentEvidence {
     pub role: String,
@@ -430,28 +417,6 @@ fn report_passes(report: &AcceptanceReport, count: usize) -> bool {
             .iter()
             .all(|r| r.format_status == "PASS" && r.role_status == "PASS")
 }
-pub(crate) fn current(conn: &Connection, asset: &str) -> Result<Option<Current>, LibraryError> {
-    if !id_ok(asset) {
-        return Err(invalid("asset identity"));
-    }
-    library::require_current(conn)?;
-    let raw: Option<(String, i64, String)> = conn
-        .query_row(
-            "SELECT version_id,revision,contract FROM aw_candidate_current WHERE asset_id=?1",
-            [asset],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    raw.map(|(version_id, revision, contract)| {
-        Ok(Current {
-            asset_id: asset.into(),
-            version_id,
-            revision,
-            contract: serde_json::from_str(&contract).map_err(|_| invalid("stored contract"))?,
-        })
-    })
-    .transpose()
-}
 /// Bootstrap only an absent fixture current; never reset an existing head/revision.
 pub(crate) fn initialize_current(
     conn: &mut Connection,
@@ -478,18 +443,7 @@ pub(crate) fn initialize_current(
     let _guard = guard(root)?;
     check_refs(conn, version, &snapshots)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let encoded = serde_json::to_string(contract).map_err(|_| invalid("contract encoding"))?;
-    if let Some(existing) = current(&tx, &owner.asset_id)? {
-        if existing.version_id != version
-            || existing.revision != 0
-            || &existing.contract != contract
-        {
-            return Err(invalid("current already initialized"));
-        }
-        return Ok(existing);
-    }
-    tx.execute("INSERT INTO aw_candidate_current(asset_id,version_id,revision,contract) VALUES(?1,?2,0,?3)",params![owner.asset_id,version,encoded])?;
-    let result = current(&tx, &owner.asset_id)?.ok_or_else(|| invalid("current missing"))?;
+    let result = crate::catalog::sqlite_store::initialize(&tx, &owner.asset_id, version, contract)?;
     tx.commit()?;
     Ok(result)
 }
@@ -577,7 +531,7 @@ pub(crate) fn attempt(
             }
         } else if !report_passes(&report, candidate.proposed.len()) {
             Acceptance::Rejected { candidate, report }
-        } else if let Some(head) = current(&tx, &owner.asset_id)? {
+        } else if let Some(head) = crate::catalog::sqlite_store::current(&tx, &owner.asset_id)? {
             if Some(&head.contract) != candidate.contract.as_ref() {
                 Acceptance::NotRun {
                     candidate,
@@ -585,14 +539,13 @@ pub(crate) fn attempt(
                     report: Some(report),
                 }
             } else {
-                let next = candidate
-                    .expected_revision
-                    .checked_add(1)
-                    .ok_or_else(|| invalid("revision overflow"))?;
-                // This predicate is the concurrency gate, not the earlier observed head.
-                let changed=tx.execute("UPDATE aw_candidate_current SET version_id=?1,revision=?2 WHERE asset_id=?3 AND version_id=?4 AND revision=?5",params![candidate.candidate_version,next,owner.asset_id,candidate.base_version,candidate.expected_revision])?;
-                let current =
-                    current(&tx, &owner.asset_id)?.ok_or_else(|| invalid("current missing"))?;
+                let (changed, current) = crate::catalog::sqlite_store::advance(
+                    &tx,
+                    &owner.asset_id,
+                    &candidate.base_version,
+                    candidate.expected_revision,
+                    &candidate.candidate_version,
+                )?;
                 if changed == 1 {
                     Acceptance::Accepted {
                         candidate,

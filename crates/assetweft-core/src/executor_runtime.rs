@@ -8,7 +8,7 @@ pub use crate::execution::{
 use crate::{
     application::Application,
     consumption::domain::Request,
-    executor::{Backend, Executor, SubmitRequest},
+    execution::{application::Executor, domain::SubmitRequest, ports::Backend},
 };
 
 /// Executes the declared local fixture through Execution and Consumption, once.

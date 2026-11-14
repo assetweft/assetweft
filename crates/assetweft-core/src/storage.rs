@@ -3,7 +3,7 @@
 //! Callers: Application; filesystem is a private local library, not an adversarial shared tree.
 //! Invariants: publish before DB, never replace objects, serialize GC with every hash-reference insertion and protection update.
 //! A crash may leave a lock/temp/orphan; no automatic stale-lock breaking or power-loss claim.
-use crate::library::{AssetVersion, LibraryError};
+use crate::library::LibraryError;
 use rusqlite::Connection;
 use std::{
     fs::{self, File, OpenOptions},
@@ -111,17 +111,6 @@ pub(crate) fn bind(conn: &Connection, root: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 // Concrete compatibility composition: all policy/use cases are owned by Catalog.
-pub(crate) fn commit(
-    conn: &mut Connection,
-    root: &Path,
-    v: &AssetVersion,
-    reader: &mut impl Read,
-    expected_len: u64,
-    max_bytes: u64,
-) -> Result<StoredObject, StorageError> {
-    let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, reader);
-    crate::catalog::objects_application::commit(&mut adapter, v, expected_len, max_bytes)
-}
 pub(crate) fn managed(
     conn: &mut Connection,
     root: &Path,
@@ -130,25 +119,6 @@ pub(crate) fn managed(
     let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, io::empty());
     crate::catalog::objects_application::managed(&mut adapter, id)
 }
-pub(crate) fn protect(
-    conn: &mut Connection,
-    root: &Path,
-    hash: &str,
-    backup_pin: bool,
-    unsynced_unique: bool,
-) -> Result<(), StorageError> {
-    let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, io::empty());
-    crate::catalog::objects_application::protect(&mut adapter, hash, backup_pin, unsynced_unique)
-}
-pub(crate) fn collect(
-    conn: &mut Connection,
-    root: &Path,
-    hash: &str,
-) -> Result<Collection, StorageError> {
-    let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, io::empty());
-    crate::catalog::objects_application::collect(&mut adapter, hash)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

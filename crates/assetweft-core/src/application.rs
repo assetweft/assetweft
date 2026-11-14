@@ -31,12 +31,14 @@ impl Application {
         limits: crate::backup::Limits,
         progress: &mut dyn FnMut(crate::backup::Progress) -> bool,
     ) -> Result<crate::backup::Manifest, crate::backup::BackupError> {
-        crate::backup::create(
-            &self.connection,
-            &self.library_root,
-            destination,
-            limits,
-            progress,
+        crate::catalog::backup_application::create(
+            &mut crate::catalog::backup_sqlite::BackupSession::new(
+                &self.connection,
+                &self.library_root,
+                destination,
+                limits,
+                progress,
+            ),
         )
     }
     /// Restores a supported snapshot into an exclusively new directory.
@@ -48,7 +50,13 @@ impl Application {
         limits: crate::backup::Limits,
         progress: &mut dyn FnMut(crate::backup::Progress) -> bool,
     ) -> Result<crate::backup::Manifest, crate::backup::BackupError> {
-        crate::backup::restore(source, destination, limits, progress)
+        let mut adapter = crate::catalog::backup_sqlite::RestoreSession::new(
+            source,
+            destination,
+            limits,
+            progress,
+        )?;
+        crate::catalog::backup_application::restore(&mut adapter, limits)
     }
 
     /// Opens a local file database, creating it if necessary. Parent directories must exist.
@@ -88,14 +96,12 @@ impl Application {
         expected_len: u64,
         max_bytes: u64,
     ) -> Result<crate::storage::StoredObject, crate::storage::StorageError> {
-        crate::storage::commit(
+        let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(
             &mut self.connection,
             &self.library_root,
-            version,
             reader,
-            expected_len,
-            max_bytes,
-        )
+        );
+        crate::catalog::objects_application::commit(&mut adapter, version, expected_len, max_bytes)
     }
     /// Resolves and rechecks managed bytes; metadata-only versions return None.
     /// # Errors
@@ -115,9 +121,13 @@ impl Application {
         backup_pin: bool,
         unsynced_unique: bool,
     ) -> Result<(), crate::storage::StorageError> {
-        crate::storage::protect(
+        let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(
             &mut self.connection,
             &self.library_root,
+            std::io::empty(),
+        );
+        crate::catalog::objects_application::protect(
+            &mut adapter,
             hash,
             backup_pin,
             unsynced_unique,
@@ -130,7 +140,12 @@ impl Application {
         &mut self,
         hash: &str,
     ) -> Result<crate::storage::Collection, crate::storage::StorageError> {
-        crate::storage::collect(&mut self.connection, &self.library_root, hash)
+        let mut adapter = crate::catalog::objects_sqlite::SqliteObjects::new(
+            &mut self.connection,
+            &self.library_root,
+            std::io::empty(),
+        );
+        crate::catalog::objects_application::collect(&mut adapter, hash)
     }
 
     /// Configuration read back when this connection was opened.
@@ -155,13 +170,20 @@ impl Application {
         run: &str,
         steps: &[crate::workflow::Step],
     ) -> Result<(), LibraryError> {
-        crate::workflow::create(&mut self.connection, run, steps)
+        crate::production::workflow_application::create(
+            &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
+            run,
+            steps,
+        )
     }
     /// Atomically claims a ready step. A running step blocks further claims until reconciled.
     /// # Errors
     /// Returns schema, unknown run, or database errors.
     pub fn claim_workflow_step(&mut self, run: &str) -> Result<Option<String>, LibraryError> {
-        crate::workflow::claim(&mut self.connection, run)
+        crate::production::workflow_application::claim(
+            &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
+            run,
+        )
     }
     /// Explicitly records the actual outcome of a claimed step, including after restart.
     /// # Errors
@@ -172,7 +194,12 @@ impl Application {
         id: &str,
         outcome: &crate::workflow::Outcome,
     ) -> Result<(), LibraryError> {
-        crate::workflow::finish(&mut self.connection, run, id, outcome)
+        crate::production::workflow_application::finish(
+            &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
+            run,
+            id,
+            outcome,
+        )
     }
     /// Claims and invokes at most one caller-provided local driver outside any transaction.
     /// # Errors
@@ -182,19 +209,29 @@ impl Application {
         run: &str,
         driver: impl FnOnce(&str) -> crate::workflow::Outcome,
     ) -> Result<bool, LibraryError> {
-        crate::workflow::run(&mut self.connection, run, driver)
+        crate::production::workflow_application::run(
+            &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
+            run,
+            driver,
+        )
     }
     /// Prevents future claims; does not stop a running callback or assert remote billing stopped.
     /// # Errors
     /// Returns unknown run, schema, or database errors.
     pub fn cancel_workflow(&mut self, run: &str) -> Result<(), LibraryError> {
-        crate::workflow::cancel(&mut self.connection, run)
+        crate::production::workflow_application::cancel(
+            &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
+            run,
+        )
     }
     /// Reads whether cancellation was requested, without asserting remote work stopped.
     /// # Errors
     /// Returns unknown run, invalid state, schema, or database errors.
     pub fn workflow_cancelled(&self, run: &str) -> Result<bool, LibraryError> {
-        crate::workflow::is_cancelled(&self.connection, run)
+        crate::production::workflow_application::is_cancelled(
+            &crate::production::workflow_sqlite::SqliteWorkflowRuns(&self.connection),
+            run,
+        )
     }
     /// Reads persisted step states and exact outcomes.
     /// # Errors
@@ -203,7 +240,10 @@ impl Application {
         &self,
         run: &str,
     ) -> Result<Vec<crate::workflow::StepRecord>, LibraryError> {
-        crate::workflow::read(&self.connection, run)
+        crate::production::workflow_application::read(
+            &crate::production::workflow_sqlite::SqliteWorkflowRuns(&self.connection),
+            run,
+        )
     }
 
     /// Records an asset identity and one metadata-only version in a short transaction.
@@ -301,19 +341,35 @@ impl Application {
 impl Application {
     /// Records immutable caller-declared capacity; not authenticated consent.
     pub fn approve_budget(&mut self, a: &crate::budget::Allowance) -> Result<(), LibraryError> {
-        crate::budget::approve(&mut self.connection, a)
+        crate::consumption::application::approve(
+            &mut crate::consumption::sqlite::SqliteBudgetLedger(&mut self.connection),
+            a,
+        )
+        .map_err(Into::into)
     }
     pub fn budget_balance(&self, id: &str) -> Result<crate::budget::Balance, LibraryError> {
-        crate::budget::balance(&self.connection, id)
+        crate::consumption::application::balance(
+            &mut crate::consumption::sqlite::BudgetQuery(&self.connection),
+            id,
+        )
+        .map_err(Into::into)
     }
     pub fn reserve_call(
         &mut self,
         r: &crate::budget::Request,
     ) -> Result<crate::budget::Intent, LibraryError> {
-        crate::budget::reserve(&mut self.connection, r)
+        crate::consumption::application::reserve(
+            &mut crate::consumption::sqlite::SqliteBudgetLedger(&mut self.connection),
+            r,
+        )
+        .map_err(Into::into)
     }
     pub fn call_intent(&self, id: &str) -> Result<Option<crate::budget::Intent>, LibraryError> {
-        crate::budget::intent(&self.connection, id)
+        crate::consumption::application::intent(
+            &mut crate::consumption::sqlite::BudgetQuery(&self.connection),
+            id,
+        )
+        .map_err(Into::into)
     }
     /// One local counted callback, outside transactions. Panic leaves ATTEMPTING (uncertain).
     /// A returned callback also remains UNKNOWN until a separate explicit query receipt.
@@ -323,21 +379,39 @@ impl Application {
         id: &str,
         callback: impl FnOnce(),
     ) -> Result<bool, LibraryError> {
-        crate::budget::submit_test_fixture(&mut self.connection, id, callback)
+        crate::consumption::application::submit_test_fixture(
+            &mut crate::consumption::sqlite::SqliteBudgetLedger(&mut self.connection),
+            id,
+            callback,
+        )
+        .map_err(Into::into)
     }
     /// Cancellation releases a never-submitted preparing call, but retains uncertain reservations.
     pub fn cancel_call(&mut self, id: &str) -> Result<(), LibraryError> {
-        crate::budget::cancel(&mut self.connection, id)
+        crate::consumption::application::cancel(
+            &mut crate::consumption::sqlite::SqliteBudgetLedger(&mut self.connection),
+            id,
+        )
+        .map_err(Into::into)
     }
     pub fn reconcile_call(
         &mut self,
         id: &str,
         r: &crate::budget::Receipt,
     ) -> Result<(), LibraryError> {
-        crate::budget::reconcile(&mut self.connection, id, r)
+        crate::consumption::application::reconcile(
+            &mut crate::consumption::sqlite::SqliteBudgetLedger(&mut self.connection),
+            id,
+            r,
+        )
+        .map_err(Into::into)
     }
     pub fn call_receipts(&self, id: &str) -> Result<Vec<crate::budget::Receipt>, LibraryError> {
-        crate::budget::receipts(&self.connection, id)
+        crate::consumption::application::receipts(
+            &mut crate::consumption::sqlite::BudgetQuery(&self.connection),
+            id,
+        )
+        .map_err(Into::into)
     }
 }
 

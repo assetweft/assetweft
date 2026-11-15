@@ -71,8 +71,22 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("catalog")
-                .about("Query stored local metadata and fixture head; no availability or acceptance check")
+                .about("Register declarations/exact references or query stored metadata/head; no readiness check")
                 .subcommand_required(true)
+                .subcommand(
+                    Command::new("register-version")
+                        .about("Register immutable declared metadata; no managed bytes or rights verification")
+                        .arg(db())
+                        .arg(Arg::new("version").long("version").required(true)
+                            .value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("add-reference")
+                        .about("Register an exact existing component reference; no latest resolution")
+                        .arg(db())
+                        .arg(Arg::new("reference").long("reference").required(true)
+                            .value_parser(value_parser!(PathBuf))),
+                )
                 .subcommand(
                     Command::new("version")
                         .about("Read stored exact version metadata; no byte validation")
@@ -356,13 +370,18 @@ fn run() -> (i32, Value) {
         return consumption::budget_response(wire, call_id, action, budget_args, limits);
     }
     if command == "catalog" {
-        let (action, query_args) = args.subcommand().expect("clap requires a catalog query");
+        let (action, query_args) = args.subcommand().expect("clap requires a catalog action");
         let wire = match action {
+            "register-version" => "catalog register-version",
+            "add-reference" => "catalog add-reference",
             "version" => "catalog version",
             "references" => "catalog references",
             "current" => "catalog current",
             _ => unreachable!("clap grammar"),
         };
+        if matches!(action, "register-version" | "add-reference") {
+            return catalog::write_response(wire, call_id, action, query_args, limits);
+        }
         return catalog::query_response(wire, call_id, action, query_args);
     }
     if command == "candidate" {

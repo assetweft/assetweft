@@ -508,3 +508,121 @@ fn invalid_usage_and_zero_declarations_preserve_existing_guards() {
     );
     assert_eq!(count.get(), 1);
 }
+
+/// Issue #51 regression: callers must be able to import the concrete legacy variants
+/// directly. Rust forbids importing enum variants through a type alias, so this module
+/// only compiles while `executor_runtime` re-exports real enums, not `pub type` aliases.
+/// The signatures below are the pre-facade ones: no generic argument, concrete payloads.
+mod legacy_variant_import_paths {
+    use super::*;
+    use assetweft_core::executor_runtime::PreflightError::Identity;
+    use assetweft_core::executor_runtime::Submission::NotInvoked;
+
+    /// Legacy signature: `PreflightError` with the typed `LibraryError` database payload.
+    fn preflight_identity() -> PreflightError {
+        Identity
+    }
+    /// Legacy signature: `Submission` with the typed backend/recording fields.
+    fn not_invoked() -> Submission {
+        NotInvoked
+    }
+
+    #[test]
+    fn variant_import_paths_and_non_generic_types_survive() {
+        assert!(matches!(preflight_identity(), PreflightError::Identity));
+        assert!(matches!(not_invoked(), Submission::NotInvoked));
+
+        // Same values through the plain legacy type names, no turbofish anywhere.
+        let error: PreflightError = Identity;
+        assert!(matches!(error, PreflightError::Identity));
+        let outcome: Submission = NotInvoked;
+        assert!(matches!(outcome, Submission::NotInvoked));
+
+        let d = tempfile::tempdir().unwrap();
+        let mut a = setup(&d.path().join("db"));
+        let count = Rc::new(Cell::new(0));
+        let mut e = Executor::new(Fixture {
+            count: count.clone(),
+            query_count: Rc::new(Cell::new(0)),
+            answer: Ok(observation(RemoteState::Succeeded, vec![])),
+            submit: true,
+            action: None,
+        });
+        let (b, r) = request();
+
+        // Invoked branch: the exhaustive conversion keeps backend result, recording result
+        // and usage classification typed, exactly as the pre-facade API did.
+        let first: Submission = a
+            .submit_executor_local_test_fixture(&mut e, &b, &r)
+            .unwrap();
+        let Submission::Invoked {
+            backend,
+            recording,
+            usage,
+        } = first
+        else {
+            panic!("first invocation must be Invoked")
+        };
+        assert_eq!(backend.unwrap().state, RemoteState::Succeeded);
+        recording.unwrap();
+        assert_eq!(usage, Some(UsageSupport::Exact));
+        assert_eq!(count.get(), 1);
+
+        // Database branch: the typed LibraryError payload survives the conversion.
+        let (mut unknown_account, unknown_request) = request();
+        unknown_account.account = "missing".into();
+        assert!(matches!(
+            a.submit_executor_local_test_fixture(&mut e, &unknown_account, &unknown_request),
+            Err(PreflightError::Database(_))
+        ));
+
+        // Identity branch through the same public path.
+        let (_, mut wrong_correlation) = request();
+        wrong_correlation.correlation = reference("other");
+        assert!(matches!(
+            a.submit_executor_local_test_fixture(&mut e, &b, &wrong_correlation),
+            Err(PreflightError::Identity)
+        ));
+        assert_eq!(count.get(), 1);
+
+        // Legacy free function: identical concrete types, no generics at the call site.
+        let d = tempfile::tempdir().unwrap();
+        let mut free_app = setup(&d.path().join("db"));
+        let free_count = Rc::new(Cell::new(0));
+        let mut free_executor = Executor::new(Fixture {
+            count: free_count.clone(),
+            query_count: Rc::new(Cell::new(0)),
+            answer: Ok(observation(RemoteState::Unknown, vec![])),
+            submit: true,
+            action: None,
+        });
+        let (free_budget, mut free_request) = request();
+        free_request.correlation = reference("other");
+        assert!(matches!(
+            assetweft_core::executor_runtime::submit_local_test_fixture(
+                &mut free_app,
+                &mut free_executor,
+                &free_budget,
+                &free_request
+            ),
+            Err(PreflightError::Identity)
+        ));
+        free_request.correlation = reference("call");
+        let free_outcome: Submission = assetweft_core::executor_runtime::submit_local_test_fixture(
+            &mut free_app,
+            &mut free_executor,
+            &free_budget,
+            &free_request,
+        )
+        .unwrap();
+        assert!(matches!(
+            free_outcome,
+            Submission::Invoked {
+                backend: Ok(_),
+                recording: Ok(()),
+                usage: Some(UsageSupport::Exact)
+            }
+        ));
+        assert_eq!(free_count.get(), 1);
+    }
+}

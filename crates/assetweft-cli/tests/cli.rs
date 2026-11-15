@@ -2548,3 +2548,384 @@ fn candidate_query_protocol_survives_broken_streams() {
         0
     );
 }
+
+// Catalog uses public persisted metadata/head fixtures; expected wire values are explicit.
+fn catalog_args<'a>(action: &'a str, db: &'a OsStr, id: &'a OsStr) -> Vec<&'a OsStr> {
+    vec![
+        OsStr::new("catalog"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db,
+        OsStr::new(if action == "current" {
+            "--asset-id"
+        } else {
+            "--version-id"
+        }),
+        id,
+    ]
+}
+fn catalog_query(db: &Path, action: &str, id: &str, expected: Value) {
+    let mut args = vec![
+        OsStr::new("--call-id"),
+        OsStr::new("catalog correlation 独立"),
+    ];
+    args.extend(catalog_args(action, db.as_os_str(), OsStr::new(id)));
+    let (out, value) = candidate_invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    assert_eq!(
+        value,
+        json!({"schema_version":1,"command":format!("catalog {action}"),
+        "call_id":"catalog correlation 独立","status":"PASS","errors":[],"results":expected})
+    );
+    assert!(out.stderr.is_empty());
+    assert_eq!(out.stdout, candidate_invoke(&args).0.stdout);
+}
+fn catalog_version(
+    id: &str,
+    presence: assetweft_core::library::Presence,
+) -> assetweft_core::library::AssetVersion {
+    assetweft_core::library::AssetVersion {
+        asset_id: "metadata-asset".into(),
+        version_id: id.into(),
+        content_hash: "a".repeat(64),
+        input_id: "input 原样".into(),
+        source: " declared source ".into(),
+        authorization: "LOCAL DECLARATION ONLY".into(),
+        authorized: true,
+        license_id: "unverified-license".into(),
+        usage_scope: "TEST ONLY".into(),
+        source_format: "declared-format".into(),
+        contract_version: "1.0.0".into(),
+        presence,
+    }
+}
+#[test]
+fn catalog_version_projects_every_metadata_field_and_presence_without_bytes() {
+    use assetweft_core::library::Presence;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("目录 metadata library.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let rows = [
+        catalog_version("元 数据-v1", Presence::Unknown),
+        catalog_version("missing-bytes", Presence::Missing),
+    ];
+    for row in &rows {
+        app.add_asset_version(row).unwrap();
+    }
+    app.close().unwrap();
+    for (row, presence) in rows.iter().zip(["UNKNOWN", "MISSING"]) {
+        catalog_query(
+            &db,
+            "version",
+            &row.version_id,
+            json!({"scope":"stored_local_asset_version_metadata","version":{
+            "asset_id":"metadata-asset","version_id":row.version_id,"content_hash":"a".repeat(64),
+            "input_id":"input 原样","source":" declared source ","authorization":"LOCAL DECLARATION ONLY",
+            "authorized":true,"license_id":"unverified-license","usage_scope":"TEST ONLY",
+            "source_format":"declared-format","contract_version":"1.0.0","presence":presence}}),
+        );
+    }
+    catalog_query(
+        &db,
+        "version",
+        "absent",
+        json!({"scope":"stored_local_asset_version_metadata","version":null}),
+    );
+    let mut reopened = Application::open(&db).unwrap();
+    for row in rows {
+        assert_eq!(reopened.asset_version(&row.version_id).unwrap(), Some(row));
+    }
+    assert_eq!(reopened.asset_version("absent").unwrap(), None);
+    assert!(!dir.path().join("objects").exists());
+}
+#[test]
+fn catalog_references_preserve_all_roles_exact_versions_and_owner_order() {
+    use assetweft_core::library::{ComponentReference, ComponentRole, Presence};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("目录 references.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let roles = [
+        ComponentRole::Vfx,
+        ComponentRole::Rig,
+        ComponentRole::Motion,
+        ComponentRole::Mesh,
+        ComponentRole::Materials,
+        ComponentRole::Dialogue,
+        ComponentRole::Audio,
+        ComponentRole::Mesh,
+    ];
+    app.add_asset_version(&catalog_version("owner", Presence::Unknown))
+        .unwrap();
+    for (i, role) in roles.into_iter().enumerate() {
+        let id = format!("component-{i}");
+        app.add_asset_version(&catalog_version(&id, Presence::Missing))
+            .unwrap();
+        app.add_component_reference(&ComponentReference {
+            owner_version_id: "owner".into(),
+            role,
+            component_version_id: id,
+        })
+        .unwrap();
+    }
+    let before = app.component_references("owner").unwrap();
+    assert_eq!(
+        before
+            .iter()
+            .map(|r| r.component_version_id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "component-6",
+            "component-5",
+            "component-4",
+            "component-3",
+            "component-7",
+            "component-2",
+            "component-1",
+            "component-0"
+        ]
+    );
+    app.close().unwrap();
+    catalog_query(
+        &db,
+        "references",
+        "owner",
+        json!({"scope":"stored_local_exact_component_references","references":[
+        {"owner_version_id":"owner","role":"audio","component_version_id":"component-6"},
+        {"owner_version_id":"owner","role":"dialogue","component_version_id":"component-5"},
+        {"owner_version_id":"owner","role":"materials","component_version_id":"component-4"},
+        {"owner_version_id":"owner","role":"mesh","component_version_id":"component-3"},
+        {"owner_version_id":"owner","role":"mesh","component_version_id":"component-7"},
+        {"owner_version_id":"owner","role":"motion","component_version_id":"component-2"},
+        {"owner_version_id":"owner","role":"rig","component_version_id":"component-1"},
+        {"owner_version_id":"owner","role":"vfx","component_version_id":"component-0"}]}),
+    );
+    for id in ["absent", "component-0"] {
+        catalog_query(
+            &db,
+            "references",
+            id,
+            json!({"scope":"stored_local_exact_component_references","references":[]}),
+        );
+    }
+    let mut reopened = Application::open(&db).unwrap();
+    assert_eq!(reopened.component_references("owner").unwrap(), before);
+    assert_eq!(
+        reopened.asset_version("owner").unwrap(),
+        Some(catalog_version("owner", Presence::Unknown))
+    );
+    assert!(reopened.component_references("absent").unwrap().is_empty());
+}
+#[test]
+fn catalog_current_preserves_real_stored_head_contract_after_cas_disappears() {
+    use assetweft_core::candidate::Acceptance;
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut app, proposal) = candidate_fixture(dir.path(), false);
+    let initial = app.candidate_current("character").unwrap();
+    assert_eq!(initial.as_ref().unwrap().revision, 0);
+    catalog_query(
+        &db,
+        "current",
+        "character",
+        json!({"scope":"stored_local_candidate_current","current":{
+        "asset_id":"character","version_id":"base","revision":0,"contract":{
+            "contract_id":"TEST_FIXTURE_GLB_STRUCTURE_V1","max_component_bytes":1048576,"required_quality":[]}}}),
+    );
+    let descriptor = app.propose_candidate(&proposal).unwrap();
+    let receipt = app.attempt_accept_candidate(&proposal.id).unwrap();
+    assert!(matches!(&receipt, Acceptance::Accepted { current, .. } if current.revision == 1));
+    let head = app.candidate_current("character").unwrap();
+    let version = app.asset_version("mesh0").unwrap();
+    let refs = app.component_references("base").unwrap();
+    let managed = app.managed_object("mesh0").unwrap().unwrap();
+    app.close().unwrap();
+    for remove in [false, true] {
+        if remove {
+            let owned = dir.path().join("objects").join(&managed.content_hash);
+            assert!(owned.is_file());
+            fs::remove_file(&owned).unwrap();
+        }
+        catalog_query(
+            &db,
+            "current",
+            "character",
+            json!({"scope":"stored_local_candidate_current","current":{
+            "asset_id":"character","version_id":"proposed","revision":1,"contract":{
+                "contract_id":"TEST_FIXTURE_GLB_STRUCTURE_V1","max_component_bytes":1048576,"required_quality":[]}}}),
+        );
+        catalog_query(
+            &db,
+            "current",
+            "absent",
+            json!({"scope":"stored_local_candidate_current","current":null}),
+        );
+        let mut reopened = Application::open(&db).unwrap();
+        assert_eq!(reopened.candidate_current("character").unwrap(), head);
+        assert_eq!(reopened.asset_version("mesh0").unwrap(), version);
+        assert_eq!(reopened.component_references("base").unwrap(), refs);
+        assert_eq!(
+            reopened.candidate(&proposal.id).unwrap(),
+            Some(descriptor.clone())
+        );
+        assert_eq!(
+            reopened.candidate_attempt(&proposal.id).unwrap(),
+            Some(receipt.clone())
+        );
+        reopened.close().unwrap();
+    }
+}
+#[test]
+fn catalog_identity_database_grammar_and_help_follow_existing_owner_policies() {
+    use assetweft_core::library::LibraryError;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("目录 errors.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    for action in ["version", "references", "current"] {
+        for id in ["", ".", "..", "invalid/id", " space 元 "] {
+            let result = match action {
+                "version" => app.asset_version(id).map(|v| v.is_none()),
+                "references" => app.component_references(id).map(|v| v.is_empty()),
+                _ => app.candidate_current(id).map(|v| v.is_none()),
+            };
+            let (out, value) =
+                candidate_invoke(&catalog_args(action, db.as_os_str(), OsStr::new(id)));
+            match result {
+                Err(e @ LibraryError::InvalidInput(_)) => {
+                    assert_eq!(out.status.code(), Some(2), "{value}");
+                    assert_eq!(value["status"], "INVALID_INPUT");
+                    assert_eq!(
+                        value["errors"][0],
+                        json!({"field_path":"catalog","code":"INVALID_INPUT","message":e.to_string()})
+                    );
+                    assert_eq!(value["results"], Value::Null);
+                }
+                Ok(true) => {
+                    assert_eq!(out.status.code(), Some(0), "{value}");
+                }
+                other => panic!("unexpected fixture owner result: {other:?}"),
+            }
+        }
+        let missing = dir.path().join(format!("missing-{action}.sqlite"));
+        let empty = dir.path().join(format!("empty-{action}.sqlite"));
+        fs::write(&empty, []).unwrap();
+        for (path, code, status, field) in [
+            (missing.as_path(), 2, "INVALID_INPUT", "db"),
+            (dir.path(), 2, "INVALID_INPUT", "db"),
+            (empty.as_path(), 3, "INPUT_INCOMPLETE", "catalog"),
+        ] {
+            let (out, value) =
+                candidate_invoke(&catalog_args(action, path.as_os_str(), OsStr::new("valid")));
+            assert_eq!(out.status.code(), Some(code), "{value}");
+            assert_eq!(value["status"], status);
+            assert_eq!(value["errors"][0]["field_path"], field);
+            assert_eq!(value["results"], Value::Null);
+        }
+        assert!(!missing.exists());
+        assert_eq!(fs::metadata(&empty).unwrap().len(), 0);
+        let mut empty_app = Application::open(&empty).unwrap();
+        assert!(matches!(
+            empty_app.asset_version("valid"),
+            Err(LibraryError::Uninitialized)
+        ));
+        let key = if action == "current" {
+            "--asset-id"
+        } else {
+            "--version-id"
+        };
+        for tail in [
+            vec![],
+            vec![OsStr::new("--db"), db.as_os_str()],
+            vec![OsStr::new(key), OsStr::new("valid")],
+        ] {
+            let mut args = vec![
+                OsStr::new("--call-id"),
+                OsStr::new("syntax-id"),
+                OsStr::new("catalog"),
+                OsStr::new(action),
+            ];
+            args.extend(tail);
+            let (out, value) = candidate_invoke(&args);
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(value["call_id"], "syntax-id");
+        }
+        for bad in ["--extra", "--max-bytes=0", "--max-bytes=16777217"] {
+            let mut args = vec![OsStr::new("--call-id"), OsStr::new("syntax-id")];
+            args.extend(catalog_args(action, db.as_os_str(), OsStr::new("valid")));
+            args.push(OsStr::new(bad));
+            let (out, value) = candidate_invoke(&args);
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(value["call_id"], "syntax-id");
+        }
+        let (out, help) = candidate_invoke(&[
+            OsStr::new("--call-id"),
+            OsStr::new("help-id"),
+            OsStr::new("catalog"),
+            OsStr::new(action),
+            OsStr::new("--help"),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(help["status"], "HELP");
+        assert_eq!(help["call_id"], "help-id");
+        let text = help["results"]["text"].as_str().unwrap();
+        assert!(text.contains("stored") && text.contains(key));
+    }
+    for tail in [vec![], vec![OsStr::new("show")], vec![OsStr::new("write")]] {
+        let mut args = vec![OsStr::new("catalog")];
+        args.extend(tail);
+        assert_eq!(candidate_invoke(&args).0.status.code(), Some(2));
+    }
+}
+#[cfg(any(unix, windows))]
+#[test]
+fn catalog_query_protocol_preserves_broken_stream_exit_and_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, _) = candidate_fixture(dir.path(), false);
+    app.close().unwrap();
+    for (action, id) in [
+        ("version", "base"),
+        ("references", "base"),
+        ("current", "character"),
+    ] {
+        for invalid in [false, true] {
+            let mut args = vec![OsStr::new("--call-id"), OsStr::new("stream-id")];
+            args.extend(catalog_args(action, db.as_os_str(), OsStr::new(id)));
+            if invalid {
+                args.push(OsStr::new("--extra"));
+            }
+            let ordinary = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+                .args(&args)
+                .output()
+                .unwrap();
+            assert_eq!(ordinary.status.code(), Some(if invalid { 2 } else { 0 }));
+            let broken_err = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+                .args(&args)
+                .stderr(broken_output())
+                .output()
+                .unwrap();
+            assert_eq!(broken_err.status.code(), ordinary.status.code());
+            assert_eq!(broken_err.stdout, ordinary.stdout);
+            let value: Value = serde_json::from_slice(&broken_err.stdout).unwrap();
+            assert_eq!(value["call_id"], "stream-id");
+            for both in [false, true] {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_assetweft"));
+                command.args(&args).stdout(broken_output());
+                if both {
+                    command.stderr(broken_output());
+                }
+                assert_eq!(command.output().unwrap().status.code(), Some(6));
+            }
+        }
+    }
+    let mut reopened = Application::open(&db).unwrap();
+    assert_eq!(
+        reopened
+            .candidate_current("character")
+            .unwrap()
+            .unwrap()
+            .revision,
+        0
+    );
+    assert_eq!(reopened.component_references("base").unwrap().len(), 1);
+}

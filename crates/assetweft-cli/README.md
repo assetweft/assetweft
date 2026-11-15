@@ -8,7 +8,8 @@ and `workflow cancel` persists a cancellation request. `budget approve` stores a
 reads its local ledger. `budget reserve` stores a local call intent, `budget intent`
 reads it and `budget cancel` requests local cancellation. These commands never execute
 steps or call providers. `candidate show/receipt` query stored local descriptors and
-historical acceptance receipts through Production.
+historical acceptance receipts through Production. `catalog version/references/current`
+query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
@@ -25,12 +26,16 @@ assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
+assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
+assetweft [--call-id ID] catalog references --db EXISTING_DB --version-id ID
+assetweft [--call-id ID] catalog current --db EXISTING_DB --asset-id ID
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
 16777216, minimum 1), including `workflow create --steps`, `budget approve --allowance`
-and `budget reserve --request`; it never bounds database size and has no effect on
-init/status/cancel/balance/intent/candidate queries.
+and `budget reserve --request`; it never bounds database size or query result sizes and
+has no effect on init/status/cancel/balance/intent/candidate/catalog queries.
+Its existing numeric parser validation still applies to every command.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
 `library init`, `workflow create/cancel` and `budget approve/reserve/cancel` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
@@ -39,7 +44,8 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
 `command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
-`budget reserve`, `budget intent`, `budget cancel`, `candidate show`, `candidate receipt`, `arguments`,
+`budget reserve`, `budget intent`, `budget cancel`, `candidate show`, `candidate receipt`,
+`catalog version`, `catalog references`, `catalog current`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
@@ -77,12 +83,14 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 |---|---|---|
 | `production.rs` | plan DTO/result projection; workflow create/status/cancel; stored candidate queries | [Production](../assetweft-core/src/production/CONTRACT.md) |
 | `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
+| `catalog.rs` | exact version metadata/reference projection and stored fixture-head query | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
 | `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
 
 Adapters depend inward on these public capabilities and share only transport helpers;
-core `Application` retains composition, persistence and business policy. No CLI entry needs
-an empty Catalog/Execution module or another domain/port/registry layer.
+core `Application` retains composition, persistence and business policy. Catalog now has a
+real incoming consumer in `catalog.rs`; its legacy `candidate_current` facade is Catalog-owned.
+No empty Execution module or additional domain/port/registry layer is introduced.
 
 ## Explicit library initialization and workflow commands (AW-033:B bounded slice)
 
@@ -121,7 +129,7 @@ no claim, execution, generation, provider call or budget approval. There is no e
 read or retry after the write. New steps are pending without outcomes; use status for
 current state, which can change through existing product use cases.
 
-The following existing-file guard applies to **workflow create/status/cancel, all budget commands and candidate queries**,
+The following existing-file guard applies to **workflow create/status/cancel, all budget commands, candidate queries and Catalog queries**,
 not explicit init.
 
 `--db` must name an existing regular file (symlinks followed), checked with filesystem
@@ -281,7 +289,7 @@ intent/balance separately. This slice is not full AW-033:B or product acceptance
 
 Exit mapping (CONTRACTS §10.5): 0 scoped checks pass / declaration consistent /
 library initialized / workflow created / status read / cancellation request persisted /
-local allowance stored, balance/intent read, or local intent reserved/cancellation requested /
+local allowance stored, balance/intent or Catalog metadata/head read, or local intent reserved/cancellation requested /
 help/version; 1 core validation
 or other contract FAIL (including persisted workflow Database diagnostics); 2 malformed
 arguments, unreadable/oversized files, malformed JSON/GLB inspection, invalid or non-regular
@@ -367,3 +375,65 @@ quality/rights/F0/provider/production acceptance or proof that the bytes still e
 Repeated/reopened queries preserve the stored values even after fixture bytes disappear;
 concurrent business writes can change what separate invocations observe. Full AW-033:B,
 product acceptance, providers, paid execution, F0, AI and engines remain outside this slice.
+
+
+## Stored Catalog queries (AW-033:B bounded slice)
+
+All three commands use the same `existing_database` regular-file admission and
+`Application::open` as the other persisted queries. They do not intentionally create,
+initialize or migrate a library: a missing/nonregular path fails INVALID_INPUT/2 at `db`;
+a valid empty file remains uninitialized and returns INPUT_INCOMPLETE/3 at `catalog`.
+The metadata precheck/open is not atomic, disappearance can race a create-capable open,
+and opens configure existing SQLite connection pragmas. No filesystem read-only claim is made.
+
+Each action calls exactly one owning public facade once: `asset_version`,
+`component_references`, or `candidate_current`, then translates only its returned value.
+IDs pass verbatim without trim, normalization or CLI revalidation. Core owns identity,
+schema, decoding and error precedence. In particular, version/reference IDs and asset
+head IDs have different core rules; the CLI does not unify them. `--call-id` remains
+independent envelope correlation. No retry, extra lookup, latest fallback, expansion,
+CAS access, validation, acceptance, head advance or receipt recomputation occurs.
+Separate commands do not provide an atomic multi-query snapshot.
+
+`catalog version` returns `results` with exactly
+`{"scope":"stored_local_asset_version_metadata","version":VALUE_OR_NULL}`.
+The stored object preserves every AssetVersion field: `asset_id`, `version_id`,
+`content_hash`, `input_id`, `source`, `authorization`, `authorized`, `license_id`,
+`usage_scope`, `source_format`, `contract_version`, and `presence`.
+Presence is exactly `UNKNOWN` or `MISSING`; there is no READY state. Authorization,
+authorized and license fields are stored declarations, never a new authentication,
+rights or availability guarantee. A valid absent identity returns `version:null`.
+
+`catalog references` returns
+`{"scope":"stored_local_exact_component_references","references":[...]}`.
+Every entry preserves `owner_version_id`, `role`, `component_version_id` and the exact
+returned order (currently core orders by role then component version). The seven role
+strings are `mesh`, `materials`, `rig`, `motion`, `vfx`, `audio`, `dialogue`.
+There is no CLI sorting or role parsing. Both an absent owner version and an existing
+version with no references retain the returned empty `[]`, without an invented NotFound.
+
+`catalog current` returns
+`{"scope":"stored_local_candidate_current","current":VALUE_OR_NULL}`.
+It serializes the existing Current unchanged: `asset_id`, `version_id`, `revision`,
+`contract`; FixtureContract retains `contract_id`, `max_component_bytes`, `required_quality`.
+A valid absent asset returns `current:null`. This is the stored fixture head, distinct
+from an historical Accepted receipt and never availability, quality, rights, provider
+or product acceptance. No fresh contract validation is performed.
+
+Outer PASS/exit 0 means query success, including null/empty results and metadata-only
+UNKNOWN/MISSING. Facade failures use `field_path: catalog` and the existing exhaustive
+LibraryError mapping: InvalidInput/Constraint → INVALID_INPUT/2; Uninitialized →
+INPUT_INCOMPLETE/3; FutureSchema → UNSUPPORTED/5; Busy/Io → INTERNAL/6;
+Database/UnknownValue → FAIL/1. Path/open failures retain INVALID_INPUT/2 at `db`,
+including an open-time future-schema failure; no error-string classification is added.
+The shared process retains best-effort stderr and stdout-failure exit 6, including
+invalid grammar. Global max-bytes parsing is retained but bounds neither DB nor results.
+
+Synthetic actual-binary tests cover both presences/all metadata fields, all seven roles,
+ordered exact references/null/empty, real persisted head revisions/contracts, repeat/reopen,
+owned fixture CAS disappearance, ID/DB/grammar/help/correlation and broken streams.
+Direct old/future/corrupt-schema runtime fixtures are NOT_RUN because public fixture APIs
+do not construct them; no raw SQL or corruption is added to fill that coverage.
+Full workspace C1, current-SHA CI, native Windows/macOS matrix, different-family independent
+review, Git publication/merge, full AW-033:B, product/AI/provider/paid/F0/engine/production
+acceptance remain NOT_RUN in this author slice. Root owns those separate gates.

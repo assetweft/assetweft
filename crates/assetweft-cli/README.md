@@ -58,6 +58,22 @@ DECLARATION_CONSISTENT/0, never aggregate PASS: execution is always NOT_RUN,
 authenticity NOT_VERIFIED. Recipe describes scope only. Unknown costs stay null;
 TEST_FIXTURE and authorization/engine declarations never imply real execution.
 
+## Incoming adapter ownership
+
+`main.rs` owns process I/O, argument grammar/dispatch and explicit library infrastructure
+bootstrap. Business adapters translate wire inputs/results through the same existing core APIs:
+
+| Module | CLI responsibility | Core policy owner |
+|---|---|---|
+| `production.rs` | plan DTO/result projection; workflow create/status/cancel | [Production](../assetweft-core/src/production/CONTRACT.md) |
+| `consumption.rs` | strict allowance DTOs; budget approve/balance | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
+| `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
+| `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
+
+Adapters depend inward on these public capabilities and share only transport helpers;
+core `Application` retains composition, persistence and business policy. No CLI entry needs
+an empty Catalog/Execution module or another domain/port/registry layer.
+
 ## Explicit library initialization and workflow commands (AW-033:B bounded slice)
 
 `library init --db PATH` calls `Application::open` then `initialize_library` once.

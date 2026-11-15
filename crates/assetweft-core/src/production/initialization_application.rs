@@ -44,7 +44,7 @@ pub(crate) fn initialize(
             "fixture base source/asset",
         ));
     }
-    let snapshots = port.snapshot(version)?;
+    let snapshots = port.snapshot(version, contract.max_component_bytes)?;
     let report = port.validate(&snapshots, contract)?;
     if !report_passes(&report, snapshots.len()) {
         return Err(InitializationError::InvalidInput(
@@ -130,8 +130,10 @@ mod tests {
         fn snapshot(
             &mut self,
             version: &str,
+            max_component_bytes: u64,
         ) -> Result<Vec<ComponentSnapshot>, InitializationError> {
             assert_eq!(version, "base");
+            assert_eq!(max_component_bytes, contract().max_component_bytes);
             self.call("snapshot")?;
             Ok(snapshots())
         }

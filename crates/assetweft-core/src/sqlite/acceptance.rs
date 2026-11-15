@@ -57,8 +57,18 @@ impl AcceptanceInputs for SqliteAcceptance<'_> {
         )
         .map_err(Into::into)
     }
-    fn remeasure_base(&mut self, snapshots: &[ComponentSnapshot]) -> Result<(), AcceptanceError> {
+    fn remeasure_base(
+        &mut self,
+        snapshots: &[ComponentSnapshot],
+        max_component_bytes: u64,
+    ) -> Result<(), AcceptanceError> {
         for s in snapshots {
+            // The frozen base is re-checked against the candidate's declared bound
+            // on the actual file before Catalog managed CAS hashing.
+            crate::production::staging_sqlite::bounded_regular(
+                &self.root.join("objects").join(&s.measured_sha256),
+                Some(max_component_bytes),
+            )?;
             if crate::production::staging_sqlite::measured(self.conn, self.root, &s.version)?
                 .content_hash
                 != s.measured_sha256

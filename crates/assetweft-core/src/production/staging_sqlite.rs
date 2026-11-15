@@ -1,6 +1,7 @@
 //! Responsibility: concrete SQLite candidate freeze/read and bounded managed-byte verification.
 //! Dependencies: Catalog concrete reads, CAS lease, rusqlite and Assurance checks; callers: Application, acceptance and initialization adapters.
-//! Invariants: encoding before lease, reference recheck under lease before IMMEDIATE, unchanged SQL/parameters, no replay.
+//! Invariants: encoding before lease, reference recheck under lease before IMMEDIATE, unchanged SQL/parameters, no replay;
+//! a declared contract byte bound rejects the actual managed regular file before CAS hashing or Assurance validation.
 use super::{
     domain::{AcceptanceReport, Candidate, ComponentEvidence, ComponentSnapshot},
     staging_application::FrozenProposal,
@@ -17,6 +18,8 @@ use std::path::Path;
 fn invalid(s: &'static str) -> LibraryError {
     LibraryError::InvalidInput(s)
 }
+/// Existing ceiling for managed staging when no fixture contract is declared.
+const MANAGED_BYTE_CEILING: u64 = 16 * 1024 * 1024;
 pub(crate) struct SqliteStaging<'a> {
     pub conn: &'a mut Connection,
     pub root: &'a Path,
@@ -34,8 +37,12 @@ impl Staging for SqliteStaging<'_> {
             proposed_asset: proposed.asset_id,
         })
     }
-    fn snapshot(&mut self, owner: &str) -> Result<Vec<ComponentSnapshot>, StagingError> {
-        snapshot(self.conn, self.root, owner).map_err(Into::into)
+    fn snapshot(
+        &mut self,
+        owner: &str,
+        max_component_bytes: Option<u64>,
+    ) -> Result<Vec<ComponentSnapshot>, StagingError> {
+        snapshot(self.conn, self.root, owner, max_component_bytes).map_err(Into::into)
     }
     fn freeze(&mut self, proposal: FrozenProposal) -> Result<Candidate, StagingError> {
         freeze(self.conn, self.root, proposal.into_candidate()).map_err(Into::into)
@@ -96,10 +103,14 @@ pub(crate) fn read(conn: &Connection, id: &str) -> Result<Option<Candidate>, Lib
         .map(|s| serde_json::from_str(&s).map_err(|_| invalid("stored descriptor")))
         .transpose()
 }
+/// Measure an owner's components. A declared bound is checked against the actual
+/// regular file before `measured` opens the CAS identity path, so an over-limit file
+/// is never hashed or structure-validated first. `None` keeps the staging ceiling.
 pub(crate) fn snapshot(
     conn: &mut Connection,
     root: &Path,
     owner: &str,
+    max_component_bytes: Option<u64>,
 ) -> Result<Vec<ComponentSnapshot>, LibraryError> {
     let refs = crate::catalog::sqlite_metadata::component_references(conn, owner)?;
     super::staging_domain::component_count(refs.len()).map_err(LibraryError::from)?;
@@ -115,6 +126,10 @@ pub(crate) fn snapshot(
             crate::catalog::sqlite_metadata::asset_version(conn, &r.component_version_id)?
                 .ok_or_else(|| invalid("component metadata"))?;
         super::staging_domain::component_source(&metadata.source).map_err(LibraryError::from)?;
+        bounded_regular(
+            &root.join("objects").join(&metadata.content_hash),
+            max_component_bytes,
+        )?;
         let object = measured(conn, root, &r.component_version_id)?;
         result.push(ComponentSnapshot {
             role: r.role.as_str().into(),
@@ -155,10 +170,7 @@ pub(crate) fn measured(
         .ok_or_else(|| invalid("managed metadata"))?;
     crate::catalog::domain::validate_version(&metadata).map_err(LibraryError::from)?;
     let path = root.join("objects").join(&metadata.content_hash);
-    let info = std::fs::symlink_metadata(path).map_err(|e| LibraryError::Io(e.to_string()))?;
-    if !info.file_type().is_file() || info.len() > 16 * 1024 * 1024 {
-        return Err(invalid("bounded managed regular file"));
-    }
+    bounded_regular(&path, None)?;
     wait_storage(|| {
         match crate::catalog::objects_application::managed(
             &mut crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, std::io::empty()),
@@ -172,6 +184,21 @@ pub(crate) fn measured(
             Ok(value) => value.ok_or_else(|| invalid("unmanaged component")),
         }
     })
+}
+/// Size/type gate for the actual managed file. The global ceiling and diagnostics are
+/// unchanged; a declared contract bound adds only the earlier, cheaper rejection.
+pub(crate) fn bounded_regular(
+    path: &Path,
+    max_component_bytes: Option<u64>,
+) -> Result<(), LibraryError> {
+    let info = std::fs::symlink_metadata(path).map_err(|e| LibraryError::Io(e.to_string()))?;
+    if !info.file_type().is_file() || info.len() > MANAGED_BYTE_CEILING {
+        return Err(invalid("bounded managed regular file"));
+    }
+    if max_component_bytes.is_some_and(|max| info.len() > max) {
+        return Err(invalid("component byte limit"));
+    }
+    Ok(())
 }
 pub(crate) fn check_refs(
     conn: &mut Connection,
@@ -223,6 +250,13 @@ pub(crate) fn validate_components(
                 continue;
             }
         };
+        // Reject the actual file on its declared bound before CAS hashing/validation.
+        let metadata = crate::catalog::sqlite_metadata::asset_version(conn, &s.version)?
+            .ok_or_else(|| invalid("component version"))?;
+        bounded_regular(
+            &root.join("objects").join(&metadata.content_hash),
+            Some(contract.max_component_bytes),
+        )?;
         let object = measured(conn, root, &s.version)?;
         if object.content_hash != s.measured_sha256 {
             return Err(invalid("candidate byte drift"));
@@ -230,8 +264,6 @@ pub(crate) fn validate_components(
         if object.byte_length > contract.max_component_bytes {
             return Err(invalid("component byte limit"));
         }
-        let metadata = crate::catalog::sqlite_metadata::asset_version(conn, &s.version)?
-            .ok_or_else(|| invalid("component version"))?;
         if metadata.source != "TEST_FIXTURE" || metadata.source_format != "GLB" {
             report
                 .not_run

@@ -15,7 +15,13 @@ pub(crate) struct Owners {
 }
 pub(crate) trait Staging {
     fn owners(&mut self, base: &str, proposed: &str) -> Result<Owners, StagingError>;
-    fn snapshot(&mut self, owner: &str) -> Result<Vec<ComponentSnapshot>, StagingError>;
+    /// `max_component_bytes` is the use-case-validated declared bound; it is checked
+    /// against the actual regular file before CAS hashing. `None` retains the ceiling.
+    fn snapshot(
+        &mut self,
+        owner: &str,
+        max_component_bytes: Option<u64>,
+    ) -> Result<Vec<ComponentSnapshot>, StagingError>;
     fn freeze(&mut self, proposal: FrozenProposal) -> Result<Candidate, StagingError>;
 }
 pub(crate) trait CandidateRead {

@@ -1,15 +1,16 @@
 //! Responsibility: M6 bounded machine CLI: read-only GLB/declaration checks plus persisted
-//! explicit library initialization and workflow create/status/cancel; v1 JSON wire DTOs.
+//! explicit library initialization, workflow create/status/cancel and local budget declarations.
 //! Dependencies: clap grammar, serde wire parsing, Assurance checks, Production specification
-//! and the shared Application workflow use cases.
+//! and the shared Application Production/Consumption use cases; v1 JSON wire DTOs.
 //! Callers: humans, automation, C1 black-box tests.
 //! Invariants: one JSON line stdout; no generation, shell or network calls; workflow commands
 //! only parse, persist and project Production state, never execute or reconcile. Only
 //! explicit library init initializes/migrates; other commands require an existing library.
-//! Supplied context is a declaration, never authenticated by this process.
+//! Supplied context/allowances are local declarations, never authenticated consent or price proof.
 use assetweft_core::{
     application::Application,
     assurance as val,
+    budget::{Allowance, Approval, Unit},
     library::LibraryError,
     production::specification as spec,
     workflow::{Outcome, State, Step, StepRecord},
@@ -43,7 +44,7 @@ fn grammar() -> Command {
     Command::new("assetweft")
         .version(env!("CARGO_PKG_VERSION"))
         .about(
-            "Bounded checks, explicit library init and workflow create/status/cancel; no generation",
+            "Bounded checks, library/workflow state and local budget declarations; no generation",
         )
         .arg(Arg::new("call-id").long("call-id").global(true))
         .arg(
@@ -102,6 +103,25 @@ fn grammar() -> Command {
                         .about("Persist a cancellation request; never stops processes or refunds")
                         .arg(db())
                         .arg(run_id()),
+                ),
+        )
+        .subcommand(
+            Command::new("budget")
+                .about("Immutable LOCAL allowance declarations and local ledger balances; no payment")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("approve")
+                        .about("Store a caller's local declaration in an existing initialized library")
+                        .arg(db())
+                        .arg(Arg::new("allowance").long("allowance").required(true)
+                            .value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("balance")
+                        .about("Read the exact local allowance, reserved and spent integers")
+                        .arg(db())
+                        .arg(Arg::new("budget-id").long("budget-id").required(true)
+                            .value_parser(value_parser!(String))),
                 ),
         )
         .subcommand(
@@ -169,6 +189,89 @@ impl<'de> serde::Deserialize<'de> for StepObject {
             }
         }
         deserializer.deserialize_map(ObjectVisitor)
+    }
+}
+/// Wire shape only; Consumption alone owns text, currency, integer and approval policy.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AllowanceInput {
+    id: String,
+    unit: UnitInput,
+    capacity: u64,
+    approval: Approval,
+    source: String,
+}
+#[derive(serde::Deserialize)]
+enum UnitInput {
+    Token,
+    Task,
+    Second,
+    CurrencyMinor(CurrencyObject),
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrencyInput {
+    currency: String,
+    decimals: u8,
+}
+/// A map-only boundary retains serde's duplicate/missing/type checks and rejects arrays.
+struct CurrencyObject(CurrencyInput);
+impl<'de> serde::Deserialize<'de> for CurrencyObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CurrencyVisitor;
+        impl<'de> serde::de::Visitor<'de> for CurrencyVisitor {
+            type Value = CurrencyObject;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a currency object with currency and decimals")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                <CurrencyInput as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(CurrencyObject)
+            }
+        }
+        deserializer.deserialize_map(CurrencyVisitor)
+    }
+}
+struct AllowanceObject(Allowance);
+impl<'de> serde::Deserialize<'de> for AllowanceObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AllowanceVisitor;
+        impl<'de> serde::de::Visitor<'de> for AllowanceVisitor {
+            type Value = AllowanceObject;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an allowance object with id, unit, capacity, approval and source")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let input = <AllowanceInput as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                let unit = match input.unit {
+                    UnitInput::Token => Unit::Token,
+                    UnitInput::Task => Unit::Task,
+                    UnitInput::Second => Unit::Second,
+                    UnitInput::CurrencyMinor(CurrencyObject(c)) => Unit::CurrencyMinor {
+                        currency: c.currency,
+                        decimals: c.decimals,
+                    },
+                };
+                Ok(AllowanceObject(Allowance {
+                    id: input.id,
+                    unit,
+                    capacity: input.capacity,
+                    approval: input.approval,
+                    source: input.source,
+                }))
+            }
+        }
+        deserializer.deserialize_map(AllowanceVisitor)
     }
 }
 fn source(s: &val::SourceDeclaration) -> Value {
@@ -432,6 +535,66 @@ fn workflow_response(
         }
     }
 }
+/// One facade operation only: no retry, top-up/reset, extra read after write or provider call.
+/// Balance is a local projection, not a filesystem read-only or external fee guarantee.
+fn budget_response(
+    wire: &str,
+    call_id: Option<&String>,
+    action: &str,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let db = args.get_one::<PathBuf>("db").expect("required");
+    let finish =
+        |code, status, errors, results| (code, envelope(wire, call_id, status, errors, results));
+    if let Err(e) = existing_database(db) {
+        return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
+    }
+    let mut app = match Application::open(db) {
+        Ok(app) => app,
+        Err(e) => {
+            return finish(
+                2,
+                "INVALID_INPUT",
+                json!([error("db", "INVALID_INPUT", e)]),
+                Value::Null,
+            );
+        }
+    };
+    let result = if action == "approve" {
+        let path = args.get_one::<PathBuf>("allowance").expect("required");
+        let AllowanceObject(allowance) = match read_json(path, limits, "allowance") {
+            Ok(input) => input,
+            Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
+        };
+        app.approve_budget(&allowance).map(|()| {
+            json!({
+                "scope":"stored_local_allowance_declaration","allowance":allowance,
+            })
+        })
+    } else {
+        // Verbatim, including empty IDs: preserve the actual query's error category.
+        let id = args.get_one::<String>("budget-id").expect("required");
+        app.budget_balance(id).map(|balance| {
+            json!({
+                "scope":"local_budget_balance","allowance":balance.allowance,
+                "reserved":balance.reserved,"spent":balance.spent,
+            })
+        })
+    };
+    match result {
+        Ok(value) => finish(0, "PASS", json!([]), value),
+        Err(e) => {
+            let (code, status) = library_outcome(&e);
+            finish(
+                code,
+                status,
+                json!([error("budget", status, e)]),
+                Value::Null,
+            )
+        }
+    }
+}
 fn run() -> (i32, Value) {
     let argv: Vec<_> = std::env::args_os().collect();
     let matches = match grammar().try_get_matches_from(&argv) {
@@ -498,6 +661,15 @@ fn run() -> (i32, Value) {
     if command == "library" {
         let (_, init_args) = args.subcommand().expect("clap requires library init");
         return library_init_response(call_id, init_args);
+    }
+    if command == "budget" {
+        let (action, budget_args) = args.subcommand().expect("clap requires a budget action");
+        let wire = if action == "approve" {
+            "budget approve"
+        } else {
+            "budget balance"
+        };
+        return budget_response(wire, call_id, action, budget_args, limits);
     }
     if command == "workflow" {
         let (action, workflow_args) = args.subcommand().expect("clap requires a workflow action");

@@ -4,7 +4,8 @@ Build with `cargo build -p assetweft-cli --locked`; run `target/debug/assetweft`
 No daemon, Python, model, shell, external resource resolution, network or remote execution.
 `inspect`/`validate`/`plan` never touch a database. Explicit `library init` initializes
 a named local library; `workflow create` persists a graph, `workflow status` reads state,
-and `workflow cancel` persists a cancellation request. These commands never execute steps.
+and `workflow cancel` persists a cancellation request. `budget approve` stores an immutable local allowance declaration and `budget balance`
+reads its local ledger. These commands never execute steps or call providers.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
@@ -14,26 +15,29 @@ assetweft [--call-id ID] library init --db PATH
 assetweft [--call-id ID] workflow create --db EXISTING_DB --run-id RUN --steps FILE
 assetweft [--call-id ID] workflow status --db EXISTING_DB --run-id RUN
 assetweft [--call-id ID] workflow cancel --db EXISTING_DB --run-id RUN
+assetweft [--call-id ID] budget approve --db EXISTING_DB --allowance FILE
+assetweft [--call-id ID] budget balance --db EXISTING_DB --budget-id ID
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
-16777216, minimum 1), including `workflow create --steps`; it never bounds database size
-and has no effect on init/status/cancel.
+16777216, minimum 1), including `workflow create --steps` and `budget approve --allowance`; it never bounds database size
+and has no effect on init/status/cancel/balance.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-`library init`, `workflow create` and `workflow cancel` are explicit mutating paths.
+`library init`, `workflow create`, `workflow cancel` and `budget approve` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
 `command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
-`workflow status`, `workflow cancel`, `arguments`, `help` or `version`; nested values
+`workflow status`, `workflow cancel`, `budget approve`, `budget balance`, `arguments`,
+`help` or `version`; nested values
 are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
 stdout. Argument diagnostics also go to stderr. Supply `--call-id` before invalid
 arguments when correlating syntax errors: clap cannot recover tokens after the
 first unrecognized argument. Valid invocations accept the global ID on either
 side of the subcommand; help/version preserve it as well. No timestamps/random IDs.
-Repeated calls with identical inputs and identical persisted workflow state produce
+Repeated calls with identical inputs and identical persisted local state produce
 identical stdout. OS I/O diagnostics can vary with environment; they are not a
 cross-platform canonical digest.
 
@@ -91,7 +95,8 @@ no claim, execution, generation, provider call or budget approval. There is no e
 read or retry after the write. New steps are pending without outcomes; use status for
 current state, which can change through existing product use cases.
 
-The following existing-file guard applies to **workflow create/status/cancel**, not explicit init.
+The following existing-file guard applies to **workflow create/status/cancel and budget approve/balance**,
+not explicit init.
 
 `--db` must name an existing regular file (symlinks followed), checked with filesystem
 metadata before the create-capable `Application::open`. Missing/non-regular paths exit 2
@@ -132,8 +137,65 @@ There is no run/submit/retry/resume/reconcile command; such syntax exits 2.
 Init/create/status/cancel never execute work. Production alone owns workflow state; the CLI only parses,
 projects and maps errors. This is not full AW-033:B or product acceptance.
 
+## Local immutable budget declarations (AW-033:B bounded slice)
+
+`budget approve --db EXISTING_DB --allowance FILE` reads one JSON object:
+
+```json
+{"id":"local-usd-cap","unit":{"CurrencyMinor":{"currency":"USD","decimals":2}},"capacity":12345,"approval":"ExplicitBounded","source":"caller local declaration"}
+```
+
+The required fields are exactly `id`, `unit`, `capacity`, `approval`, `source`.
+Units use the existing public serde names: `"Token"`, `"Task"`, `"Second"`, or
+`{"CurrencyMinor":{"currency":"USD","decimals":2}}`. Approval names are exactly
+`"ZeroAdditionalCost"` and `"ExplicitBounded"`. Objects at the allowance and currency
+boundaries reject positional arrays, missing/unknown/duplicate fields and invalid types;
+malformed JSON, unreadable and oversized input return INVALID_INPUT/2 with field `allowance`.
+Numbers are exact unsigned integers: no float, string coercion, truncation, exchange or
+conversion. In the example, capacity 12345 is 12345 minor units at decimal scale 2;
+no floating-point money is computed. Currency/scale and integer storage bounds are
+validated only by Consumption: uppercase three-letter currency, decimals at most 9,
+capacity at most 9223372036854775807. The next integer is parsed exactly then rejected by
+core. `ZeroAdditionalCost` requires zero capacity; `ExplicitBounded` permits zero capacity.
+
+IDs, currency and source are passed verbatim, with no trim or normalization. Consumption
+owns nonempty/bounded/NUL-free declaration text validation. An empty declaration ID is
+therefore INVALID_INPUT/2 from core. `budget balance` passes even an empty `--budget-id`
+verbatim to the query: an absent identity (including empty) currently returns core Database
+FAIL/1, not an invented NotFound or CLI text policy. All facade errors use the existing
+variant mapping above, with field `budget`; path/open errors use `db`.
+
+Approve calls `Application::approve_budget` once and returns only
+`results: {"scope":"stored_local_allowance_declaration","allowance":{...}}`.
+The allowance is an immutable identity: repeating the same typed declaration is a core
+no-op success, including JSON key-order changes. A different unit/capacity/approval/source
+under the same ID fails and preserves the original declaration, reserved and spent values.
+This is no top-up, reset or upsert. There is no extra read or retry after a write, including
+an uncertain result or stdout failure. A write may have committed before exit 6; query the
+balance to inspect local state rather than automatically replaying the command.
+
+`budget balance --db EXISTING_DB --budget-id ID` calls `Application::budget_balance`
+once and projects exactly the returned allowance, reserved and spent integers:
+
+```json
+{"schema_version":1,"command":"budget balance","call_id":null,"status":"PASS","errors":[],"results":{"scope":"local_budget_balance","allowance":{"id":"local-usd-cap","unit":{"CurrencyMinor":{"currency":"USD","decimals":2}},"capacity":12345,"approval":"ExplicitBounded","source":"caller local declaration"},"reserved":0,"spent":0}}
+```
+
+The query uses existing SELECTs; opens still configure connection pragmas and retain the
+existing path precheck race described above. This is not a filesystem read-only guarantee.
+There is no derived remaining balance, price, unknown-charge-as-zero or authorization flag.
+Zero reserved/spent describes this local ledger only, never an external fee claim.
+
+Allowances, approval names and sources are **caller local declarations**, not authenticated
+user consent, paid approval, verified provider pricing, licenses or proof of a free provider
+call. No transfer, payment, billing, account creation, network, reserve/submit/cancel/
+reconcile/execution budget command is added. CLI policy stays in the existing Consumption
+Application facade; no SQL/connection, core API or schema change is added. This slice does
+not complete full AW-033:B, real provider or product acceptance.
+
 Exit mapping (CONTRACTS §10.5): 0 scoped checks pass / declaration consistent /
 library initialized / workflow created / status read / cancellation request persisted /
+local allowance stored or local balance read /
 help/version; 1 core validation
 or other contract FAIL (including persisted workflow Database diagnostics); 2 malformed
 arguments, unreadable/oversized files, malformed JSON/GLB inspection, invalid or non-regular

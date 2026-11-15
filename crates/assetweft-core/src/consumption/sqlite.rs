@@ -99,21 +99,85 @@ pub(crate) fn reserve(c: &mut Connection, r: &Request) -> Result<Intent> {
     tx.commit()?;
     Ok(result)
 }
+// Isolated diagnostic only: observe unchanged real SQL and transaction phases.
+fn aw015_phase(conn: usize, op: &str, phase: &str, id: &str) {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    eprintln!(
+        "AW015 us={} thread={:?} conn={} op={} phase={} id={}",
+        START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_micros(),
+        std::thread::current().id(),
+        conn,
+        op,
+        phase,
+        id
+    );
+}
+
 pub(crate) fn claim(c: &mut Connection, id: &str) -> Result<bool> {
-    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    require_current(&tx)?;
-    let n=tx.execute("UPDATE aw_budget_intents SET state='ATTEMPTING' WHERE id=?1 AND state='PREPARING' AND cancelled=0",[id])?;
-    tx.commit()?;
+    let conn = c as *const Connection as usize;
+    aw015_phase(
+        conn,
+        "claim",
+        if c.is_autocommit() {
+            "enter-autocommit"
+        } else {
+            "enter-transaction"
+        },
+        id,
+    );
+    let tx = c
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| {
+            aw015_phase(conn, "claim", "begin-error", id);
+            eprintln!("AW015 error={e:?}");
+            e
+        })?;
+    aw015_phase(conn, "claim", "begin-ok", id);
+    require_current(&tx)
+        .inspect_err(|e| eprintln!("AW015 op=claim phase=schema-error error={e:?}"))?;
+    aw015_phase(conn, "claim", "schema-ok", id);
+    let n=tx.execute("UPDATE aw_budget_intents SET state='ATTEMPTING' WHERE id=?1 AND state='PREPARING' AND cancelled=0",[id]).inspect_err(|e| eprintln!("AW015 op=claim phase=update-error error={e:?}"))?;
+    aw015_phase(conn, "claim", "update-ok-commit-enter", id);
+    tx.commit()
+        .inspect_err(|e| eprintln!("AW015 op=claim phase=commit-error error={e:?}"))?;
+    aw015_phase(conn, "claim", "commit-ok", id);
     Ok(n == 1)
 }
 pub(crate) fn unknown(c: &mut Connection, id: &str) -> Result<()> {
-    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    require_current(&tx)?;
+    let conn = c as *const Connection as usize;
+    aw015_phase(
+        conn,
+        "unknown",
+        if c.is_autocommit() {
+            "enter-autocommit"
+        } else {
+            "enter-transaction"
+        },
+        id,
+    );
+    let tx = c
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| {
+            aw015_phase(conn, "unknown", "begin-error", id);
+            eprintln!("AW015 error={e:?}");
+            e
+        })?;
+    aw015_phase(conn, "unknown", "begin-ok", id);
+    require_current(&tx)
+        .inspect_err(|e| eprintln!("AW015 op=unknown phase=schema-error error={e:?}"))?;
+    aw015_phase(conn, "unknown", "schema-ok", id);
     tx.execute(
         "UPDATE aw_budget_intents SET state='UNKNOWN' WHERE id=?1 AND state='ATTEMPTING'",
         [id],
-    )?;
-    tx.commit()?;
+    )
+    .inspect_err(|e| eprintln!("AW015 op=unknown phase=update-error error={e:?}"))?;
+    aw015_phase(conn, "unknown", "update-ok-commit-enter", id);
+    tx.commit()
+        .inspect_err(|e| eprintln!("AW015 op=unknown phase=commit-error error={e:?}"))?;
+    aw015_phase(conn, "unknown", "commit-ok", id);
     Ok(())
 }
 pub(crate) fn cancel(c: &mut Connection, id: &str) -> Result<()> {

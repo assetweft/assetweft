@@ -40,7 +40,15 @@ pub(crate) fn submit_test_fixture(
     if !ledger.claim(id)? {
         return Ok(false);
     }
+    eprintln!(
+        "AW015 callback-enter thread={:?} id={id}",
+        std::thread::current().id()
+    );
     callback();
+    eprintln!(
+        "AW015 callback-exit thread={:?} id={id}",
+        std::thread::current().id()
+    );
     ledger.unknown(id)?;
     Ok(true)
 }

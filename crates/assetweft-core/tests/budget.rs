@@ -199,6 +199,15 @@ fn independent_connections_race_capacity_and_once_claim() {
         let count = count.clone();
         threads.push(std::thread::spawn(move || {
             let mut a = Application::open(&p).unwrap();
+            eprintln!(
+                "AW015 fixture thread={:?} path={} sqlite={} journal={} timeout_ms={} fk={}",
+                std::thread::current().id(),
+                p.display(),
+                a.connection_config().sqlite_version,
+                a.connection_config().journal_mode,
+                a.connection_config().busy_timeout_ms,
+                a.connection_config().foreign_keys
+            );
             b.wait();
             a.submit_test_fixture(id, || {
                 count.fetch_add(1, Ordering::SeqCst);

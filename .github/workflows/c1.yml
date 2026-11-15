@@ -42,4 +42,6 @@ jobs:
           cargo clippy --version
 
       - name: C1 (stdout protocol + full check)
+        env:
+          RUST_TEST_NOCAPTURE: "1"
         run: ./tools/c1-stdout-contract.sh

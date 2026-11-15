@@ -3819,3 +3819,612 @@ fn candidate_attempt_broken_streams_retain_first_commits_and_domain_outcomes() {
     }
     assert_eq!(app.candidate_attempt(&id).unwrap(), None);
 }
+// Catalog writes exercise the real process and public facade; no raw SQL or private hooks.
+fn catalog_write_args<'a>(action: &'a str, db: &'a Path, input: &'a Path) -> Vec<&'a OsStr> {
+    vec![
+        OsStr::new("catalog"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db.as_os_str(),
+        OsStr::new(if action == "register-version" {
+            "--version"
+        } else {
+            "--reference"
+        }),
+        input.as_os_str(),
+    ]
+}
+fn catalog_write_role(role: assetweft_core::library::ComponentRole) -> &'static str {
+    use assetweft_core::library::ComponentRole;
+    match role {
+        ComponentRole::Mesh => "mesh",
+        ComponentRole::Materials => "materials",
+        ComponentRole::Rig => "rig",
+        ComponentRole::Motion => "motion",
+        ComponentRole::Vfx => "vfx",
+        ComponentRole::Audio => "audio",
+        ComponentRole::Dialogue => "dialogue",
+    }
+}
+fn catalog_write_wire(id: &str, presence: &str, authorized: bool) -> Value {
+    json!({"asset_id":"metadata-asset","version_id":id,"content_hash":"a".repeat(64),
+        "input_id":"input 原样","source":" declared source ","authorization":"LOCAL DECLARATION ONLY",
+        "authorized":authorized,"license_id":"unverified-license","usage_scope":"TEST ONLY",
+        "source_format":"declared-format","contract_version":"1.0.0","presence":presence})
+}
+fn catalog_write_record(args: &[&OsStr], out: &Output) {
+    if let Some(directory) = std::env::var_os("AW033B_WRITE_RECEIPTS") {
+        static SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let index = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prefix = PathBuf::from(directory).join(format!("write-{index:04}"));
+        fs::write(prefix.with_extension("stdout"), &out.stdout).unwrap();
+        fs::write(prefix.with_extension("stderr"), &out.stderr).unwrap();
+        fs::write(prefix.with_extension("json"), serde_json::to_vec(&json!({"argv":args.iter().map(|a|a.to_string_lossy()).collect::<Vec<_>>(),"exit":out.status.code(),"stdout_utf8_bytes":out.stdout.len(),"stderr_utf8_bytes":out.stderr.len()})).unwrap()).unwrap();
+    }
+}
+fn catalog_write_invoke(args: &[&OsStr]) -> (Output, Value) {
+    let (out, value) = invoke(args);
+    catalog_write_record(args, &out);
+    (out, value)
+}
+fn catalog_write_error(args: &[&OsStr], failure: &assetweft_core::library::LibraryError) {
+    use assetweft_core::library::LibraryError;
+    let (code, status) = match failure {
+        LibraryError::InvalidInput(_) | LibraryError::Constraint(_) => (2, "INVALID_INPUT"),
+        LibraryError::Uninitialized => (3, "INPUT_INCOMPLETE"),
+        LibraryError::FutureSchema(_) => (5, "UNSUPPORTED"),
+        LibraryError::Busy(_) | LibraryError::Io(_) => (6, "INTERNAL"),
+        LibraryError::Database(_) | LibraryError::UnknownValue(_) => (1, "FAIL"),
+    };
+    let (out, value) = catalog_write_invoke(args);
+    assert_eq!(out.status.code(), Some(code), "{value}");
+    assert_eq!(value["status"], status);
+    assert_eq!(
+        value["errors"],
+        json!([{"field_path":"catalog","code":status,"message":failure.to_string()}])
+    );
+    assert_eq!(value["results"], Value::Null);
+}
+#[test]
+fn catalog_write_versions_acknowledge_typed_declarations_and_persist_without_bytes() {
+    use assetweft_core::library::Presence;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("目录 metadata.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let path = dir.path().join("声明 version.json");
+    for (id, presence, authorized) in [
+        ("原样 v1", "UNKNOWN", true),
+        ("missing-v2", "MISSING", false),
+    ] {
+        let wire = catalog_write_wire(id, presence, authorized);
+        let bytes = serde_json::to_vec(&wire).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut args = catalog_write_args("register-version", &db, &path);
+        args.extend([
+            OsStr::new("--call-id"),
+            OsStr::new("write α"),
+            OsStr::new("--max-bytes"),
+            OsStr::new("16777216"),
+        ]);
+        let (out, value) = catalog_write_invoke(&args);
+        assert_eq!(out.status.code(), Some(0), "{value}");
+        assert_eq!(
+            value,
+            json!({"schema_version":1,"command":"catalog register-version","call_id":"write α","status":"PASS","errors":[],"results":{"scope":"registered_local_asset_version_metadata","version":wire}})
+        );
+        assert!(out.stderr.is_empty());
+        let mut row = catalog_version(
+            id,
+            if presence == "UNKNOWN" {
+                Presence::Unknown
+            } else {
+                Presence::Missing
+            },
+        );
+        row.authorized = authorized;
+        let mut reopened = Application::open(&db).unwrap();
+        assert_eq!(reopened.asset_version(id).unwrap(), Some(row.clone()));
+        assert_eq!(reopened.managed_object(id).unwrap(), None);
+        assert_eq!(reopened.candidate_current("metadata-asset").unwrap(), None);
+        catalog_query(
+            &db,
+            "version",
+            id,
+            json!({"scope":"stored_local_asset_version_metadata","version":wire}),
+        );
+        let error = reopened.add_asset_version(&row).unwrap_err();
+        catalog_write_error(&args, &error);
+        row.content_hash = "b".repeat(64);
+        let error = reopened.add_asset_version(&row).unwrap_err();
+        let mut changed = wire.clone();
+        changed["content_hash"] = json!(row.content_hash);
+        fs::write(&path, changed.to_string()).unwrap();
+        catalog_write_error(&args, &error);
+        assert_eq!(
+            reopened.asset_version(id).unwrap().unwrap().content_hash,
+            "a".repeat(64)
+        );
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+    assert!(!dir.path().join("objects").exists());
+}
+#[test]
+fn catalog_write_references_keep_all_roles_exact_targets_sort_and_core_failures() {
+    use assetweft_core::library::{ComponentReference, ComponentRole, Presence};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("引用 library.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    for id in ["owner", "target-old", "target-new"] {
+        app.add_asset_version(&catalog_version(id, Presence::Unknown))
+            .unwrap();
+    }
+    let path = dir.path().join("引用 reference.json");
+    for role in [
+        "vfx",
+        "rig",
+        "motion",
+        "mesh",
+        "materials",
+        "dialogue",
+        "audio",
+    ] {
+        let wire =
+            json!({"owner_version_id":"owner","role":role,"component_version_id":"target-old"});
+        fs::write(&path, wire.to_string()).unwrap();
+        let args = catalog_write_args("add-reference", &db, &path);
+        let (out, value) = catalog_write_invoke(&args);
+        assert_eq!(out.status.code(), Some(0), "{value}");
+        assert_eq!(
+            value["results"],
+            json!({"scope":"registered_local_exact_component_reference","reference":wire})
+        );
+        assert_eq!(value["status"], "PASS");
+        assert_eq!(value["errors"], json!([]));
+    }
+    let before = app.component_references("owner").unwrap();
+    assert_eq!(
+        before
+            .iter()
+            .map(|r| catalog_write_role(r.role))
+            .collect::<Vec<_>>(),
+        [
+            "audio",
+            "dialogue",
+            "materials",
+            "mesh",
+            "motion",
+            "rig",
+            "vfx"
+        ]
+    );
+    assert!(
+        before
+            .iter()
+            .all(|r| r.component_version_id == "target-old")
+    );
+    let wire =
+        json!({"owner_version_id":"owner","role":"mesh","component_version_id":"target-new"});
+    fs::write(&path, wire.to_string()).unwrap();
+    assert_eq!(
+        catalog_write_invoke(&catalog_write_args("add-reference", &db, &path))
+            .0
+            .status
+            .code(),
+        Some(0)
+    );
+    let saved = Application::open(&db)
+        .unwrap()
+        .component_references("owner")
+        .unwrap();
+    assert_eq!(saved[3].component_version_id, "target-new");
+    assert_eq!(saved[4].component_version_id, "target-old");
+    let projected = saved.iter().map(|r| json!({"owner_version_id":r.owner_version_id,"role":catalog_write_role(r.role),"component_version_id":r.component_version_id})).collect::<Vec<_>>();
+    catalog_query(
+        &db,
+        "references",
+        "owner",
+        json!({"scope":"stored_local_exact_component_references","references":projected}),
+    );
+    for (owner, target) in [
+        ("owner", "target-new"),
+        ("absent", "target-old"),
+        ("owner", "absent"),
+        ("bad/id", "target-old"),
+        ("owner", "bad/id"),
+    ] {
+        let reference = ComponentReference {
+            owner_version_id: owner.into(),
+            role: ComponentRole::Mesh,
+            component_version_id: target.into(),
+        };
+        let error = app.add_component_reference(&reference).unwrap_err();
+        fs::write(
+            &path,
+            json!({"owner_version_id":owner,"role":"mesh","component_version_id":target})
+                .to_string(),
+        )
+        .unwrap();
+        catalog_write_error(&catalog_write_args("add-reference", &db, &path), &error);
+        assert_eq!(app.component_references("owner").unwrap(), saved);
+    }
+}
+#[test]
+fn catalog_write_strict_objects_all_required_fields_and_reader_bounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("strict.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let path = dir.path().join("wire.json");
+    for (action, field, good) in [
+        (
+            "register-version",
+            "version",
+            catalog_write_wire("strict", "UNKNOWN", false),
+        ),
+        (
+            "add-reference",
+            "reference",
+            json!({"owner_version_id":"owner","role":"mesh","component_version_id":"target"}),
+        ),
+    ] {
+        let mut bad = vec![
+            "[]".into(),
+            "null".into(),
+            "{}".into(),
+            "{broken".into(),
+            format!("{good} null"),
+            good.to_string().replacen('{', "{\"extra\":0,", 1),
+            serde_json::to_string(&good.as_object().unwrap().values().collect::<Vec<_>>()).unwrap(),
+        ];
+        for key in good.as_object().unwrap().keys() {
+            let mut missing = good.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            bad.push(missing.to_string());
+            let mut wrong = good.clone();
+            wrong[key] = if key == "authorized" {
+                json!("false")
+            } else {
+                json!(false)
+            };
+            bad.push(wrong.to_string());
+            bad.push(
+                good.to_string()
+                    .replacen('{', &format!("{{\"{key}\":{},", good[key]), 1),
+            );
+        }
+        for (key, wrong) in if action == "register-version" {
+            vec![
+                ("presence", json!("unknown")),
+                ("presence", json!("PRESENT")),
+                ("presence", json!({"UNKNOWN":null})),
+                ("authorized", json!(1)),
+                ("authorized", Value::Null),
+            ]
+        } else {
+            vec![
+                ("role", json!("Mesh")),
+                ("role", json!("unknown")),
+                ("role", json!({"mesh":null})),
+                ("role", json!(1)),
+            ]
+        } {
+            let mut value = good.clone();
+            value[key] = wrong;
+            bad.push(value.to_string());
+        }
+        for raw in bad {
+            fs::write(&path, &raw).unwrap();
+            let (out, value) = catalog_write_invoke(&catalog_write_args(action, &db, &path));
+            assert_eq!(out.status.code(), Some(2), "{action} {raw}: {value}");
+            assert_eq!(value["errors"][0]["field_path"], field, "{value}");
+            assert_eq!(value["results"], Value::Null);
+            if action == "register-version" {
+                assert_eq!(app.asset_version("strict").unwrap(), None);
+            }
+            assert!(app.component_references("owner").unwrap().is_empty());
+        }
+        fs::write(&path, good.to_string()).unwrap();
+        let size = fs::metadata(&path).unwrap().len().to_string();
+        let mut args = catalog_write_args(action, &db, &path);
+        args.extend([OsStr::new("--max-bytes"), OsStr::new("1")]);
+        assert_eq!(catalog_write_invoke(&args).0.status.code(), Some(2));
+        args[7] = OsStr::new(&size);
+        let (out, value) = catalog_write_invoke(&args);
+        assert_ne!(
+            value["errors"][0]["field_path"], field,
+            "exact byte limit must admit JSON: {value}"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(if action == "register-version" { 0 } else { 2 })
+        );
+        let mut exact_max = good.to_string().into_bytes();
+        exact_max.resize(16777216, b' ');
+        fs::write(&path, exact_max).unwrap();
+        let (_, value) = catalog_write_invoke(&catalog_write_args(action, &db, &path));
+        assert_eq!(
+            value["errors"][0]["field_path"], "catalog",
+            "16MiB JSON must reach Core: {value}"
+        );
+        let mut oversized = good.to_string().into_bytes();
+        oversized.resize(16777217, b' ');
+        fs::write(&path, oversized).unwrap();
+        let (out, value) = catalog_write_invoke(&catalog_write_args(action, &db, &path));
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(value["errors"][0]["field_path"], field);
+    }
+    assert_eq!(
+        app.asset_version("strict").unwrap().unwrap().version_id,
+        "strict"
+    );
+    assert!(app.component_references("owner").unwrap().is_empty());
+}
+#[test]
+fn catalog_write_domain_errors_and_frozen_references_preserve_facade_parity() {
+    use assetweft_core::library::{ComponentReference, ComponentRole, Presence};
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut app, proposal) = candidate_fixture(dir.path(), false);
+    let path = dir.path().join("wire.json");
+    let head = app.candidate_current("character").unwrap();
+    for (key, bad) in [
+        ("asset_id", "bad/id"),
+        ("version_id", ".."),
+        ("input_id", ""),
+        ("content_hash", "bad"),
+        ("source", ""),
+        ("authorization", ""),
+        ("license_id", ""),
+        ("usage_scope", ""),
+        ("source_format", ""),
+        ("contract_version", "future-version"),
+    ] {
+        let mut wire = catalog_write_wire("invalid", "UNKNOWN", false);
+        wire[key] = json!(bad);
+        let mut row = catalog_version("invalid", Presence::Unknown);
+        row.authorized = false;
+        match key {
+            "asset_id" => row.asset_id = bad.into(),
+            "version_id" => row.version_id = bad.into(),
+            "input_id" => row.input_id = bad.into(),
+            "content_hash" => row.content_hash = bad.into(),
+            "source" => row.source = bad.into(),
+            "authorization" => row.authorization = bad.into(),
+            "license_id" => row.license_id = bad.into(),
+            "usage_scope" => row.usage_scope = bad.into(),
+            "source_format" => row.source_format = bad.into(),
+            "contract_version" => row.contract_version = bad.into(),
+            _ => unreachable!(),
+        }
+        let failure = app.add_asset_version(&row).unwrap_err();
+        fs::write(&path, wire.to_string()).unwrap();
+        catalog_write_error(
+            &catalog_write_args("register-version", &db, &path),
+            &failure,
+        );
+        assert_eq!(app.asset_version("invalid").unwrap(), None);
+    }
+    app.propose_candidate(&proposal).unwrap();
+    for owner in ["base", "proposed"] {
+        let r = ComponentReference {
+            owner_version_id: owner.into(),
+            role: ComponentRole::Audio,
+            component_version_id: "mesh2".into(),
+        };
+        let before = app.component_references(owner).unwrap();
+        let failure = app.add_component_reference(&r).unwrap_err();
+        fs::write(
+            &path,
+            json!({"owner_version_id":owner,"role":"audio","component_version_id":"mesh2"})
+                .to_string(),
+        )
+        .unwrap();
+        catalog_write_error(&catalog_write_args("add-reference", &db, &path), &failure);
+        assert_eq!(app.component_references(owner).unwrap(), before);
+    }
+    assert_eq!(app.candidate_current("character").unwrap(), head);
+    assert_eq!(app.candidate_attempt(&proposal.id).unwrap(), None);
+}
+#[test]
+fn catalog_write_database_grammar_paths_and_admission_precedence() {
+    use assetweft_core::library::LibraryError;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let path = dir.path().join("声明 file.json");
+    let empty = dir.path().join("empty.sqlite");
+    fs::write(&empty, []).unwrap();
+    let missing = dir.path().join("absent.sqlite");
+    let no_input = dir.path().join("absent.json");
+    for (action, field, wire) in [
+        (
+            "register-version",
+            "version",
+            catalog_write_wire("path-version", "UNKNOWN", false),
+        ),
+        (
+            "add-reference",
+            "reference",
+            json!({"owner_version_id":"owner","role":"mesh","component_version_id":"target"}),
+        ),
+    ] {
+        fs::write(&path, wire.to_string()).unwrap();
+        for bad_db in [&missing, dir.path(), Path::new("")] {
+            let (out, value) = catalog_write_invoke(&catalog_write_args(action, bad_db, &no_input));
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(
+                value["errors"][0]["field_path"],
+                if bad_db.as_os_str().is_empty() {
+                    "arguments"
+                } else {
+                    "db"
+                }
+            );
+        }
+        catalog_write_error(
+            &catalog_write_args(action, &empty, &path),
+            &LibraryError::Uninitialized,
+        );
+        for bad_input in [&no_input, dir.path()] {
+            let (out, value) = catalog_write_invoke(&catalog_write_args(action, &db, bad_input));
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(value["errors"][0]["field_path"], field);
+        }
+        fs::write(&path, b"{broken").unwrap();
+        let (out, value) = catalog_write_invoke(&catalog_write_args(action, &empty, &path));
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(value["errors"][0]["field_path"], field);
+        let args = catalog_write_args(action, &db, &path);
+        let (out, _) = catalog_write_invoke(&args[..4]);
+        assert_eq!(out.status.code(), Some(2));
+        for limit in ["0", "16777217", "no"] {
+            let mut invalid = args.clone();
+            invalid.extend([OsStr::new("--max-bytes"), OsStr::new(limit)]);
+            assert_eq!(catalog_write_invoke(&invalid).0.status.code(), Some(2));
+        }
+        let mut extra = args.clone();
+        extra.push(OsStr::new("--unknown"));
+        assert_eq!(catalog_write_invoke(&extra).0.status.code(), Some(2));
+        let (out, value) = catalog_write_invoke(&[
+            OsStr::new("--call-id"),
+            OsStr::new("help α"),
+            OsStr::new("catalog"),
+            OsStr::new(action),
+            OsStr::new("--help"),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(value["call_id"], "help α");
+        assert!(value.to_string().contains(&format!("--{field}")));
+    }
+    assert!(!missing.exists());
+    assert!(matches!(
+        Application::open(&empty).unwrap().asset_version("x"),
+        Err(LibraryError::Uninitialized)
+    ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let mut raw = dir.path().as_os_str().as_encoded_bytes().to_vec();
+        raw.extend_from_slice(b"/wire-\xff.json");
+        let unusual = PathBuf::from(std::ffi::OsString::from_vec(raw));
+        // Test only when this filesystem supports a non-UTF8 name (Darwin may reject it).
+        let unusual_write = fs::write(
+            &unusual,
+            catalog_write_wire("os-path", "UNKNOWN", false).to_string(),
+        );
+        println!(
+            "non-UTF8 input filename: {unusual_write:?}; an OS rejection is NOT_RUN for that path case"
+        );
+        if unusual_write.is_ok() {
+            assert_eq!(
+                catalog_write_invoke(&catalog_write_args("register-version", &db, &unusual))
+                    .0
+                    .status
+                    .code(),
+                Some(0)
+            );
+        }
+    }
+}
+#[cfg(any(unix, windows))]
+#[test]
+fn catalog_write_first_commits_survive_broken_streams_without_duplicate_success() {
+    use assetweft_core::library::Presence;
+    for action in ["register-version", "add-reference"] {
+        for mode in ["stderr", "stdout", "both"] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = dir.path().join("streams.sqlite");
+            let mut app = Application::open(&db).unwrap();
+            app.initialize_library().unwrap();
+            if action == "add-reference" {
+                for id in ["owner", "target"] {
+                    app.add_asset_version(&catalog_version(id, Presence::Unknown))
+                        .unwrap();
+                }
+            }
+            let wire = if action == "register-version" {
+                catalog_write_wire("first", "UNKNOWN", false)
+            } else {
+                json!({"owner_version_id":"owner","role":"mesh","component_version_id":"target"})
+            };
+            let path = dir.path().join("wire.json");
+            fs::write(&path, wire.to_string()).unwrap();
+            let args = catalog_write_args(action, &db, &path);
+            let mut command = Command::new(env!("CARGO_BIN_EXE_assetweft"));
+            command.args(&args);
+            if mode != "stderr" {
+                command.stdout(broken_output());
+            }
+            if mode != "stdout" {
+                command.stderr(broken_output());
+            }
+            let out = command.output().unwrap();
+            catalog_write_record(&args, &out);
+            assert_eq!(
+                out.status.code(),
+                Some(if mode == "stderr" { 0 } else { 6 })
+            );
+            if mode == "stderr" {
+                let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+                assert_eq!(v["status"], "PASS");
+            }
+            let mut reopened = Application::open(&db).unwrap();
+            if action == "register-version" {
+                assert!(!reopened.asset_version("first").unwrap().unwrap().authorized);
+                assert_eq!(reopened.managed_object("first").unwrap(), None);
+            } else {
+                assert_eq!(reopened.component_references("owner").unwrap().len(), 1);
+            }
+            let grammar_args = &args[..4];
+            let (grammar, _) = catalog_write_invoke(grammar_args);
+            assert_eq!(grammar.status.code(), Some(2));
+            let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+                .args(grammar_args)
+                .stderr(broken_output())
+                .output()
+                .unwrap();
+            catalog_write_record(grammar_args, &failed);
+            assert_eq!(failed.status.code(), Some(2));
+            assert_eq!(failed.stdout, grammar.stdout);
+            let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+                .args(grammar_args)
+                .stdout(broken_output())
+                .stderr(broken_output())
+                .output()
+                .unwrap();
+            catalog_write_record(grammar_args, &failed);
+            assert_eq!(failed.status.code(), Some(6));
+            let (normal, value) = catalog_write_invoke(&args);
+            assert_eq!(
+                normal.status.code(),
+                Some(2),
+                "repeat must retain core uniqueness failure: {value}"
+            );
+            for raw in [wire.to_string(), "{broken".into()] {
+                fs::write(&path, raw).unwrap();
+                let (normal, _) = catalog_write_invoke(&args);
+                let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+                    .args(&args)
+                    .stderr(broken_output())
+                    .output()
+                    .unwrap();
+                catalog_write_record(&args, &failed);
+                assert_eq!(failed.status.code(), normal.status.code());
+                assert_eq!(failed.stdout, normal.stdout);
+                for both in [false, true] {
+                    let mut command = Command::new(env!("CARGO_BIN_EXE_assetweft"));
+                    command.args(&args).stdout(broken_output());
+                    if both {
+                        command.stderr(broken_output());
+                    }
+                    let failed = command.output().unwrap();
+                    catalog_write_record(&args, &failed);
+                    assert_eq!(failed.status.code(), Some(6));
+                }
+            }
+        }
+    }
+}

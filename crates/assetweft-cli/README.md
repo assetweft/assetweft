@@ -85,7 +85,7 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 |---|---|---|
 | `production.rs` | plan DTO/result projection; workflow create/status/cancel; explicit fixture initialization/staging; stored candidate queries | [Production](../assetweft-core/src/production/CONTRACT.md) |
 | `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
-| `catalog.rs` | exact version metadata/reference projection and stored fixture-head query | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
+| `catalog.rs` | strict declared metadata/exact-reference writes, stored projections and fixture-head query | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
 | `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
 
@@ -131,7 +131,7 @@ no claim, execution, generation, provider call or budget approval. There is no e
 read or retry after the write. New steps are pending without outcomes; use status for
 current state, which can change through existing product use cases.
 
-The following existing-file guard applies to **workflow create/status/cancel, all budget commands, all candidate commands and Catalog queries**,
+The following existing-file guard applies to **workflow create/status/cancel, all budget commands, all candidate commands and all Catalog commands**,
 not explicit init.
 
 `--db` must name an existing regular file (symlinks followed), checked with filesystem
@@ -558,3 +558,59 @@ streams. Direct old/future/corrupt-schema fixtures remain NOT_RUN because public
 construct them. Author evidence is scoped to the tested environment; current full CI, native
 Windows matrix, independent review and protected integration are root-owned gates. Full
 AW-033:B, real data, AI, engines, provider, paid, F0, product and production remain NOT_RUN.
+
+
+## Catalog metadata and exact-reference writes (AW-033:B bounded slice)
+
+```sh
+assetweft catalog register-version --db EXISTING_DB --version version.json
+assetweft catalog add-reference --db EXISTING_DB --reference reference.json
+```
+
+`register-version` requires one strict JSON object with all twelve fields:
+
+```json
+{"asset_id":"asset-1","version_id":"v1","content_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","input_id":"input-1","source":"DECLARED","authorization":"UNVERIFIED","authorized":false,"license_id":"UNKNOWN","usage_scope":"TEST_ONLY","source_format":"GLB","contract_version":"1.0.0","presence":"UNKNOWN"}
+```
+
+Every field is a string except the strict boolean `authorized`. `presence` is exactly
+`"UNKNOWN"` or `"MISSING"`. `source_format` remains a free string. Values pass verbatim:
+CLI does not trim identities, normalize declarations or decide contract-version policy.
+Source, authorization, authorized and license fields are caller declarations; registering
+metadata verifies neither rights/consent nor managed bytes, availability or acceptance.
+
+`add-reference` requires exactly three string fields:
+
+```json
+{"owner_version_id":"v1","role":"mesh","component_version_id":"mesh-v1"}
+```
+
+`role` is exactly one of `mesh`, `materials`, `rig`, `motion`, `vfx`, `audio`, `dialogue`.
+No aliases, defaults or latest-version resolution are performed. Core owns identities,
+foreign keys, uniqueness, immutable metadata and frozen-reference rules.
+
+Both inputs reject arrays (including positional arrays), missing/extra/duplicate fields,
+wrong types and trailing JSON as INVALID_INPUT/2 before invoking a writer. The existing
+bounded reader applies global `--max-bytes` (1 through 16777216 inclusive, default
+16777216); input paths use OS path values. Admission order is clap grammar, existing
+regular database file check, `Application::open`, bounded strict JSON, then exactly one
+owning facade call: `add_asset_version` or `add_component_reference`. The precheck is
+not race-proof; the later open remains create-capable and may apply connection pragmas.
+Neither command initializes or migrates schema. A malformed input can precede the
+uninitialized-schema error because parsing precedes the facade. Within Core, version
+semantic validation precedes its lease; reference lease acquisition precedes reference
+semantic validation. Unchanged LibraryError categories and messages determine failures,
+including a future contract-version string; CLI does not parse reason strings.
+
+Success is outer PASS/0 with `errors: []` and exactly one submitted typed projection:
+
+- `{"scope":"registered_local_asset_version_metadata","version":{...}}`
+- `{"scope":"registered_local_exact_component_reference","reference":{...}}`
+
+These are write acknowledgements after successful unit-returning Core calls, not fresh
+queries or proof of bytes, rights, readiness or Production head advancement. Existing
+`catalog version/references/current` commands continue to query stored values. There is
+no handler readback, retry or idempotency token: duplicates retain actual Core uniqueness
+failures, and `--call-id` is correlation only. The compact v1 JSON plus newline protocol
+is unchanged. Stderr is best effort; stdout failure exits 6 even when the mutation has
+already committed. That exit does not imply rollback or make automatic replay safe.

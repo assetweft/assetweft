@@ -4,7 +4,7 @@
 //! 依赖: assetweft-core::application::Application、library 词表、rusqlite 0.42.0（既有依赖）、
 //!        Rust std 与既有 dev-dependency tempfile；不新增依赖。
 //! 调用方: `.github/workflows/native-recovery.yml`（windows-latest / macos-latest）与本地定向运行；
-//!        不属于 C1 的 ubuntu 快检查。
+//!        亦经 workspace C1 在 Ubuntu 执行。
 //! 不变量: 只终止本测试自己 spawn 的子进程，只操作本测试独占临时目录里的 scratch 数据库；
 //!        同步使用子进程真实写入后的就绪标记 + 截止时间，不用纯 sleep 猜测状态；
 //!        不声称模拟物理断电/掉电，不写产品源码或 schema，不弱化断言，失败保留原始输出。
@@ -77,21 +77,54 @@ fn primary_code(err: &rusqlite::Error) -> Option<i32> {
 /// 只负责自己 spawn 的子进程：任何提前 return/panic 都先终止并回收它。
 struct ChildGuard {
     child: Child,
+    logs: PathBuf,
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        for name in ["child.stdout", "child.stderr"] {
+            eprintln!(
+                "{name}: {}",
+                fs::read_to_string(self.logs.join(name)).unwrap_or_default()
+            );
+        }
     }
 }
 
 /// 等待子进程在完成真实写入后写出的就绪标记；按截止时间失败，不靠固定 sleep 猜测。
+fn ready_marker(pid: u32) -> String {
+    format!(
+        "pid={pid} journal_mode=delete committed={COMMITTED_VERSION} uncommitted={UNCOMMITTED_VERSION}\n"
+    )
+}
+
+fn has_complete_marker(ready: &Path, expected: &str) -> bool {
+    fs::read_to_string(ready).is_ok_and(|marker| marker == expected)
+}
+
+#[test]
+fn readiness_rejects_empty_and_partial_publication() {
+    let dir = temp_dir();
+    let ready = dir.path().join("ready.marker");
+    let expected = ready_marker(42);
+    for incomplete in ["", "pid=42", expected.trim_end()] {
+        fs::write(&ready, incomplete).expect("publish incomplete marker");
+        assert!(
+            !has_complete_marker(&ready, &expected),
+            "incomplete marker accepted"
+        );
+    }
+    fs::write(&ready, &expected).expect("finish publication");
+    assert!(has_complete_marker(&ready, &expected));
+}
+
 fn wait_for_ready(ready: &Path, child: &mut Child) -> String {
     let started = Instant::now();
     loop {
-        if let Ok(marker) = fs::read_to_string(ready) {
-            return marker;
+        if has_complete_marker(ready, &ready_marker(child.id())) {
+            return ready_marker(child.id());
         }
         if let Some(status) = child.try_wait().expect("poll child status") {
             panic!("child process exited before readiness handshake: {status}");
@@ -119,12 +152,25 @@ fn native_recovery_child_process() {
     app.add_asset_version(&sample("native-recovery-asset", COMMITTED_VERSION))
         .expect("child: committed version through product entry");
 
+    app.close().expect("child: close committed baseline");
+    fs::copy(&db, sidecar(&db, ".baseline")).expect("child: retain committed main DB bytes");
+
     // 未提交事务走同一个真实磁盘文件；缩小缓存迫使页面落盘，让 -journal 成为真实的 hot journal 候选。
     let raw = Connection::open(&db).expect("child: raw connection for uncommitted transaction");
     raw.busy_timeout(Duration::from_millis(200))
         .expect("child: busy timeout");
     raw.pragma_update(None, "cache_size", 5_i64)
         .expect("child: bounded page cache");
+    raw.pragma_update(None, "cache_spill", true)
+        .expect("child: explicitly enable spill");
+    let spill: i64 = raw
+        .pragma_query_value(None, "cache_spill", |row| row.get(0))
+        .expect("child: read spill threshold");
+    assert!(spill > 0, "spill must be enabled");
+    println!(
+        "AW004_RUNTIME sqlite={} cache_spill={spill}",
+        rusqlite::version()
+    );
     let journal_mode: String = raw
         .pragma_query_value(None, "journal_mode", |row| row.get(0))
         .expect("child: read journal_mode");
@@ -148,13 +194,8 @@ fn native_recovery_child_process() {
     )
     .expect("child: uncommitted page-spilling insert");
 
-    let marker = format!(
-        "pid={} journal_mode={} committed={} uncommitted={}",
-        std::process::id(),
-        journal_mode,
-        COMMITTED_VERSION,
-        UNCOMMITTED_VERSION
-    );
+    assert_eq!(journal_mode, "delete");
+    let marker = ready_marker(std::process::id());
     fs::write(&ready, marker).expect("child: write readiness marker after real writes");
 
     // 事务与连接保持打开，等待父进程 kill；若父进程未按时终止则显式失败而不是挂死。
@@ -182,11 +223,18 @@ fn abrupt_child_exit_rolls_back_uncommitted_and_keeps_committed_through_product_
         .env(CHILD_MODE_ENV, "1")
         .env(CHILD_DB_ENV, &db)
         .env(CHILD_READY_ENV, &ready)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(
+            fs::File::create(dir.path().join("child.stdout")).expect("child stdout"),
+        ))
+        .stderr(Stdio::from(
+            fs::File::create(dir.path().join("child.stderr")).expect("child stderr"),
+        ))
         .spawn()
         .expect("spawn only this test's own child process");
-    let mut guard = ChildGuard { child };
+    let mut guard = ChildGuard {
+        child,
+        logs: dir.path().to_owned(),
+    };
 
     let marker = wait_for_ready(&ready, &mut guard.child);
     assert!(
@@ -212,9 +260,39 @@ fn abrupt_child_exit_rolls_back_uncommitted_and_keeps_committed_through_product_
         !status.success(),
         "abrupt termination must not be reported as a clean success: {status}"
     );
-    assert!(
-        journal.exists() && fs::metadata(&journal).expect("journal metadata").len() > 0,
-        "hot journal must still be on disk before recovery at {journal:?}"
+    // SQLite lockingv3 §4 + fileformat2 §3 (2026-11-15): >512 bytes,
+    // valid nonzero header. Own child is reaped, no other connection/ATTACH remains.
+    let baseline = fs::read(sidecar(&db, ".baseline")).expect("committed baseline bytes");
+    let crashed = fs::read(&db).expect("crash main DB bytes before ANY SQLite reopen");
+    assert_ne!(
+        crashed, baseline,
+        "spill premise: main DB must differ from committed baseline"
+    );
+    let bytes = fs::read(&journal).expect("hot journal before recovery");
+    assert!(bytes.len() > 512, "hot journal must exceed 512 bytes");
+    assert_eq!(
+        &bytes[..8],
+        &[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7],
+        "valid nonzero journal magic"
+    );
+    let word = |offset: usize| u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    let records = word(8);
+    let original_pages = word(16);
+    let sector = word(20);
+    let page = word(24);
+    assert!(records > 0, "journal must contain rollback records");
+    assert!(sector.is_power_of_two() && (512..=65536).contains(&sector));
+    assert!(page.is_power_of_two() && (512..=65536).contains(&page));
+    assert_eq!(
+        u64::from(original_pages) * u64::from(page),
+        baseline.len() as u64
+    );
+    assert!(bytes.len() as u64 >= u64::from(sector) + u64::from(page) + 8);
+    println!(
+        "AW004_HOT_PREMISE journal_bytes={} records={records} sector={sector} page={page} baseline_bytes={} crash_bytes={} main_changed=true",
+        bytes.len(),
+        baseline.len(),
+        crashed.len()
     );
 
     // 产品真实入口：打开即触发 hot-journal 回滚，再走迁移入口确认 schema 1-6 当前。
@@ -294,10 +372,11 @@ fn real_sqlite_write_failures_leave_data_and_schema_usable() {
     readonly
         .pragma_update(None, "query_only", true)
         .expect("enable documented query_only");
+    let denied_readonly = "denied-by-query-only";
     let readonly_err = readonly
         .execute(
-            "INSERT INTO aw_assets(asset_id) VALUES ('denied-by-query-only')",
-            [],
+            "INSERT INTO aw_assets(asset_id) VALUES (?1)",
+            [denied_readonly],
         )
         .expect_err("query_only must reject INSERT");
     assert_eq!(
@@ -348,10 +427,29 @@ fn real_sqlite_write_failures_leave_data_and_schema_usable() {
             .map(|v| v.version_id.as_str()),
         Some(COMMITTED_VERSION)
     );
-    assert!(
-        matches!(reopened.asset_version(UNCOMMITTED_VERSION), Ok(None)),
-        "rejected writes must not become visible rows"
+    // Check the actual rejected aw_assets keys AFTER reopen, BEFORE any successful write.
+    let rejected = Connection::open(&db).expect("verify rejected keys after product reopen");
+    for key in [denied_readonly, huge.as_str()] {
+        let count: i64 = rejected
+            .query_row(
+                "SELECT count(*) FROM aw_assets WHERE asset_id=?1",
+                [key],
+                |row| row.get(0),
+            )
+            .expect("actual rejected asset key count");
+        assert_eq!(
+            count, 0,
+            "rejected aw_assets key must remain absent after reopen"
+        );
+    }
+    let baseline_rows: i64 = rejected
+        .query_row("SELECT count(*) FROM aw_assets", [], |row| row.get(0))
+        .expect("baseline asset count after reopen");
+    assert_eq!(
+        baseline_rows, 1,
+        "only baseline asset before successful write"
     );
+    drop(rejected);
     reopened
         .add_asset_version(&sample(
             "native-recovery-asset",

@@ -124,7 +124,7 @@ fn run() -> (i32, Value) {
                 .and_then(|m| m.get_one::<String>("call-id"));
             let message = e.to_string();
             if code != 0 {
-                eprint!("{message}");
+                let _ = write!(io::stderr().lock(), "{message}");
             }
             return (
                 code,
@@ -280,7 +280,10 @@ fn main() {
         .and_then(|()| out.write_all(b"\n").map_err(serde_json::Error::io))
         .is_err()
     {
-        eprintln!("assetweft: failed to write JSON response");
+        let _ = writeln!(
+            io::stderr().lock(),
+            "assetweft: failed to write JSON response"
+        );
         std::process::exit(6);
     }
     std::process::exit(code);

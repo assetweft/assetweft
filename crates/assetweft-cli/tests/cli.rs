@@ -321,3 +321,80 @@ fn semantic_identity_plan_cannot_bypass_core() {
         assert_eq!(v["results"]["execution"], "NOT_RUN");
     }
 }
+
+// A closed Unix socket peer gives the real child EPIPE on writes, including on macOS.
+// No synthetic writer or production fault switch is involved.
+#[cfg(unix)]
+fn broken_output() -> std::process::Stdio {
+    use std::os::{fd::OwnedFd, unix::net::UnixStream};
+    let (writer, reader) = UnixStream::pair().unwrap();
+    drop(reader);
+    std::process::Stdio::from(OwnedFd::from(writer))
+}
+
+#[cfg(unix)]
+#[test]
+fn stderr_failure_preserves_json_protocol() {
+    let path = fixture("mesh_only.glb");
+    let invalid = fixture("truncated.glb");
+    for args in [
+        vec![
+            OsStr::new("--call-id"),
+            OsStr::new("error-id"),
+            OsStr::new("--unknown"),
+        ],
+        vec![
+            OsStr::new("--call-id"),
+            OsStr::new("help-id"),
+            OsStr::new("--help"),
+        ],
+        vec![
+            OsStr::new("--call-id"),
+            OsStr::new("file-id"),
+            OsStr::new("inspect"),
+            path.as_os_str(),
+        ],
+        vec![
+            OsStr::new("--call-id"),
+            OsStr::new("invalid-id"),
+            OsStr::new("inspect"),
+            invalid.as_os_str(),
+        ],
+    ] {
+        let ordinary = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .output()
+            .unwrap();
+        let failed_stderr = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stderr(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(
+            failed_stderr.status.code(),
+            ordinary.status.code(),
+            "{args:?}"
+        );
+        assert_eq!(failed_stderr.stdout, ordinary.stdout, "{args:?}");
+        let value: Value = serde_json::from_slice(&failed_stderr.stdout).unwrap();
+        assert_eq!(value["call_id"], args[1].to_str().unwrap());
+        assert_eq!(
+            failed_stderr.stdout.iter().filter(|b| **b == b'\n').count(),
+            1
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_and_stderr_failure_preserves_io_exit() {
+    for args in [vec!["--help"], vec!["--unknown"]] {
+        let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(args)
+            .stdout(broken_output())
+            .stderr(broken_output())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(6));
+    }
+}

@@ -2,26 +2,32 @@
 
 Build with `cargo build -p assetweft-cli --locked`; run `target/debug/assetweft`.
 No daemon, Python, model, shell, external resource resolution, network or remote execution.
-`inspect`/`validate`/`plan` never touch a database; `workflow status` only reads the
-caller-supplied existing local library and `workflow cancel` persists a cancellation request in it.
+`inspect`/`validate`/`plan` never touch a database. Explicit `library init` initializes
+a named local library; `workflow create` persists a graph, `workflow status` reads state,
+and `workflow cancel` persists a cancellation request. These commands never execute steps.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
 assetweft [--call-id ID] validate FILE.glb [--role static-mesh|rigged-character|animated-character]
 assetweft [--call-id ID] plan --request request.json --trusted-context context.json
+assetweft [--call-id ID] library init --db PATH
+assetweft [--call-id ID] workflow create --db EXISTING_DB --run-id RUN --steps FILE
 assetweft [--call-id ID] workflow status --db EXISTING_DB --run-id RUN
 assetweft [--call-id ID] workflow cancel --db EXISTING_DB --run-id RUN
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
-16777216, minimum 1); it never bounds database size and has no effect on workflow commands.
+16777216, minimum 1), including `workflow create --steps`; it never bounds database size
+and has no effect on init/status/cancel.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-only `workflow cancel` may mutate the supplied workflow database.
+`library init`, `workflow create` and `workflow cancel` are explicit mutating paths.
+All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `validate`, `plan`, `workflow status`, `workflow cancel`,
-`arguments`, `help` or `version`; the two workflow values are the unambiguous discriminator.
+`command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
+`workflow status`, `workflow cancel`, `arguments`, `help` or `version`; nested values
+are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
 stdout. Argument diagnostics also go to stderr. Supply `--call-id` before invalid
 arguments when correlating syntax errors: clap cannot recover tokens after the
@@ -48,7 +54,44 @@ DECLARATION_CONSISTENT/0, never aggregate PASS: execution is always NOT_RUN,
 authenticity NOT_VERIFIED. Recipe describes scope only. Unknown costs stay null;
 TEST_FIXTURE and authorization/engine declarations never imply real execution.
 
-## Workflow commands (AW-033:B first slice)
+## Explicit library initialization and workflow commands (AW-033:B bounded slice)
+
+`library init --db PATH` calls `Application::open` then `initialize_library` once.
+It may create the named database under an already existing parent and apply the existing
+product migrations. It creates no parent directories, chooses no default database, never
+downgrades, and does not replace corrupt/unrecognized files on failure. Memory/URI paths,
+directories and special files are rejected. Existing files follow core initialization and
+migration semantics; this command is an explicit mutation request, so use it only on a
+library you intend to initialize/migrate. Repeating init on a current initialized library
+preserves workflows, states, outcomes and cancellation requests. No backup/migration
+framework is added.
+
+`workflow create --db EXISTING_DB --run-id RUN --steps FILE` requires a JSON array:
+
+```json
+[
+  {"id":"prepare","dependencies":[]},
+  {"id":"build","dependencies":["prepare"]}
+]
+```
+
+Both fields are required on each object (positional arrays are rejected); unknown fields,
+invalid types, duplicate fields, malformed JSON, unreadable or
+oversized input fail at the wire boundary with INVALID_INPUT/2 (`field_path: steps`).
+The existing bounded reader and global `--max-bytes` apply to this file. Parsed identity
+strings and array/dependency order are passed unchanged to existing `workflow::Step`
+values: no trim, normalization, topological sorting or inferred dependencies. Production
+alone validates run/step bounds, uniqueness, dependency existence and cycles, then atomically
+inserts the workflow. Graph policy currently returns `LibraryError::Database`, hence FAIL/1;
+the CLI does not invent InvalidGraph/NotFound by parsing diagnostics. Duplicate runs fail
+with the actual core constraint mapping (INVALID_INPUT/2), preserving original records;
+there is no upsert, replay or implicit retry. PASS/0 returns only
+`results: {"scope":"persisted_workflow_created","run_id":RUN}`: creation/persistence,
+no claim, execution, generation, provider call or budget approval. There is no extra status
+read or retry after the write. New steps are pending without outcomes; use status for
+current state, which can change through existing product use cases.
+
+The following existing-file guard applies to **workflow create/status/cancel**, not explicit init.
 
 `--db` must name an existing regular file (symlinks followed), checked with filesystem
 metadata before the create-capable `Application::open`. Missing/non-regular paths exit 2
@@ -62,7 +105,9 @@ between check and open, and it configures the SQLite connection (pragmas). This 
 filesystem read-only guarantee. Current schema 6 is enforced by existing core.
 
 `--run-id` is passed verbatim to Production, never trimmed, renamed, normalized or
-defaulted; an empty value exits 2. An unknown run fails truthfully (FAIL/1 with the
+defaulted. For status/cancel an empty value exits 2 at the existing boundary; create leaves
+all run-identity policy to Production (including empty/oversized/control identities, FAIL/1).
+An unknown run fails truthfully (FAIL/1 with the
 preserved core `unknown run` message; no typed NotFound is invented). `LibraryError`
 mapping is deterministic by variant: `InvalidInput`/`Constraint` 2 INVALID_INPUT;
 `Uninitialized` 3 INPUT_INCOMPLETE; `FutureSchema` 5 UNSUPPORTED; `Busy`/`Io` 6 INTERNAL;
@@ -83,15 +128,16 @@ never claims a process stopped, remote billing stopped, a refund or budget relea
 step states/outcomes are unchanged and the existing core policy blocks future claims.
 Repeating `cancel` remains a scoped success with identical output.
 
-There is no create/init/run/submit/retry/resume/reconcile command; such syntax exits 2
-rather than faking execution. Production alone owns workflow state; the CLI only parses,
+There is no run/submit/retry/resume/reconcile command; such syntax exits 2.
+Init/create/status/cancel never execute work. Production alone owns workflow state; the CLI only parses,
 projects and maps errors. This is not full AW-033:B or product acceptance.
 
 Exit mapping (CONTRACTS §10.5): 0 scoped checks pass / declaration consistent /
-workflow status read / cancellation request persisted / help/version; 1 core validation
+library initialized / workflow created / status read / cancellation request persisted /
+help/version; 1 core validation
 or other contract FAIL (including persisted workflow Database diagnostics); 2 malformed
 arguments, unreadable/oversized files, malformed JSON/GLB inspection, invalid or non-regular
-`--db`, empty `--run-id`, or core INVALID_INPUT; 3 core INPUT_INCOMPLETE (including an
+`--db`, empty status/cancel `--run-id`, or core INVALID_INPUT; 3 core INPUT_INCOMPLETE (including an
 uninitialized library); 4 core LOCK_VIOLATION; 5 core UNSUPPORTED; 6 output I/O or
 unexpected internal failure. Core semantic missing fields use code 3; absent CLI syntax
 uses 2. Multiple plan issue categories use priority 4,2,3,5,1; all issues remain visible.
@@ -107,10 +153,12 @@ Serialize derives expose its existing report tree directly to this consumer;
 no geometry or validation behavior changed. Black-box tests exercise that tree.
 Workflow DTOs are CLI-local projections over the non-Serialize core records; no new
 core API, SQL, connection or business policy is added. The existing `Application`
-workflow use cases own all reads and the cancellation write.
+use cases own initialization, workflow creation, reads and cancellation writes.
 
 C2 is `cargo test -p assetweft-cli --locked` within existing workspace C1.
-Synthetic fixtures demonstrate local behavior only; Windows/F0/AI/payment/production
+Synthetic fixtures demonstrate local behavior only. Direct old/future-schema CLI fixtures
+are NOT_RUN where setup would require forbidden SQL/dependencies; existing core guards
+are retained. Windows/F0/AI/payment/production
 remain NOT_RUN. Current-SHA CI and independent non-author review are separate root gates.
 
 SEMANTIC lock declarations in both `locked_components` and independent

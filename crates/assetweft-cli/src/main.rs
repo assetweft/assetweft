@@ -1,17 +1,18 @@
 //! Responsibility: M6 bounded machine CLI: read-only GLB/declaration checks plus persisted
-//! workflow status/cancel over a caller-supplied existing library; v1 JSON wire DTOs.
+//! explicit library initialization and workflow create/status/cancel; v1 JSON wire DTOs.
 //! Dependencies: clap grammar, serde wire parsing, Assurance checks, Production specification
 //! and the shared Application workflow use cases.
 //! Callers: humans, automation, C1 black-box tests.
 //! Invariants: one JSON line stdout; no generation, shell or network calls; workflow commands
-//! only parse, project and report persisted Production state, never execute or reconcile.
+//! only parse, persist and project Production state, never execute or reconcile. Only
+//! explicit library init initializes/migrates; other commands require an existing library.
 //! Supplied context is a declaration, never authenticated by this process.
 use assetweft_core::{
     application::Application,
     assurance as val,
     library::LibraryError,
     production::specification as spec,
-    workflow::{Outcome, State, StepRecord},
+    workflow::{Outcome, State, Step, StepRecord},
 };
 use clap::{Arg, ArgMatches, Command, error::ErrorKind, value_parser};
 use serde::de::DeserializeOwned;
@@ -42,7 +43,7 @@ fn grammar() -> Command {
     Command::new("assetweft")
         .version(env!("CARGO_PKG_VERSION"))
         .about(
-            "Bounded GLB/declaration checks plus persisted workflow status/cancel; no generation",
+            "Bounded checks, explicit library init and workflow create/status/cancel; no generation",
         )
         .arg(Arg::new("call-id").long("call-id").global(true))
         .arg(
@@ -55,6 +56,16 @@ fn grammar() -> Command {
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
         .subcommand(
+            Command::new("library")
+                .about("Explicit local library initialization; may apply existing product migrations")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("init")
+                        .about("Initialize a named file under an existing parent; no downgrade")
+                        .arg(db()),
+                ),
+        )
+        .subcommand(
             Command::new("validate").arg(file()).arg(
                 Arg::new("role")
                     .long("role")
@@ -65,9 +76,21 @@ fn grammar() -> Command {
         .subcommand(
             Command::new("workflow")
                 .about(
-                    "Persisted local workflow state: status reads, cancel requests; no execution",
+                    "Create/read local workflow state or request cancellation; no execution or auto-init",
                 )
                 .subcommand_required(true)
+                .subcommand(
+                    Command::new("create")
+                        .about("Persist steps JSON in an existing initialized library; never executes")
+                        .arg(db())
+                        .arg(run_id())
+                        .arg(
+                            Arg::new("steps")
+                                .long("steps")
+                                .required(true)
+                                .value_parser(value_parser!(PathBuf)),
+                        ),
+                )
                 .subcommand(
                     Command::new("status")
                         .about("Read a run's cancellation request and ordered persisted steps")
@@ -118,6 +141,36 @@ fn read_json<T: DeserializeOwned>(
     let bytes = val::read_bounded(path, limits).map_err(|e| error(field, "INVALID_INPUT", e))?;
     serde_json::from_slice(&bytes).map_err(|e| error(field, "INVALID_INPUT", e))
 }
+/// Input shape only; Production owns graph, identity and count policies.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StepInput {
+    id: String,
+    dependencies: Vec<String>,
+}
+/// Serde structs also accept positional arrays; this wire requires JSON objects only.
+struct StepObject(StepInput);
+impl<'de> serde::Deserialize<'de> for StepObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor;
+        impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
+            type Value = StepObject;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a step object with id and dependencies")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                <StepInput as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(StepObject)
+            }
+        }
+        deserializer.deserialize_map(ObjectVisitor)
+    }
+}
 fn source(s: &val::SourceDeclaration) -> Value {
     json!({"class":s.class.as_str(),"declared_license":s.declared_license,"verified_by_checker":s.verified_by_checker()})
 }
@@ -164,6 +217,58 @@ fn library_outcome(failure: &LibraryError) -> (i32, &'static str) {
         LibraryError::Database(_) | LibraryError::UnknownValue(_) => (1, "FAIL"),
     }
 }
+/// The only CLI path authorized to create/initialize a library, using existing migrations.
+fn library_init_response(call_id: Option<&String>, args: &ArgMatches) -> (i32, Value) {
+    let db = args.get_one::<PathBuf>("db").expect("required");
+    let finish = |code, status, errors, results| {
+        (
+            code,
+            envelope("library init", call_id, status, errors, results),
+        )
+    };
+    // New files are allowed; existing directories/special files are not SQLite inputs.
+    match std::fs::metadata(db) {
+        Ok(metadata) if !metadata.is_file() => {
+            return finish(
+                2,
+                "INVALID_INPUT",
+                json!([error(
+                    "db",
+                    "INVALID_INPUT",
+                    "--db must name a regular file"
+                )]),
+                Value::Null,
+            );
+        }
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return finish(
+                2,
+                "INVALID_INPUT",
+                json!([error("db", "INVALID_INPUT", e)]),
+                Value::Null,
+            );
+        }
+        _ => {}
+    }
+    let mut app = match Application::open(db) {
+        Ok(app) => app,
+        Err(e) => {
+            return finish(
+                2,
+                "INVALID_INPUT",
+                json!([error("db", "INVALID_INPUT", e)]),
+                Value::Null,
+            );
+        }
+    };
+    match app.initialize_library() {
+        Ok(()) => finish(0, "PASS", json!([]), json!({"scope":"initialized_library"})),
+        Err(e) => {
+            let (code, status) = library_outcome(&e);
+            finish(code, status, json!([error("db", status, e)]), Value::Null)
+        }
+    }
+}
 /// Local wire projection of a non-Serialize persisted record; exhaustive, meaning-preserving.
 fn step_value(record: &StepRecord) -> Result<Value, String> {
     let (state, raw, evidence) = match (&record.state, record.outcome.as_ref()) {
@@ -190,6 +295,7 @@ fn workflow_response(
     call_id: Option<&String>,
     action: &str,
     args: &ArgMatches,
+    limits: val::ValidationLimits,
 ) -> (i32, Value) {
     let db = args.get_one::<PathBuf>("db").expect("required");
     let run = args.get_one::<String>("run-id").expect("required");
@@ -198,7 +304,7 @@ fn workflow_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    if run.is_empty() {
+    if action != "create" && run.is_empty() {
         return finish(
             2,
             "INVALID_INPUT",
@@ -221,6 +327,37 @@ fn workflow_response(
             );
         }
     };
+    if action == "create" {
+        let path = args.get_one::<PathBuf>("steps").expect("required");
+        let input: Vec<StepObject> = match read_json(path, limits, "steps") {
+            Ok(input) => input,
+            Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
+        };
+        let steps: Vec<_> = input
+            .into_iter()
+            .map(|StepObject(s)| Step {
+                id: s.id,
+                dependencies: s.dependencies,
+            })
+            .collect();
+        return match app.create_workflow(run, &steps) {
+            Ok(()) => finish(
+                0,
+                "PASS",
+                json!([]),
+                json!({"scope":"persisted_workflow_created","run_id":run}),
+            ),
+            Err(e) => {
+                let (code, status) = library_outcome(&e);
+                finish(
+                    code,
+                    status,
+                    json!([error("workflow", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
     if action == "status" {
         let steps = match app.workflow_steps(run) {
             Ok(steps) => steps,
@@ -355,17 +492,22 @@ fn run() -> (i32, Value) {
     };
     let (command, args) = matches.subcommand().expect("clap requires subcommand");
     let call_id = matches.get_one::<String>("call-id");
-    if command == "workflow" {
-        let (action, workflow_args) = args.subcommand().expect("clap requires a workflow action");
-        let wire = match action {
-            "status" => "workflow status",
-            _ => "workflow cancel",
-        };
-        return workflow_response(wire, call_id, action, workflow_args);
-    }
     let limits = val::ValidationLimits {
         max_bytes: *matches.get_one::<u64>("max-bytes").expect("default"),
     };
+    if command == "library" {
+        let (_, init_args) = args.subcommand().expect("clap requires library init");
+        return library_init_response(call_id, init_args);
+    }
+    if command == "workflow" {
+        let (action, workflow_args) = args.subcommand().expect("clap requires a workflow action");
+        let wire = match action {
+            "create" => "workflow create",
+            "status" => "workflow status",
+            _ => "workflow cancel",
+        };
+        return workflow_response(wire, call_id, action, workflow_args, limits);
+    }
     let finish =
         |code, status, errors, results| (code, envelope(command, call_id, status, errors, results));
     match command {

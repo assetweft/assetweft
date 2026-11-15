@@ -1,0 +1,58 @@
+# 职责: AW-004:B 原生恢复准入的 Windows/macOS 真实 runner gate——异常退出（子进程强制终止 +
+#       rollback journal 回滚）、写入失败（SQLITE_READONLY/SQLITE_FULL）与既有迁移/原型测试。
+# 依赖: actions/checkout（固定 commit SHA，与 c1.yml 同一 pin）；Rust 1.97.1 由 rust-toolchain.toml 固定，
+#       经 runner 自带 rustup 安装；rusqlite 0.42.0 bundled（libsqlite3-sys 0.40.0，SQLite 3.54.1）由 Cargo.lock 固定。
+# 调用方: GitHub Actions pull_request / push main / workflow_dispatch；本地等价命令见 work 报告。
+# 不变量: 不在 workflow 级使用 paths 过滤（本 workflow 被选中时 job 总有结果）；只读权限；
+#         显式 timeout 与 fail-fast: false；不使用 secrets、不用浮动 action tag、不上传私有素材、
+#         不下载权重、不启动模型/GPU、不改分支保护；测试只操作 runner 本地独占临时目录。
+
+name: native-recovery
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-recovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-recovery:
+    name: native-recovery (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # GitHub 官方 hosted runner 标签，两个平台都保留矩阵结果，任一失败不影响另一平台取证。
+        os: [windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -eu
+          rustup --version
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Focused native recovery tests
+        shell: bash
+        run: |
+          set -eu
+          cargo test --locked -p assetweft-core \
+            --test sqlite_prototype \
+            --test library \
+            --test native_recovery

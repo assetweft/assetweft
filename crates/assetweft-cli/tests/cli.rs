@@ -2178,3 +2178,367 @@ fn intent_mutating_stdout_failure_retains_commit_without_replay() {
         0
     );
 }
+
+// Retain each real child receipt when the author run supplies an owned evidence directory.
+fn candidate_invoke(args: &[&OsStr]) -> (Output, Value) {
+    let utc = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    let started = std::time::Instant::now();
+    let (out, value) = invoke(args);
+    let duration = started.elapsed().as_secs_f64();
+    if let Some(directory) = std::env::var_os("AW033B_QUERY_RECEIPTS") {
+        static SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let index = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prefix = PathBuf::from(directory).join(format!("query-{index:04}"));
+        fs::write(prefix.with_extension("stdout"), &out.stdout).unwrap();
+        fs::write(prefix.with_extension("stderr"), &out.stderr).unwrap();
+        fs::write(prefix.with_extension("json"), serde_json::to_vec(&json!({"utc_unix_seconds":utc,"duration_seconds":duration,"argv":args.iter().map(|a|a.to_string_lossy()).collect::<Vec<_>>(),"exit":out.status.code()})).unwrap()).unwrap();
+    }
+    (out, value)
+}
+// Public Application/CAS fixture only; pinned hashes name exact static synthetic bytes.
+fn candidate_fixture(
+    dir: &Path,
+    bad_proposed: bool,
+) -> (PathBuf, Application, assetweft_core::candidate::Proposal) {
+    use assetweft_core::{
+        LockMode,
+        candidate::{FixtureContract, Proposal},
+        library::{AssetVersion, ComponentReference, ComponentRole, Presence},
+    };
+    let db = dir.join("候选 library.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let glb = fs::read(fixture("mesh_only.glb")).unwrap();
+    for id in ["mesh0", "mesh1", "mesh2", "base", "proposed", "other"] {
+        let bad = bad_proposed && id == "mesh1";
+        let bytes = if bad {
+            b"invalid glb".as_slice()
+        } else {
+            glb.as_slice()
+        };
+        let version = AssetVersion {
+            asset_id: if ["base", "proposed", "other"].contains(&id) {
+                "character"
+            } else {
+                id
+            }
+            .into(),
+            version_id: id.into(),
+            content_hash: if bad {
+                "c7c67ca4bc17258e6e674eb1769791d4d85333723b201d8fb1b84037c7c886bf"
+            } else {
+                "4658deaae78fb1ae6050baca75a8c098db6ccad311c74ba02097fceac01e45a5"
+            }
+            .into(),
+            input_id: "fixture".into(),
+            source: "TEST_FIXTURE".into(),
+            authorization: "UNVERIFIED".into(),
+            authorized: false,
+            license_id: "UNKNOWN".into(),
+            usage_scope: "TEST_ONLY".into(),
+            source_format: "GLB".into(),
+            contract_version: "1.0.0".into(),
+            presence: Presence::Unknown,
+        };
+        app.commit_object(&version, &mut &bytes[..], bytes.len() as u64, 1024 * 1024)
+            .unwrap();
+    }
+    for (owner, mesh) in [("base", "mesh0"), ("proposed", "mesh1"), ("other", "mesh2")] {
+        app.add_component_reference(&ComponentReference {
+            owner_version_id: owner.into(),
+            role: ComponentRole::Mesh,
+            component_version_id: mesh.into(),
+        })
+        .unwrap();
+    }
+    let contract = FixtureContract {
+        contract_id: "TEST_FIXTURE_GLB_STRUCTURE_V1".into(),
+        max_component_bytes: 1024 * 1024,
+        required_quality: vec![],
+    };
+    app.initialize_candidate_current("base", &contract).unwrap();
+    let proposal = Proposal {
+        id: "candidate-1".into(),
+        base_version: "base".into(),
+        candidate_version: "proposed".into(),
+        expected_revision: 0,
+        editable: vec![ComponentRole::Mesh],
+        lock_mode: LockMode::Byte,
+        contract: Some(contract),
+    };
+    (db, app, proposal)
+}
+fn candidate_args<'a>(action: &'a str, db: &'a OsStr, id: &'a OsStr) -> Vec<&'a OsStr> {
+    vec![
+        OsStr::new("candidate"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db,
+        OsStr::new("--candidate-id"),
+        id,
+    ]
+}
+fn candidate_query(db: &Path, action: &str, id: &str, expected: &Value) {
+    let mut args = vec![OsStr::new("--call-id"), OsStr::new("correlation id 独立")];
+    args.extend(candidate_args(action, db.as_os_str(), OsStr::new(id)));
+    let (out, value) = candidate_invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    assert_eq!(value["status"], "PASS");
+    assert_eq!(value["command"], format!("candidate {action}"));
+    assert_eq!(value["call_id"], "correlation id 独立");
+    assert_eq!(value["errors"], json!([]));
+    assert!(out.stderr.is_empty());
+    let (scope, key) = if action == "show" {
+        ("stored_local_candidate_descriptor", "candidate")
+    } else {
+        ("stored_local_candidate_acceptance_receipt", "receipt")
+    };
+    assert_eq!(value["results"], json!({"scope": scope, key: expected}));
+    let (again, _) = candidate_invoke(&args);
+    assert_eq!(out.stdout, again.stdout);
+}
+#[test]
+fn candidate_queries_preserve_descriptor_nulls_and_absence_without_attempts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, mut proposal) = candidate_fixture(dir.path(), false);
+    let mut app = app;
+    proposal.contract = None;
+    proposal.expected_revision = 17;
+    let descriptor = app.propose_candidate(&proposal).unwrap();
+    let current = app.candidate_current("character").unwrap();
+    let value = serde_json::to_value(&descriptor).unwrap();
+    assert_eq!(value["contract"], Value::Null);
+    assert_eq!(value["expected_revision"], 17);
+    assert_eq!(value["source"], "TEST_FIXTURE");
+    assert!(
+        value["not_run"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("QUALITY"))
+    );
+    app.close().unwrap();
+    candidate_query(&db, "show", &proposal.id, &value);
+    candidate_query(&db, "receipt", &proposal.id, &Value::Null);
+    for action in ["show", "receipt"] {
+        candidate_query(&db, action, "missing", &Value::Null);
+    }
+    let reopened = Application::open(&db).unwrap();
+    assert_eq!(reopened.candidate(&proposal.id).unwrap(), Some(descriptor));
+    assert_eq!(reopened.candidate_attempt(&proposal.id).unwrap(), None);
+    assert_eq!(reopened.candidate_attempt("missing").unwrap(), None);
+    assert_eq!(reopened.candidate("missing").unwrap(), None);
+    assert_eq!(reopened.candidate_current("character").unwrap(), current);
+}
+#[test]
+fn candidate_queries_preserve_all_terminal_receipts_and_historical_bytes() {
+    use assetweft_core::candidate::Acceptance;
+    for mode in ["NotRun", "NotRunReport", "Rejected", "Accepted", "Conflict"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, mut app, mut proposal) = candidate_fixture(dir.path(), mode == "Rejected");
+        if mode == "NotRun" {
+            proposal.contract = None;
+        }
+        if mode == "NotRunReport" {
+            proposal.contract.as_mut().unwrap().max_component_bytes = 512 * 1024;
+        }
+        if mode == "Conflict" {
+            proposal.expected_revision = 1;
+        }
+        let descriptor = app.propose_candidate(&proposal).unwrap();
+        let receipt = app.attempt_accept_candidate(&proposal.id).unwrap();
+        assert!(matches!(
+            (&receipt, mode),
+            (Acceptance::NotRun { report: None, .. }, "NotRun")
+                | (
+                    Acceptance::NotRun {
+                        report: Some(_),
+                        ..
+                    },
+                    "NotRunReport"
+                )
+                | (Acceptance::Rejected { .. }, "Rejected")
+                | (Acceptance::Accepted { .. }, "Accepted")
+                | (Acceptance::Conflict { .. }, "Conflict")
+        ));
+        let mut records = vec![(proposal.id.clone(), descriptor, Some(receipt.clone()))];
+        // Advance the actual head once more: an Accepted receipt must keep its older Current.
+        if mode == "Accepted" {
+            let mut next = proposal.clone();
+            next.id = "candidate-next".into();
+            next.base_version = "proposed".into();
+            next.candidate_version = "other".into();
+            next.expected_revision = 1;
+            let next_descriptor = app.propose_candidate(&next).unwrap();
+            let next_receipt = app.attempt_accept_candidate(&next.id).unwrap();
+            assert!(
+                matches!(&next_receipt, Acceptance::Accepted { current, .. } if current.revision == 2)
+            );
+            records.push((next.id, next_descriptor, Some(next_receipt)));
+        }
+        let current = app.candidate_current("character").unwrap();
+        let managed = app.managed_object("mesh0").unwrap().unwrap();
+        app.close().unwrap();
+        for (id, descriptor, receipt) in &records {
+            candidate_query(&db, "show", id, &serde_json::to_value(descriptor).unwrap());
+            candidate_query(&db, "receipt", id, &serde_json::to_value(receipt).unwrap());
+        }
+        // Only our tempfile's synthetic CAS object is removed, after genuine persistence.
+        let owned_object = dir.path().join("objects").join(&managed.content_hash);
+        assert!(owned_object.is_file(), "{owned_object:?}");
+        fs::remove_file(&owned_object).unwrap();
+        for (id, descriptor, receipt) in &records {
+            candidate_query(&db, "show", id, &serde_json::to_value(descriptor).unwrap());
+            candidate_query(&db, "receipt", id, &serde_json::to_value(receipt).unwrap());
+        }
+        let reopened = Application::open(&db).unwrap();
+        for (id, descriptor, receipt) in records {
+            assert_eq!(reopened.candidate(&id).unwrap(), Some(descriptor));
+            assert_eq!(reopened.candidate_attempt(&id).unwrap(), receipt);
+        }
+        assert_eq!(reopened.candidate_current("character").unwrap(), current);
+        assert_eq!(reopened.candidate_attempt("missing").unwrap(), None);
+        assert!(!owned_object.exists());
+    }
+}
+#[test]
+fn candidate_query_identity_database_and_grammar_errors_are_truthful() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, proposal) = candidate_fixture(dir.path(), false);
+    for action in ["show", "receipt"] {
+        for id in ["", " candidate-1", "candidate-1 ", "..", "invalid/id"] {
+            let failure = if action == "show" {
+                app.candidate(id).unwrap_err()
+            } else {
+                app.candidate_attempt(id).unwrap_err()
+            };
+            assert!(matches!(
+                failure,
+                assetweft_core::library::LibraryError::InvalidInput(_)
+            ));
+            let (out, value) =
+                candidate_invoke(&candidate_args(action, db.as_os_str(), OsStr::new(id)));
+            assert_eq!(out.status.code(), Some(2), "{value}");
+            assert_eq!(value["status"], "INVALID_INPUT");
+            assert_eq!(value["errors"][0]["message"], failure.to_string());
+            assert_eq!(value["results"], Value::Null);
+        }
+        let missing = dir.path().join(format!("missing-{action}.sqlite"));
+        let empty = dir.path().join(format!("empty-{action}.sqlite"));
+        fs::write(&empty, []).unwrap();
+        for (path, code, status) in [
+            (missing.as_path(), 2, "INVALID_INPUT"),
+            (dir.path(), 2, "INVALID_INPUT"),
+            (empty.as_path(), 3, "INPUT_INCOMPLETE"),
+        ] {
+            let (out, value) = candidate_invoke(&candidate_args(
+                action,
+                path.as_os_str(),
+                OsStr::new("candidate-1"),
+            ));
+            assert_eq!(out.status.code(), Some(code), "{value}");
+            assert_eq!(value["status"], status);
+        }
+        assert!(!missing.exists());
+        assert_eq!(fs::metadata(&empty).unwrap().len(), 0);
+        let empty_app = Application::open(&empty).unwrap();
+        assert!(matches!(
+            empty_app.candidate("candidate-1"),
+            Err(assetweft_core::library::LibraryError::Uninitialized)
+        ));
+        for tail in [
+            vec![],
+            vec![OsStr::new("--db"), db.as_os_str()],
+            vec![OsStr::new("--candidate-id"), OsStr::new("candidate-1")],
+            vec![
+                OsStr::new("--db"),
+                db.as_os_str(),
+                OsStr::new("--candidate-id"),
+                OsStr::new("candidate-1"),
+                OsStr::new("--extra"),
+            ],
+        ] {
+            let mut args = vec![
+                OsStr::new("--call-id"),
+                OsStr::new("syntax-id"),
+                OsStr::new("candidate"),
+                OsStr::new(action),
+            ];
+            args.extend(tail);
+            let (out, value) = candidate_invoke(&args);
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(value["call_id"], "syntax-id");
+        }
+        let (out, help) = candidate_invoke(&[
+            OsStr::new("--call-id"),
+            OsStr::new("help-id"),
+            OsStr::new("candidate"),
+            OsStr::new(action),
+            OsStr::new("--help"),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(help["status"], "HELP");
+        assert_eq!(help["call_id"], "help-id");
+        let text = help["results"]["text"].as_str().unwrap();
+        assert!(text.contains("stored") && text.contains("--candidate-id"));
+    }
+    for args in [
+        vec![OsStr::new("candidate")],
+        vec![OsStr::new("candidate"), OsStr::new("accept")],
+    ] {
+        assert_eq!(candidate_invoke(&args).0.status.code(), Some(2));
+    }
+    assert_eq!(app.candidate(&proposal.id).unwrap(), None);
+    assert_eq!(app.candidate_attempt(&proposal.id).unwrap(), None);
+}
+#[cfg(any(unix, windows))]
+#[test]
+fn candidate_query_protocol_survives_broken_streams() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, proposal) = candidate_fixture(dir.path(), false);
+    app.close().unwrap();
+    for action in ["show", "receipt"] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("query-id")];
+        args.extend(candidate_args(
+            action,
+            db.as_os_str(),
+            OsStr::new(&proposal.id),
+        ));
+        let ordinary = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(ordinary.status.code(), Some(0));
+        let broken_err = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stderr(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(broken_err.status.code(), ordinary.status.code());
+        assert_eq!(broken_err.stdout, ordinary.stdout);
+        for suffix in [vec![], vec![OsStr::new("--extra")]] {
+            let mut argv = args.clone();
+            argv.extend(suffix);
+            let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+                .args(&argv)
+                .stdout(broken_output())
+                .stderr(broken_output())
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(6));
+        }
+    }
+    let reopened = Application::open(&db).unwrap();
+    assert_eq!(reopened.candidate(&proposal.id).unwrap(), None);
+    assert_eq!(reopened.candidate_attempt(&proposal.id).unwrap(), None);
+    assert_eq!(
+        reopened
+            .candidate_current("character")
+            .unwrap()
+            .unwrap()
+            .revision,
+        0
+    );
+}

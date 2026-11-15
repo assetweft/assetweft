@@ -1,4 +1,4 @@
-//! Responsibility: Production CLI incoming adapter for plan and workflow create/status/cancel.
+//! Responsibility: Production CLI incoming adapter for plan, workflows and stored candidate queries.
 //! Dependencies: shared transport, Production specification and existing Application/workflow APIs.
 //! Callers: main command dispatch; DTOs and persisted-record projection remain private here.
 //! Invariants: core owns graph/state/lock policy; no execution, SQL, replay or implicit init.
@@ -13,6 +13,54 @@ use assetweft_core::{
 use clap::ArgMatches;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+/// Read exactly one stored value through its owner; query PASS is not acceptance.
+pub(super) fn candidate_response(
+    wire: &str,
+    call_id: Option<&String>,
+    action: &str,
+    args: &ArgMatches,
+) -> (i32, Value) {
+    let db = args.get_one::<PathBuf>("db").expect("required");
+    let id = args.get_one::<String>("candidate-id").expect("required");
+    let finish =
+        |code, status, errors, results| (code, envelope(wire, call_id, status, errors, results));
+    if let Err(e) = existing_database(db) {
+        return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
+    }
+    let app = match Application::open(db) {
+        Ok(app) => app,
+        Err(e) => {
+            return finish(
+                2,
+                "INVALID_INPUT",
+                json!([error("db", "INVALID_INPUT", e)]),
+                Value::Null,
+            );
+        }
+    };
+    let result = match action {
+        "show" => app.candidate(id).map(|candidate| {
+            json!({"scope":"stored_local_candidate_descriptor","candidate":candidate})
+        }),
+        "receipt" => app.candidate_attempt(id).map(|receipt| {
+            json!({"scope":"stored_local_candidate_acceptance_receipt","receipt":receipt})
+        }),
+        _ => unreachable!("clap grammar"),
+    };
+    match result {
+        Ok(value) => finish(0, "PASS", json!([]), value),
+        Err(e) => {
+            let (code, status) = library_outcome(&e);
+            finish(
+                code,
+                status,
+                json!([error("candidate", status, e)]),
+                Value::Null,
+            )
+        }
+    }
+}
 
 /// Input shape only; Production owns graph, identity and count policies.
 #[derive(serde::Deserialize)]

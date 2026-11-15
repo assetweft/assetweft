@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
+    io::{self, Write},
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -177,7 +178,7 @@ fn main() {
     match run() {
         Ok(r) => println!("{r}"),
         Err(e) => {
-            eprintln!("{e}");
+            let _ = writeln!(io::stderr().lock(), "{e}");
             println!(
                 "{}",
                 json!({"status":if e.to_string().starts_with("UNSUPPORTED") { "NOT_RUN" } else { "FAIL" },"detail":e.to_string()})

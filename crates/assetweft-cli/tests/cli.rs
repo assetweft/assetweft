@@ -2929,3 +2929,570 @@ fn catalog_query_protocol_preserves_broken_stream_exit_and_json() {
     );
     assert_eq!(reopened.component_references("base").unwrap().len(), 1);
 }
+
+// Candidate writes are transport-only, real public Application/SQLite/CAS fixtures.
+fn candidate_write_args<'a>(action: &'a str, db: &'a Path, input: &'a Path) -> Vec<&'a OsStr> {
+    let mut args = vec![
+        OsStr::new("candidate"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db.as_os_str(),
+    ];
+    if action == "initialize" {
+        args.extend([
+            OsStr::new("--version-id"),
+            OsStr::new("headless-base"),
+            OsStr::new("--contract"),
+        ]);
+    } else {
+        args.push(OsStr::new("--proposal"));
+    }
+    args.push(input.as_os_str());
+    args
+}
+fn candidate_write_fixture(dir: &Path) -> (PathBuf, Application, PathBuf, PathBuf, Value) {
+    use assetweft_core::library::{ComponentReference, ComponentRole};
+    let (db, mut app, proposal) = candidate_fixture(dir, false);
+    let mut version = app.asset_version("base").unwrap().unwrap();
+    version.asset_id = "headless".into();
+    version.version_id = "headless-base".into();
+    let bytes = fs::read(fixture("mesh_only.glb")).unwrap();
+    app.commit_object(
+        &version,
+        &mut bytes.as_slice(),
+        bytes.len() as u64,
+        1024 * 1024,
+    )
+    .unwrap();
+    app.add_component_reference(&ComponentReference {
+        owner_version_id: "headless-base".into(),
+        role: ComponentRole::Mesh,
+        component_version_id: "mesh0".into(),
+    })
+    .unwrap();
+    assert_eq!(app.candidate_current("headless").unwrap(), None);
+    let contract = dir.join("合同 contract.json");
+    fs::write(
+        &contract,
+        serde_json::to_vec(proposal.contract.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let value = json!({"id":proposal.id,"base_version":proposal.base_version,"candidate_version":proposal.candidate_version,"expected_revision":proposal.expected_revision,"editable":["mesh"],"lock_mode":"BYTE","contract":proposal.contract});
+    let path = dir.join("暂存 proposal.json");
+    fs::write(&path, value.to_string()).unwrap();
+    (db, app, contract, path, value)
+}
+#[test]
+fn candidate_write_initialize_absent_head_exact_current_and_core_repeat() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, contract, _, _) = candidate_write_fixture(dir.path());
+    assert_eq!(app.candidate_current("headless").unwrap(), None);
+    let before = fs::read(&contract).unwrap();
+    let mut args = candidate_write_args("initialize", &db, &contract);
+    args.extend([OsStr::new("--call-id"), OsStr::new("init α")]);
+    let (out, value) = candidate_invoke(&args);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "initialize must create absent fixture head: {value}"
+    );
+    assert_eq!(value["command"], "candidate initialize");
+    assert_eq!(value["call_id"], "init α");
+    assert_eq!(value["status"], "PASS");
+    let mut reopened = Application::open(&db).unwrap();
+    let current = reopened.candidate_current("headless").unwrap().unwrap();
+    assert_eq!(current.version_id, "headless-base");
+    assert_eq!(current.revision, 0);
+    assert_eq!(
+        value["results"],
+        json!({"scope":"initialized_local_fixture_current","current":current})
+    );
+    let expected = reopened
+        .initialize_candidate_current("headless-base", &current.contract)
+        .unwrap();
+    let (again, _) = candidate_invoke(&args);
+    assert_eq!(again.stdout, out.stdout);
+    assert_eq!(
+        Application::open(&db)
+            .unwrap()
+            .candidate_current("headless")
+            .unwrap(),
+        Some(expected)
+    );
+    assert_eq!(fs::read(&contract).unwrap(), before);
+}
+#[test]
+fn candidate_write_propose_exact_staging_without_acceptance_or_head_advance() {
+    use assetweft_core::library::{ComponentReference, ComponentRole};
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut app, _, path, mut wire) = candidate_write_fixture(dir.path());
+    let head = app.candidate_current("character").unwrap();
+    let bytes = fs::read(fixture("mesh_only.glb")).unwrap();
+    for owner in ["roles-base", "roles-proposed"] {
+        let mut version = app.asset_version("base").unwrap().unwrap();
+        version.asset_id = "roles-owner".into();
+        version.version_id = owner.into();
+        app.commit_object(
+            &version,
+            &mut bytes.as_slice(),
+            bytes.len() as u64,
+            1024 * 1024,
+        )
+        .unwrap();
+        for role in [
+            ComponentRole::Mesh,
+            ComponentRole::Materials,
+            ComponentRole::Rig,
+            ComponentRole::Motion,
+            ComponentRole::Vfx,
+            ComponentRole::Audio,
+            ComponentRole::Dialogue,
+        ] {
+            app.add_component_reference(&ComponentReference {
+                owner_version_id: owner.into(),
+                role,
+                component_version_id: "mesh0".into(),
+            })
+            .unwrap();
+        }
+    }
+    wire["base_version"] = json!("roles-base");
+    wire["candidate_version"] = json!("roles-proposed");
+    wire["editable"] = json!([
+        "mesh",
+        "materials",
+        "rig",
+        "motion",
+        "vfx",
+        "audio",
+        "dialogue"
+    ]);
+    for (index, contract) in [Some(wire["contract"].clone()), Some(Value::Null), None]
+        .into_iter()
+        .enumerate()
+    {
+        wire["id"] = json!(format!("wire-{index}"));
+        if let Some(contract) = contract {
+            wire["contract"] = contract;
+        } else {
+            wire.as_object_mut().unwrap().remove("contract");
+        }
+        fs::write(&path, wire.to_string()).unwrap();
+        let mut args = candidate_write_args("propose", &db, &path);
+        args.extend([OsStr::new("--call-id"), OsStr::new("stage α")]);
+        let (out, value) = candidate_invoke(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "propose must stage existing managed byte fixture: {value}"
+        );
+        assert_eq!(value["status"], "PASS");
+        assert_eq!(value["command"], "candidate propose");
+        assert_eq!(value["call_id"], "stage α");
+        let reopened = Application::open(&db).unwrap();
+        let id = wire["id"].as_str().unwrap();
+        let descriptor = reopened.candidate(id).unwrap().unwrap();
+        assert_eq!(
+            descriptor.editable,
+            [
+                "mesh",
+                "materials",
+                "rig",
+                "motion",
+                "vfx",
+                "audio",
+                "dialogue"
+            ]
+        );
+        assert_eq!(descriptor.expected_revision, 0);
+        assert_eq!(descriptor.source, "TEST_FIXTURE");
+        assert_eq!(descriptor.scope, "MANAGED_COMPONENT_BYTE_STAGING_ONLY");
+        assert_eq!(
+            serde_json::to_value(&descriptor.contract).unwrap(),
+            wire.get("contract").cloned().unwrap_or(Value::Null)
+        );
+        assert_eq!(
+            value["results"],
+            json!({"scope":"staged_local_byte_fixture_candidate","candidate":descriptor})
+        );
+        assert_eq!(candidate_invoke(&args).0.stdout, out.stdout);
+        candidate_query(&db, "show", id, &serde_json::to_value(&descriptor).unwrap());
+        candidate_query(&db, "receipt", id, &Value::Null);
+        assert_eq!(reopened.candidate_attempt(id).unwrap(), None);
+        assert_eq!(reopened.candidate_current("character").unwrap(), head);
+        catalog_query(
+            &db,
+            "current",
+            "character",
+            json!({"scope":"stored_local_candidate_current","current":head}),
+        );
+    }
+}
+#[test]
+fn candidate_write_strict_json_shapes_numbers_and_bounds_leave_no_mutations() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, contract, path, good) = candidate_write_fixture(dir.path());
+    let head = app.candidate_current("character").unwrap();
+    let contract_good = fs::read_to_string(&contract).unwrap();
+    let mut bad_contracts = vec![
+        "[]".to_owned(),
+        "[\"TEST_FIXTURE_GLB_STRUCTURE_V1\",1024,[]]".into(),
+        "null".into(),
+        "{}".into(),
+        "{broken".into(),
+        format!("{contract_good} null"),
+        contract_good.replacen('{', "{\"extra\":0,", 1),
+        contract_good.replacen('{', "{\"contract_id\":\"duplicate\",", 1),
+    ];
+    for (key, value) in [
+        ("max_component_bytes", json!(-1)),
+        ("max_component_bytes", json!(1.0)),
+        ("max_component_bytes", json!("1024")),
+        ("max_component_bytes", json!(null)),
+        ("required_quality", json!([1])),
+        ("contract_id", json!(1)),
+    ] {
+        let mut c: Value = serde_json::from_str(&contract_good).unwrap();
+        c[key] = value;
+        bad_contracts.push(c.to_string());
+    }
+    bad_contracts.push("{\"contract_id\":\"x\",\"max_component_bytes\":18446744073709551616,\"required_quality\":[]}".into());
+    for raw in &bad_contracts {
+        fs::write(&contract, raw).unwrap();
+        let (out, v) = candidate_invoke(&candidate_write_args("initialize", &db, &contract));
+        assert_eq!(out.status.code(), Some(2), "{raw}: {v}");
+        assert_eq!(v["command"], "candidate initialize");
+        assert_eq!(v["errors"][0]["field_path"], "contract", "{v}");
+        assert_eq!(app.candidate_current("headless").unwrap(), None);
+    }
+    let mut bad = vec![
+        "[]".to_owned(),
+        "[\"x\",\"base\",\"proposed\",0,[\"mesh\"],\"BYTE\",null]".into(),
+        "null".into(),
+        "{}".into(),
+        "{broken".into(),
+        format!("{good} {{}}"),
+        good.to_string().replacen('{', "{\"extra\":0,", 1),
+        good.to_string().replacen('{', "{\"id\":\"duplicate\",", 1),
+    ];
+    for key in [
+        "id",
+        "base_version",
+        "candidate_version",
+        "expected_revision",
+        "editable",
+        "lock_mode",
+    ] {
+        let mut p = good.clone();
+        p.as_object_mut().unwrap().remove(key);
+        bad.push(p.to_string());
+    }
+    for (key, value) in [
+        ("id", json!(1)),
+        ("expected_revision", json!(1.0)),
+        ("expected_revision", json!("0")),
+        ("expected_revision", json!(null)),
+        ("editable", json!("mesh")),
+        ("editable", json!(["Mesh"])),
+        ("editable", json!([" mesh"])),
+        ("editable", json!([1])),
+        ("editable", json!([{ "mesh":null }])),
+        ("lock_mode", json!("Byte")),
+        ("lock_mode", json!("NOT_DEFINED")),
+        ("lock_mode", json!(null)),
+        ("lock_mode", json!({"BYTE":null})),
+    ] {
+        let mut p = good.clone();
+        p[key] = value;
+        bad.push(p.to_string());
+    }
+    bad.push(good.to_string().replace(
+        "\"expected_revision\":0",
+        "\"expected_revision\":9223372036854775808",
+    ));
+    for raw in bad_contracts.iter().filter(|raw| raw.as_str() != "null") {
+        let mut p = good.clone();
+        p.as_object_mut().unwrap().remove("contract");
+        let prefix = p.to_string();
+        bad.push(format!(
+            "{},\"contract\":{raw}}}",
+            &prefix[..prefix.len() - 1]
+        ));
+    }
+    bad.push(
+        good.to_string()
+            .replace("\"contract\":{", "\"contract\":{\"max_component_bytes\":1,"),
+    );
+    bad.push(good.to_string().replace(
+        "\"expected_revision\":0",
+        "\"expected_revision\":-9223372036854775809",
+    ));
+    bad.push(good.to_string().replacen('{', "{\"contract\":null,", 1));
+    for raw in &bad {
+        fs::write(&path, raw).unwrap();
+        let (out, v) = candidate_invoke(&candidate_write_args("propose", &db, &path));
+        assert_eq!(out.status.code(), Some(2), "{raw}: {v}");
+        assert_eq!(v["command"], "candidate propose");
+        assert_eq!(v["errors"][0]["field_path"], "proposal", "{raw}: {v}");
+        assert_eq!(app.candidate("candidate-1").unwrap(), None);
+    }
+    for (action, input, raw, field) in [
+        ("initialize", &contract, contract_good, "contract"),
+        ("propose", &path, good.to_string(), "proposal"),
+    ] {
+        fs::write(input, &raw).unwrap();
+        let limit = (raw.len() - 1).to_string();
+        let mut args = candidate_write_args(action, &db, input);
+        args.extend([OsStr::new("--max-bytes"), OsStr::new(&limit)]);
+        let (out, v) = candidate_invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["errors"][0]["field_path"], field);
+        let limit = raw.len().to_string();
+        let mut args = candidate_write_args(action, &db, input);
+        args.extend([OsStr::new("--max-bytes"), OsStr::new(&limit)]);
+        assert_eq!(candidate_invoke(&args).0.status.code(), Some(0));
+    }
+    assert_eq!(app.candidate_current("character").unwrap(), head);
+    assert_eq!(app.candidate_attempt("candidate-1").unwrap(), None);
+}
+#[test]
+fn candidate_write_core_policy_is_preserved_verbatim_without_partial_changes() {
+    use assetweft_core::{LockMode, candidate::FixtureContract};
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut app, contract, path, good) = candidate_write_fixture(dir.path());
+    let (_, _, mut proposal) = candidate_fixture(
+        &{
+            let d = dir.path().join("comparison");
+            fs::create_dir(&d).unwrap();
+            d
+        },
+        false,
+    );
+    for (key, value) in [
+        ("id", json!(" candidate-1")),
+        ("expected_revision", json!(-1)),
+        ("expected_revision", json!(i64::MAX)),
+        ("editable", json!([])),
+        ("editable", json!(["mesh", "mesh"])),
+        ("lock_mode", json!("SEMANTIC")),
+        ("base_version", json!("absent")),
+    ] {
+        let mut wire = good.clone();
+        wire[key] = value.clone();
+        proposal.id = wire["id"].as_str().unwrap().into();
+        proposal.base_version = wire["base_version"].as_str().unwrap().into();
+        proposal.expected_revision = wire["expected_revision"].as_i64().unwrap();
+        proposal.editable = wire["editable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|_| assetweft_core::library::ComponentRole::Mesh)
+            .collect();
+        proposal.lock_mode = if wire["lock_mode"] == "SEMANTIC" {
+            LockMode::Semantic
+        } else {
+            LockMode::Byte
+        };
+        let failure = app.propose_candidate(&proposal).unwrap_err();
+        fs::write(&path, wire.to_string()).unwrap();
+        let (out, v) = candidate_invoke(&candidate_write_args("propose", &db, &path));
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["errors"][0]["message"], failure.to_string());
+        assert_eq!(v["errors"][0]["field_path"], "candidate");
+    }
+    let c: FixtureContract = serde_json::from_slice(&fs::read(&contract).unwrap()).unwrap();
+    for (version, change) in [
+        (" headless-base", None),
+        ("missing", None),
+        (
+            "headless-base",
+            Some(json!({"contract_id":"other","max_component_bytes":1024,"required_quality":[]})),
+        ),
+        (
+            "headless-base",
+            Some(
+                json!({"contract_id":"TEST_FIXTURE_GLB_STRUCTURE_V1","max_component_bytes":1,"required_quality":[]}),
+            ),
+        ),
+        (
+            "headless-base",
+            Some(
+                json!({"contract_id":"TEST_FIXTURE_GLB_STRUCTURE_V1","max_component_bytes":1024,"required_quality":["quality"]}),
+            ),
+        ),
+    ] {
+        let declared: FixtureContract = change
+            .map(|v| serde_json::from_value(v).unwrap())
+            .unwrap_or(c.clone());
+        let error = app
+            .initialize_candidate_current(version, &declared)
+            .unwrap_err();
+        fs::write(&contract, serde_json::to_vec(&declared).unwrap()).unwrap();
+        let mut args = candidate_write_args("initialize", &db, &contract);
+        args[5] = OsStr::new(version);
+        let (out, v) = candidate_invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["errors"][0]["message"], error.to_string());
+        assert_eq!(v["errors"][0]["field_path"], "candidate");
+    }
+    assert_eq!(app.candidate_current("headless").unwrap(), None);
+    assert_eq!(app.candidate("candidate-1").unwrap(), None);
+}
+#[test]
+fn candidate_write_database_paths_help_grammar_and_input_precedence() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, contract, path, _) = candidate_write_fixture(dir.path());
+    let missing = dir.path().join("absent.sqlite");
+    let empty = dir.path().join("empty.sqlite");
+    fs::write(&empty, []).unwrap();
+    for (action, input, field) in [
+        ("initialize", &contract, "contract"),
+        ("propose", &path, "proposal"),
+    ] {
+        let (out, v) = candidate_invoke(&[
+            OsStr::new("--call-id"),
+            OsStr::new("help-id"),
+            OsStr::new("candidate"),
+            OsStr::new(action),
+            OsStr::new("--help"),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(v["call_id"], "help-id");
+        assert_eq!(v["status"], "HELP");
+        assert!(v["results"].to_string().contains(&format!("--{field}")));
+        for p in [&missing, &dir.path().to_path_buf()] {
+            let (out, v) = candidate_invoke(&candidate_write_args(action, p, input));
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(v["errors"][0]["field_path"], "db");
+        }
+        let (out, v) = candidate_invoke(&candidate_write_args(action, &empty, input));
+        assert_eq!(out.status.code(), Some(3), "{v}");
+        assert_eq!(fs::metadata(&empty).unwrap().len(), 0);
+        for p in [&missing, &dir.path().to_path_buf()] {
+            let (out, v) = candidate_invoke(&candidate_write_args(action, &db, p));
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(v["errors"][0]["field_path"], field);
+        }
+        let mut args = candidate_write_args(action, &db, input);
+        args.pop();
+        assert_eq!(candidate_invoke(&args).0.status.code(), Some(2));
+        let mut missing_db = candidate_write_args(action, &db, input);
+        missing_db.drain(2..4);
+        assert_eq!(candidate_invoke(&missing_db).0.status.code(), Some(2));
+        if action == "initialize" {
+            let mut missing_id = candidate_write_args(action, &db, input);
+            missing_id.drain(4..6);
+            assert_eq!(candidate_invoke(&missing_id).0.status.code(), Some(2));
+        }
+        for limit in ["0", "16777217"] {
+            let mut args = candidate_write_args(action, &db, input);
+            args.extend([OsStr::new("--max-bytes"), OsStr::new(limit)]);
+            assert_eq!(candidate_invoke(&args).0.status.code(), Some(2));
+        }
+    }
+    for action in ["attempt", "accept", "execute", "submit"] {
+        assert_eq!(
+            candidate_invoke(&[OsStr::new("candidate"), OsStr::new(action)])
+                .0
+                .status
+                .code(),
+            Some(2)
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let link = dir.path().join("contract-link");
+        symlink(&contract, &link).unwrap();
+        assert_eq!(
+            candidate_invoke(&candidate_write_args("initialize", &db, &link))
+                .0
+                .status
+                .code(),
+            Some(0)
+        );
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let os_path = dir
+                .path()
+                .join(std::ffi::OsString::from_vec(b"proposal-\xff.json".to_vec()));
+            fs::copy(&path, &os_path).unwrap();
+            assert_eq!(
+                candidate_invoke(&candidate_write_args("propose", &db, &os_path))
+                    .0
+                    .status
+                    .code(),
+                Some(0)
+            );
+        }
+    }
+    assert!(!missing.exists());
+    assert_eq!(app.candidate_attempt("candidate-1").unwrap(), None);
+}
+#[cfg(any(unix, windows))]
+#[test]
+fn candidate_write_broken_streams_preserve_durable_commits_and_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _, contract, path, _) = candidate_write_fixture(dir.path());
+    // First successful writes lose stdout, yet remain visible via existing public queries.
+    for (action, input) in [("initialize", &contract), ("propose", &path)] {
+        let args = candidate_write_args(action, &db, input);
+        let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stdout(broken_output())
+            .stderr(broken_output())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(6));
+    }
+    let app = Application::open(&db).unwrap();
+    assert_eq!(
+        app.candidate_current("headless").unwrap().unwrap().revision,
+        0
+    );
+    let staged = app.candidate("candidate-1").unwrap().unwrap();
+    assert_eq!(app.candidate_attempt("candidate-1").unwrap(), None);
+    candidate_query(
+        &db,
+        "show",
+        "candidate-1",
+        &serde_json::to_value(staged).unwrap(),
+    );
+    for (action, input) in [("initialize", &contract), ("propose", &path)] {
+        let args = candidate_write_args(action, &db, input);
+        let (normal, v) = candidate_invoke(&args);
+        assert_eq!(normal.status.code(), Some(0), "{v}");
+        let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stderr(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(0));
+        assert_eq!(failed.stdout, normal.stdout);
+        let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stdout(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(6));
+        fs::write(input, b"{broken").unwrap();
+        let (normal, v) = candidate_invoke(&args);
+        assert_eq!(normal.status.code(), Some(2), "{v}");
+        let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stderr(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(2));
+        assert_eq!(failed.stdout, normal.stdout);
+        let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stdout(broken_output())
+            .stderr(broken_output())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(6));
+    }
+    assert_eq!(app.candidate("not-written").unwrap(), None);
+}

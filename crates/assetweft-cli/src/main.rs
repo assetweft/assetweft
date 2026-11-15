@@ -97,8 +97,24 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("candidate")
-                .about("Query stored local descriptors and historical receipts; no validation or acceptance")
+                .about("Initialize/stage local fixtures or query stored records; no candidate acceptance")
                 .subcommand_required(true)
+                .subcommand(
+                    Command::new("initialize")
+                        .about("Initialize an absent local fixture head under a declared contract")
+                        .arg(db())
+                        .arg(Arg::new("version-id").long("version-id").required(true)
+                            .value_parser(value_parser!(String)))
+                        .arg(Arg::new("contract").long("contract").required(true)
+                            .value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("propose")
+                        .about("Stage a managed local byte fixture descriptor; no acceptance or head advance")
+                        .arg(db())
+                        .arg(Arg::new("proposal").long("proposal").required(true)
+                            .value_parser(value_parser!(PathBuf))),
+                )
                 .subcommand(
                     Command::new("show")
                         .about("Read the stored local candidate descriptor; no remeasurement")
@@ -343,12 +359,17 @@ fn run() -> (i32, Value) {
         return catalog::query_response(wire, call_id, action, query_args);
     }
     if command == "candidate" {
-        let (action, query_args) = args.subcommand().expect("clap requires a candidate query");
+        let (action, query_args) = args.subcommand().expect("clap requires a candidate action");
         let wire = match action {
+            "initialize" => "candidate initialize",
+            "propose" => "candidate propose",
             "show" => "candidate show",
             "receipt" => "candidate receipt",
             _ => unreachable!("clap grammar"),
         };
+        if matches!(action, "initialize" | "propose") {
+            return production::candidate_write_response(wire, call_id, action, query_args, limits);
+        }
         return production::candidate_response(wire, call_id, action, query_args);
     }
     if command == "workflow" {

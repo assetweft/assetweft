@@ -1,18 +1,200 @@
-//! Responsibility: Production CLI incoming adapter for plan, workflows and stored candidate queries.
-//! Dependencies: shared transport, Production specification and existing Application/workflow APIs.
+//! Responsibility: Production CLI incoming adapter for plan, workflows, explicit fixture initialization/staging and stored candidate queries.
+//! Dependencies: shared transport, Production specification and existing Application/candidate/workflow values.
 //! Callers: main command dispatch; DTOs and persisted-record projection remain private here.
 //! Invariants: core owns graph/state/lock policy; no execution, SQL, replay or implicit init.
 
 use crate::protocol::{envelope, error, existing_database, library_outcome, read_json, source};
 use assetweft_core::{
+    LockMode,
     application::Application,
     assurance as val,
+    candidate::{FixtureContract, Proposal},
+    library::ComponentRole,
     production::specification as spec,
     workflow::{Outcome, State, Step, StepRecord},
 };
 use clap::ArgMatches;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+/// Wire shape only; Catalog/Production retain all fixture and limit policy.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContractInput {
+    contract_id: String,
+    max_component_bytes: u64,
+    required_quality: Vec<String>,
+}
+struct ContractObject(FixtureContract);
+impl<'de> serde::Deserialize<'de> for ContractObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ContractVisitor;
+        impl<'de> serde::de::Visitor<'de> for ContractVisitor {
+            type Value = ContractObject;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a fixture contract object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let input = <ContractInput as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(ContractObject(FixtureContract {
+                    contract_id: input.contract_id,
+                    max_component_bytes: input.max_component_bytes,
+                    required_quality: input.required_quality,
+                }))
+            }
+        }
+        deserializer.deserialize_map(ContractVisitor)
+    }
+}
+struct RoleInput(ComponentRole);
+impl<'de> serde::Deserialize<'de> for RoleInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let role = match text.as_str() {
+            "mesh" => ComponentRole::Mesh,
+            "materials" => ComponentRole::Materials,
+            "rig" => ComponentRole::Rig,
+            "motion" => ComponentRole::Motion,
+            "vfx" => ComponentRole::Vfx,
+            "audio" => ComponentRole::Audio,
+            "dialogue" => ComponentRole::Dialogue,
+            _ => {
+                return Err(serde::de::Error::unknown_variant(
+                    &text,
+                    &[
+                        "mesh",
+                        "materials",
+                        "rig",
+                        "motion",
+                        "vfx",
+                        "audio",
+                        "dialogue",
+                    ],
+                ));
+            }
+        };
+        Ok(Self(role))
+    }
+}
+struct LockInput(LockMode);
+impl<'de> serde::Deserialize<'de> for LockInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        LockMode::parse(&text)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProposalInput {
+    id: String,
+    base_version: String,
+    candidate_version: String,
+    expected_revision: i64,
+    editable: Vec<RoleInput>,
+    lock_mode: LockInput,
+    contract: Option<ContractObject>,
+}
+struct ProposalObject(Proposal);
+impl<'de> serde::Deserialize<'de> for ProposalObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ProposalVisitor;
+        impl<'de> serde::de::Visitor<'de> for ProposalVisitor {
+            type Value = ProposalObject;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a candidate proposal object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let input = <ProposalInput as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(ProposalObject(Proposal {
+                    id: input.id,
+                    base_version: input.base_version,
+                    candidate_version: input.candidate_version,
+                    expected_revision: input.expected_revision,
+                    editable: input
+                        .editable
+                        .into_iter()
+                        .map(|RoleInput(role)| role)
+                        .collect(),
+                    lock_mode: input.lock_mode.0,
+                    contract: input.contract.map(|ContractObject(c)| c),
+                }))
+            }
+        }
+        deserializer.deserialize_map(ProposalVisitor)
+    }
+}
+/// One explicit facade mutation; returned values are projected directly without readback/retry.
+pub(super) fn candidate_write_response(
+    wire: &str,
+    call_id: Option<&String>,
+    action: &str,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let db = args.get_one::<PathBuf>("db").expect("required");
+    let finish =
+        |code, status, errors, results| (code, envelope(wire, call_id, status, errors, results));
+    if let Err(e) = existing_database(db) {
+        return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
+    }
+    let mut app = match Application::open(db) {
+        Ok(app) => app,
+        Err(e) => {
+            return finish(
+                2,
+                "INVALID_INPUT",
+                json!([error("db", "INVALID_INPUT", e)]),
+                Value::Null,
+            );
+        }
+    };
+    let result = match action {
+        "initialize" => {
+            let path = args.get_one::<PathBuf>("contract").expect("required");
+            let ContractObject(contract) = match read_json(path, limits, "contract") {
+                Ok(input) => input,
+                Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
+            };
+            let version = args.get_one::<String>("version-id").expect("required");
+            app.initialize_candidate_current(version, &contract).map(
+                |current| json!({"scope":"initialized_local_fixture_current","current":current}),
+            )
+        }
+        "propose" => {
+            let path = args.get_one::<PathBuf>("proposal").expect("required");
+            let ProposalObject(proposal) = match read_json(path, limits, "proposal") {
+                Ok(input) => input,
+                Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
+            };
+            app.propose_candidate(&proposal).map(|candidate| json!({"scope":"staged_local_byte_fixture_candidate","candidate":candidate}))
+        }
+        _ => unreachable!("clap grammar"),
+    };
+    match result {
+        Ok(value) => finish(0, "PASS", json!([]), value),
+        Err(e) => {
+            let (code, status) = library_outcome(&e);
+            finish(
+                code,
+                status,
+                json!([error("candidate", status, e)]),
+                Value::Null,
+            )
+        }
+    }
+}
 
 /// Read exactly one stored value through its owner; query PASS is not acceptance.
 pub(super) fn candidate_response(

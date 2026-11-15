@@ -194,20 +194,27 @@ impl ProtectedBackup for BackupSession<'_> {
         let mut snapshot = Connection::open(&db)?;
         snapshot.busy_timeout(Duration::ZERO)?;
         {
-            let backup = Backup::new(conn, &mut snapshot)?;
+            self.run.check(Progress::Snapshot)?;
+            // Pin a read snapshot before measuring it. Without this transaction an
+            // external writer can restart Backup::step with a larger source, and
+            // progress().pagecount is only updated AFTER that step has written.
+            // WAL writers may continue; rollback-journal writers wait for this read.
+            let source = conn.unchecked_transaction()?;
+            source.query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
+                r.get::<_, i64>(0)
+            })?;
+            let page_size: u32 = source.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+            let pages: u32 = source.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+            account_bytes(0, u64::from(pages) * u64::from(page_size), limits.max_bytes)?;
+            let backup = Backup::new(&source, &mut snapshot)?;
             loop {
-                self.run.check(Progress::Snapshot)?;
                 match backup.step(128)? {
                     StepResult::Done => break,
                     StepResult::More => (),
                     StepResult::Busy | StepResult::Locked => return Err(BackupError::Busy),
                     _ => return Err(BackupError::Invalid("backup step")),
                 }
-                if u64::try_from(backup.progress().pagecount).unwrap_or(u64::MAX)
-                    > limits.max_bytes / 512
-                {
-                    return Err(BackupError::Limit);
-                }
+                self.run.check(Progress::Snapshot)?;
             }
         }
         let objects = inspect(&snapshot, limits.max_objects)?;

@@ -331,3 +331,132 @@ fn snapshot_schema_disagrees_with_manifest_rejected_without_upgrade_or_source_wr
         source
     );
 }
+
+// Real SQLite files exercise the public adapter, including the bytes left on limit failure.
+#[test]
+fn snapshot_write_budget_page_sizes_and_boundaries() {
+    for page_size in [512_u64, 4096, 65536] {
+        for large in [false, true] {
+            let d = tempfile::tempdir().unwrap();
+            let db = d.path().join("original.sqlite");
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(&format!("PRAGMA page_size={page_size}; VACUUM;"))
+                .unwrap();
+            drop(conn);
+            let mut app = Application::open(&db).unwrap();
+            app.initialize_library().unwrap();
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            if large {
+                conn.execute_batch(&format!("CREATE TABLE budget_padding(data BLOB); INSERT INTO budget_padding VALUES(zeroblob({}));", page_size * 300)).unwrap();
+            }
+            let pages: u32 = conn
+                .query_row("PRAGMA page_count", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                conn.query_row("PRAGMA page_size", [], |r| r.get::<_, u32>(0))
+                    .unwrap(),
+                page_size as u32
+            );
+            assert_eq!(pages > 128, large);
+            drop(conn);
+            let original = fs::read(&db).unwrap();
+            let size = original.len() as u64;
+            assert_eq!(size, u64::from(pages) * page_size);
+            for cap in [1, size - page_size, size - 1, size] {
+                let dest = d.path().join(format!("cap-{cap}"));
+                let result = app.backup_library(
+                    &dest,
+                    Limits {
+                        max_bytes: cap,
+                        ..Limits::default()
+                    },
+                    &mut |_| true,
+                );
+                let bytes = fs::read(dest.join("library.sqlite")).unwrap();
+                eprintln!(
+                    "page_size={page_size} pages={pages} cap={cap} produced={}",
+                    bytes.len()
+                );
+                assert!(
+                    bytes.len() as u64 <= cap,
+                    "actual snapshot write exceeded cap: {} > {cap}",
+                    bytes.len()
+                );
+                if cap == size {
+                    let manifest = result.unwrap();
+                    assert_eq!(manifest.database.bytes, size);
+                    assert_eq!(manifest.database.hash, hash(&bytes));
+                    restore(&dest, &d.path().join("restored")).unwrap();
+                } else {
+                    assert!(matches!(result, Err(BackupError::Limit)));
+                    assert!(
+                        bytes.is_empty(),
+                        "oversize snapshot must be rejected before its first write"
+                    );
+                    assert!(!dest.join("manifest.json").exists());
+                }
+                assert_eq!(fs::read(&db).unwrap(), original);
+                assert!(!d.path().join(".aw-storage.lock").exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn snapshot_write_budget_pins_source_during_wal_growth() {
+    let d = tempfile::tempdir().unwrap();
+    let db = d.path().join("original.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE budget_padding(data BLOB); INSERT INTO budget_padding VALUES(zeroblob(2097152)); PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+    let size = fs::metadata(&db).unwrap().len();
+    let mut steps = 0;
+    let dest = d.path().join("backup");
+    let manifest = app
+        .backup_library(
+            &dest,
+            Limits {
+                max_bytes: size,
+                ..Limits::default()
+            },
+            &mut |p| {
+                if p == Progress::Snapshot {
+                    steps += 1;
+                    if steps == 2 {
+                        conn.execute_batch("INSERT INTO budget_padding VALUES(zeroblob(2097152));")
+                            .unwrap();
+                    }
+                }
+                true
+            },
+        )
+        .unwrap();
+    assert!(steps > 2);
+    let bytes = fs::read(dest.join("library.sqlite")).unwrap();
+    assert_eq!(bytes.len() as u64, size);
+    assert_eq!(manifest.database.bytes, size);
+    assert_eq!(manifest.database.hash, hash(&bytes));
+    assert!(
+        conn.query_row("PRAGMA page_count", [], |r| r.get::<_, u32>(0))
+            .unwrap()
+            * 4096
+            > size as u32
+    );
+    restore(&dest, &d.path().join("restored")).unwrap();
+    let restored = rusqlite::Connection::open(d.path().join("restored/library.sqlite")).unwrap();
+    assert_eq!(
+        restored
+            .query_row("SELECT count(*) FROM budget_padding", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM budget_padding", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+    assert!(!d.path().join(".aw-storage.lock").exists());
+}

@@ -14,7 +14,12 @@ pub(crate) struct BaseOwner {
 }
 pub(crate) trait Initialization {
     fn base_owner(&mut self, version: &str) -> Result<BaseOwner, InitializationError>;
-    fn snapshot(&mut self, version: &str) -> Result<Vec<ComponentSnapshot>, InitializationError>;
+    /// The contract-validated bound is enforced on the actual file before CAS hashing.
+    fn snapshot(
+        &mut self,
+        version: &str,
+        max_component_bytes: u64,
+    ) -> Result<Vec<ComponentSnapshot>, InitializationError>;
     fn validate(
         &mut self,
         snapshots: &[ComponentSnapshot],

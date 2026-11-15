@@ -17,7 +17,9 @@ Core-owned AcceptanceInputs and CommitAcceptance exchange business values and
 stable AcceptanceError categories, never paths, connections, row counts or vendor
 errors. The concrete sqlite/acceptance adapter delegates actual bounded validation
 to the existing candidate helper; no parsing/provider work occurs in a write txn.
-Its commit takes storage lease, rechecks both frozen reference lists, checks owner,
+The attempt use case threads the candidate's declared bound into base remeasurement,
+which checks the actual managed file before CAS hashing. Its commit takes storage
+lease, rechecks both frozen reference lists, checks owner,
 opens IMMEDIATE, checks schema, reads duplicate receipt, conditionally advances
 Catalog head and writes Production aw_candidate_attempts in one commit. Catalog
 owns head SQL; the cross-context adapter translates changed rows to Accepted or
@@ -72,7 +74,11 @@ AcceptanceError's stable
 categories are reused internally without changing the accepted acceptance core.
 
 `staging_sqlite` owns descriptor SQL/encoding and bounded managed-byte helpers.
-Freeze encodes before storage lease, rechecks ordered references under that lease,
+The use cases forward the already-validated declared `max_component_bytes` to the
+snapshot port, which rejects the actual managed regular file on that bound before
+Catalog managed CAS hashing or Assurance validation; without a predeclared contract
+the existing 16 MiB staged ceiling and its diagnostics are retained. Freeze encodes
+before storage lease, rechecks ordered references under that lease,
 then opens IMMEDIATE, checks current schema and compares the exact stored encoded
 value before inserting/committing. Existing triggers retain frozen references;
 no write replay, SQL/parameter/check ordering or acceptance authority is added.
@@ -102,8 +108,8 @@ fields, no clone/serde/constructor, borrowed version/contract and owned measured
 snapshots, consumed once by the adapter. Public callers cannot submit PASS reports.
 
 The concrete `sqlite/initialization.rs` adapter (explicitly mounted from Production)
-uses the existing bounded managed-byte snapshot/validator, then holds the shared
-storage lease, rechecks exact references, opens IMMEDIATE, calls unchanged borrowed
+uses the existing bounded managed-byte snapshot/validator with the validated
+contract bound checked before managed hashing, then holds the shared storage lease, rechecks exact references, opens IMMEDIATE, calls unchanged borrowed
 Catalog initialization and commits once. No parsing is moved into the transaction;
 current0 idempotency, existing-head errors and exact diagnostics remain unchanged.
 AttemptRead retains require_current before the original receipt SELECT/parameters

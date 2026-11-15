@@ -17,6 +17,7 @@ impl FrozenProposal {
 }
 pub(crate) fn propose(port: &mut impl Staging, p: &Proposal) -> Result<Candidate, StagingError> {
     let editable = staging_domain::editable(p)?;
+    let max_component_bytes = p.contract.as_ref().map(|c| c.max_component_bytes);
     let owners = port.owners(&p.base_version, &p.candidate_version)?;
     if owners.base_source != "TEST_FIXTURE" || owners.proposed_source != "TEST_FIXTURE" {
         return Err(StagingError::InvalidInput(
@@ -26,8 +27,8 @@ pub(crate) fn propose(port: &mut impl Staging, p: &Proposal) -> Result<Candidate
     if owners.base_asset != owners.proposed_asset {
         return Err(StagingError::InvalidInput("candidate asset"));
     }
-    let base = port.snapshot(&p.base_version)?;
-    let proposed = port.snapshot(&p.candidate_version)?;
+    let base = port.snapshot(&p.base_version, max_component_bytes)?;
+    let proposed = port.snapshot(&p.candidate_version, max_component_bytes)?;
     let candidate = staging_domain::descriptor(p, editable, base, proposed)?;
     port.freeze(FrozenProposal { candidate })
 }
@@ -59,6 +60,7 @@ mod tests {
     use crate::{LockMode, catalog::domain::ComponentRole};
     struct Port {
         calls: Vec<String>,
+        limits: Vec<Option<u64>>,
         changed: bool,
         source: String,
         stored: Option<Candidate>,
@@ -73,8 +75,13 @@ mod tests {
                 proposed_asset: "asset".into(),
             })
         }
-        fn snapshot(&mut self, owner: &str) -> Result<Vec<ComponentSnapshot>, StagingError> {
+        fn snapshot(
+            &mut self,
+            owner: &str,
+            max_component_bytes: Option<u64>,
+        ) -> Result<Vec<ComponentSnapshot>, StagingError> {
             self.calls.push(owner.into());
+            self.limits.push(max_component_bytes);
             Ok(vec![
                 ComponentSnapshot {
                     role: "mesh".into(),
@@ -118,6 +125,7 @@ mod tests {
     fn port() -> Port {
         Port {
             calls: vec![],
+            limits: vec![],
             changed: false,
             source: "TEST_FIXTURE".into(),
             stored: None,
@@ -163,6 +171,7 @@ mod tests {
         let mut io = port();
         let c = propose(&mut io, &proposal()).unwrap();
         assert_eq!(io.calls, ["owners", "base", "next", "freeze"]);
+        assert_eq!(io.limits, [None, None]);
         assert_eq!(
             c.base.iter().map(|s| s.role.as_str()).collect::<Vec<_>>(),
             ["mesh", "rig"]
@@ -181,6 +190,18 @@ mod tests {
         );
         assert_eq!(read(&mut io, "id").unwrap(), None);
         assert_eq!(io.calls.last().unwrap(), "read");
+    }
+    #[test]
+    fn declared_contract_bound_is_forwarded_to_both_snapshots() {
+        let mut io = port();
+        let mut p = proposal();
+        p.contract = Some(crate::catalog::domain::FixtureContract {
+            contract_id: "TEST_FIXTURE_GLB_STRUCTURE_V1".into(),
+            max_component_bytes: 777,
+            required_quality: vec![],
+        });
+        propose(&mut io, &p).unwrap();
+        assert_eq!(io.limits, [Some(777), Some(777)]);
     }
     #[test]
     fn stored_descriptor_identity_must_equal_the_lookup_key() {

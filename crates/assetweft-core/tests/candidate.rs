@@ -655,6 +655,201 @@ fn identity_error() -> assetweft_core::library::LibraryError {
     assetweft_core::library::LibraryError::InvalidInput("candidate identity")
 }
 
+// Issue 30: the declared fixture component cap must reject actual managed regular
+// files before Catalog/CAS hashing and Assurance validation, while a contract-less
+// staged request keeps the existing global managed byte ceiling.
+fn cap_contract(max_component_bytes: u64) -> assetweft_core::candidate::FixtureContract {
+    assetweft_core::candidate::FixtureContract {
+        contract_id: "TEST_FIXTURE_GLB_STRUCTURE_V1".into(),
+        max_component_bytes,
+        required_quality: vec![],
+    }
+}
+
+fn cap_setup() -> (tempfile::TempDir, Application, Proposal) {
+    let d = tempfile::tempdir().unwrap();
+    let mut a = Application::open(&d.path().join("library.sqlite")).unwrap();
+    a.initialize_library().unwrap();
+    let bytes = include_bytes!("fixtures/validation/mesh_only.glb");
+    put_glb(&mut a, "mesh0", bytes);
+    put_glb(&mut a, "mesh1", bytes);
+    put(&mut a, "base", "character", b"base manifest");
+    put(&mut a, "proposed", "character", b"candidate manifest");
+    reference(&mut a, "base", ComponentRole::Mesh, "mesh0");
+    reference(&mut a, "proposed", ComponentRole::Mesh, "mesh1");
+    let p = Proposal {
+        id: "cap-1".into(),
+        base_version: "base".into(),
+        candidate_version: "proposed".into(),
+        expected_revision: 0,
+        editable: vec![ComponentRole::Mesh],
+        lock_mode: LockMode::Byte,
+        contract: Some(cap_contract(bytes.len() as u64)),
+    };
+    (d, a, p)
+}
+
+fn grow_object(d: &tempfile::TempDir, a: &mut Application, id: &str, extra: u8) -> u64 {
+    let hash = a.asset_version(id).unwrap().unwrap().content_hash;
+    let path = d.path().join("objects").join(hash);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.push(extra);
+    fs::write(&path, &bytes).unwrap();
+    bytes.len() as u64
+}
+
+#[test]
+fn declared_cap_rejects_proposal_before_managed_hashing() {
+    let (d, mut a, p) = cap_setup();
+    let size = grow_object(&d, &mut a, "mesh1", b'X');
+    assert_eq!(size, p.contract.as_ref().unwrap().max_component_bytes + 1);
+    // Pre-fix this request hashes the grown object and fails on the claimed-hash
+    // identity instead; only a cap checked on real size can reject before that.
+    assert_eq!(
+        a.propose_candidate(&p),
+        Err(assetweft_core::library::LibraryError::InvalidInput(
+            "component byte limit"
+        ))
+    );
+    assert!(a.candidate(&p.id).unwrap().is_none());
+}
+
+#[test]
+fn declared_cap_rejects_initialization_before_managed_hashing() {
+    let (d, mut a, p) = cap_setup();
+    let size = grow_object(&d, &mut a, "mesh0", b'X');
+    let contract = p.contract.unwrap();
+    assert_eq!(size, contract.max_component_bytes + 1);
+    assert_eq!(
+        a.initialize_candidate_current("base", &contract),
+        Err(assetweft_core::library::LibraryError::InvalidInput(
+            "component byte limit"
+        ))
+    );
+    assert!(a.candidate_current("character").unwrap().is_none());
+}
+
+#[test]
+fn declared_cap_rejects_attempt_before_managed_hashing_without_receipt() {
+    let (d, mut a, p) = cap_setup();
+    a.initialize_candidate_current("base", p.contract.as_ref().unwrap())
+        .unwrap();
+    let candidate = a.propose_candidate(&p).unwrap();
+    let size = grow_object(&d, &mut a, "mesh1", b'Y');
+    assert_eq!(
+        size,
+        candidate.contract.as_ref().unwrap().max_component_bytes + 1
+    );
+    assert_eq!(
+        a.attempt_accept_candidate(&p.id),
+        Err(assetweft_core::library::LibraryError::InvalidInput(
+            "component byte limit"
+        ))
+    );
+    assert!(a.candidate_attempt(&p.id).unwrap().is_none());
+    assert_eq!(
+        a.candidate_current("character").unwrap().unwrap().revision,
+        0
+    );
+}
+
+#[test]
+fn declared_cap_rejects_attempt_base_remeasure_before_managed_hashing() {
+    // Base and proposed must be distinct managed objects: real CAS deduplicates
+    // identical bytes, which would let the proposed read mask the base case.
+    let glb = include_bytes!("fixtures/validation/mesh_only.glb");
+    let mut shifted = glb.to_vec();
+    let json_len = u32::from_le_bytes(shifted[12..16].try_into().unwrap()) as usize;
+    let total = u32::from_le_bytes(shifted[8..12].try_into().unwrap()) + 4;
+    shifted.splice(20 + json_len..20 + json_len, [b' '; 4]);
+    shifted[12..16].copy_from_slice(&((json_len + 4) as u32).to_le_bytes());
+    shifted[8..12].copy_from_slice(&total.to_le_bytes());
+    let d = tempfile::tempdir().unwrap();
+    let mut a = Application::open(&d.path().join("library.sqlite")).unwrap();
+    a.initialize_library().unwrap();
+    put_glb(&mut a, "mesh0", glb);
+    put_glb(&mut a, "mesh1", &shifted);
+    put(&mut a, "base", "character", b"base manifest");
+    put(&mut a, "proposed", "character", b"candidate manifest");
+    reference(&mut a, "base", ComponentRole::Mesh, "mesh0");
+    reference(&mut a, "proposed", ComponentRole::Mesh, "mesh1");
+    let contract = cap_contract(shifted.len() as u64);
+    a.initialize_candidate_current("base", &contract).unwrap();
+    let p = Proposal {
+        id: "cap-base".into(),
+        base_version: "base".into(),
+        candidate_version: "proposed".into(),
+        expected_revision: 0,
+        editable: vec![ComponentRole::Mesh],
+        lock_mode: LockMode::Byte,
+        contract: Some(contract),
+    };
+    a.propose_candidate(&p).unwrap();
+    // Only the base object grows past the declared bound; proposed bytes stay valid.
+    let hash = a.asset_version("mesh0").unwrap().unwrap().content_hash;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(d.path().join("objects").join(hash))
+        .unwrap();
+    file.set_len(p.contract.as_ref().unwrap().max_component_bytes + 1)
+        .unwrap();
+    // Pre-fix the base remeasurement hashes the grown object and returns a CAS
+    // corruption error; only a declared bound on the actual file rejects earlier.
+    assert_eq!(
+        a.attempt_accept_candidate(&p.id),
+        Err(assetweft_core::library::LibraryError::InvalidInput(
+            "component byte limit"
+        ))
+    );
+    assert!(a.candidate_attempt(&p.id).unwrap().is_none());
+    assert_eq!(
+        a.candidate_current("character").unwrap().unwrap().revision,
+        0
+    );
+}
+
+#[test]
+fn declared_cap_boundaries_and_contractless_managed_ceiling_are_retained() {
+    let bytes = include_bytes!("fixtures/validation/mesh_only.glb");
+    let exact = bytes.len() as u64;
+    // Exactly at the declared bound stays a valid staged and accepted component.
+    let (_d, mut a, p) = cap_setup();
+    a.initialize_candidate_current("base", p.contract.as_ref().unwrap())
+        .unwrap();
+    a.propose_candidate(&p).unwrap();
+    assert!(matches!(
+        a.attempt_accept_candidate(&p.id).unwrap(),
+        Acceptance::Accepted { .. }
+    ));
+    // One byte under the valid fixture size is a real declared-limit rejection.
+    let (_d2, mut b, p2) = cap_setup();
+    let mut under = p2.clone();
+    under.contract = Some(cap_contract(exact - 1));
+    assert_eq!(
+        b.propose_candidate(&under),
+        Err(assetweft_core::library::LibraryError::InvalidInput(
+            "component byte limit"
+        ))
+    );
+    assert!(b.candidate(&under.id).unwrap().is_none());
+    // No predeclared contract retains the existing 16 MiB managed-file ceiling.
+    let (d3, mut c, mut p3) = cap_setup();
+    p3.contract = None;
+    let hash = c.asset_version("mesh1").unwrap().unwrap().content_hash;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(d3.path().join("objects").join(hash))
+        .unwrap();
+    file.set_len(16 * 1024 * 1024 + 1).unwrap();
+    assert_eq!(
+        c.propose_candidate(&p3),
+        Err(assetweft_core::library::LibraryError::InvalidInput(
+            "bounded managed regular file"
+        ))
+    );
+    assert!(c.candidate(&p3.id).unwrap().is_none());
+}
+
 #[test]
 fn persisted_descriptor_identity_is_bound_to_the_lookup_key() {
     let (d, mut a, p) = glb_setup();

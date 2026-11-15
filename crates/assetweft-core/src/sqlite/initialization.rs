@@ -28,8 +28,12 @@ impl Initialization for SqliteInitialization<'_> {
             source: owner.source,
         })
     }
-    fn snapshot(&mut self, version: &str) -> Result<Vec<ComponentSnapshot>, InitializationError> {
-        snapshot(self.conn, self.root, version).map_err(Into::into)
+    fn snapshot(
+        &mut self,
+        version: &str,
+        max_component_bytes: u64,
+    ) -> Result<Vec<ComponentSnapshot>, InitializationError> {
+        snapshot(self.conn, self.root, version, Some(max_component_bytes)).map_err(Into::into)
     }
     fn validate(
         &mut self,

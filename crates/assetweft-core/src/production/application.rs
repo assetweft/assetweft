@@ -82,7 +82,14 @@ pub(crate) fn attempt(
             &candidate.proposed,
             candidate.contract.as_ref().expect("checked contract"),
         )?;
-        ports.remeasure_base(&candidate.base)?;
+        ports.remeasure_base(
+            &candidate.base,
+            candidate
+                .contract
+                .as_ref()
+                .expect("checked contract")
+                .max_component_bytes,
+        )?;
         if report.components.len() != candidate.proposed.len() {
             Decision::Terminal(Box::new(Acceptance::NotRun {
                 candidate: candidate.clone(),
@@ -138,7 +145,9 @@ mod tests {
         fn remeasure_base(
             &mut self,
             _: &[super::super::domain::ComponentSnapshot],
+            max_component_bytes: u64,
         ) -> Result<(), AcceptanceError> {
+            assert_eq!(max_component_bytes, 1024);
             self.calls.push("base");
             match &self.base_error {
                 Some(e) => Err(e.clone()),

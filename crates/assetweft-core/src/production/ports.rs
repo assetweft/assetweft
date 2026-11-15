@@ -27,7 +27,13 @@ pub(crate) trait AcceptanceInputs {
         snapshots: &[ComponentSnapshot],
         contract: &FixtureContract,
     ) -> Result<AcceptanceReport, AcceptanceError>;
-    fn remeasure_base(&mut self, snapshots: &[ComponentSnapshot]) -> Result<(), AcceptanceError>;
+    /// Re-measure base components under the candidate's declared bound. The bound is
+    /// checked on the actual managed file before any Catalog CAS hashing.
+    fn remeasure_base(
+        &mut self,
+        snapshots: &[ComponentSnapshot],
+        max_component_bytes: u64,
+    ) -> Result<(), AcceptanceError>;
 }
 /// One atomic acceptance operation, never a replayable generic transaction callback.
 pub(crate) trait CommitAcceptance {

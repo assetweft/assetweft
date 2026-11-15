@@ -8,7 +8,7 @@ and `workflow cancel` persists a cancellation request. `budget approve` stores a
 reads its local ledger. `budget reserve` stores a local call intent, `budget intent`
 reads it and `budget cancel` requests local cancellation. These commands never execute
 steps or call providers. `candidate show/receipt` query stored local descriptors and
-historical acceptance receipts through Production. `catalog version/references/current`
+historical acceptance receipts through Production. `candidate initialize` explicitly creates a local fixture head and `candidate propose` stages a managed byte fixture descriptor. `catalog version/references/current`
 query stored exact metadata and the local fixture head through Catalog.
 
 ```
@@ -24,6 +24,8 @@ assetweft [--call-id ID] budget balance --db EXISTING_DB --budget-id ID
 assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
 assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] candidate initialize --db EXISTING_DB --version-id ID --contract FILE
+assetweft [--call-id ID] candidate propose --db EXISTING_DB --proposal FILE
 assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
@@ -33,18 +35,18 @@ assetweft [--call-id ID] catalog current --db EXISTING_DB --asset-id ID
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
 16777216, minimum 1), including `workflow create --steps`, `budget approve --allowance`
-and `budget reserve --request`; it never bounds database size or query result sizes and
-has no effect on init/status/cancel/balance/intent/candidate/catalog queries.
+and `budget reserve --request`, `candidate initialize --contract` and `candidate propose --proposal`; it never bounds database size or query result sizes and
+has no effect on library init/status/cancel/balance/intent/candidate/catalog queries.
 Its existing numeric parser validation still applies to every command.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-`library init`, `workflow create/cancel` and `budget approve/reserve/cancel` are explicit mutating paths.
+`library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
 `command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
-`budget reserve`, `budget intent`, `budget cancel`, `candidate show`, `candidate receipt`,
+`budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog references`, `catalog current`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
@@ -81,7 +83,7 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 
 | Module | CLI responsibility | Core policy owner |
 |---|---|---|
-| `production.rs` | plan DTO/result projection; workflow create/status/cancel; stored candidate queries | [Production](../assetweft-core/src/production/CONTRACT.md) |
+| `production.rs` | plan DTO/result projection; workflow create/status/cancel; explicit fixture initialization/staging; stored candidate queries | [Production](../assetweft-core/src/production/CONTRACT.md) |
 | `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
 | `catalog.rs` | exact version metadata/reference projection and stored fixture-head query | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
@@ -129,7 +131,7 @@ no claim, execution, generation, provider call or budget approval. There is no e
 read or retry after the write. New steps are pending without outcomes; use status for
 current state, which can change through existing product use cases.
 
-The following existing-file guard applies to **workflow create/status/cancel, all budget commands, candidate queries and Catalog queries**,
+The following existing-file guard applies to **workflow create/status/cancel, all budget commands, all candidate commands and Catalog queries**,
 not explicit init.
 
 `--db` must name an existing regular file (symlinks followed), checked with filesystem
@@ -437,3 +439,71 @@ do not construct them; no raw SQL or corruption is added to fill that coverage.
 Full workspace C1, current-SHA CI, native Windows/macOS matrix, different-family independent
 review, Git publication/merge, full AW-033:B, product/AI/provider/paid/F0/engine/production
 acceptance remain NOT_RUN in this author slice. Root owns those separate gates.
+
+
+## Explicit local fixture initialization and staging (AW-033:B bounded slice)
+
+`candidate initialize --db EXISTING_DB --version-id ID --contract FILE` reads a strict JSON object:
+
+```json
+{"contract_id":"TEST_FIXTURE_GLB_STRUCTURE_V1","max_component_bytes":1048576,"required_quality":[]}
+```
+
+All three fields are required. The CLI projects exactly `FixtureContract` and passes the
+version ID verbatim to `Application::initialize_candidate_current` once. Production owns
+identity, contract limits, fixture source, roles, actual bounded managed bytes, structure,
+required quality and existing-head policy. Success is exactly
+`results: {"scope":"initialized_local_fixture_current","current":<returned Current>}`.
+The returned Current includes asset_id, version_id, revision and the exact declared contract;
+an absent fixture head starts at revision 0. Repeating an identical initialization follows
+core idempotency; a different existing head/contract is not overwritten. This operation
+performs the existing fixture checks, never quality, rights or product acceptance. It does
+not initialize/migrate the library, write arbitrary heads, query current again or retry.
+
+`candidate propose --db EXISTING_DB --proposal FILE` reads a strict JSON object:
+
+```json
+{"id":"candidate-1","base_version":"base","candidate_version":"proposed","expected_revision":0,"editable":["mesh"],"lock_mode":"BYTE","contract":{"contract_id":"TEST_FIXTURE_GLB_STRUCTURE_V1","max_component_bytes":1048576,"required_quality":[]}}
+```
+
+The six fields preceding `contract` are required; `contract` may be omitted or null (None),
+or must contain the same strict three-field object above. Identity fields are strings,
+expected_revision is an exact signed 64-bit integer, max_component_bytes is an exact
+unsigned 64-bit integer, required_quality is an array of strings and editable is an array
+of the exact lowercase strings mesh/materials/rig/motion/vfx/audio/dialogue. lock_mode uses
+the existing exact strings BYTE or SEMANTIC. The transport does no normalization or
+coercion; Production currently rejects SEMANTIC staging, invalid identities/revisions,
+role counts/duplicates, contract limits, sources and changed locked components through
+its existing typed errors. No semantic policy is recreated in the CLI.
+
+The CLI calls `Application::propose_candidate` once and returns exactly
+`results: {"scope":"staged_local_byte_fixture_candidate","candidate":<returned Candidate>}`.
+PASS/0 means only that the managed local byte fixture descriptor was staged. Its existing
+source/scope/contract/not_run and measured component snapshots are preserved. It does not
+advance current, create an acceptance receipt, validate quality or rights, or submit a
+caller-provided PASS as authority. An identical typed proposal follows core idempotency;
+a conflicting descriptor under the same identity fails without replacing it. Use existing
+`candidate show`, `candidate receipt` and `catalog current` to observe durable state.
+There is no candidate attempt/accept/execute/submit command; terminal acceptance status
+mapping requires a separate bounded follow-up against CONTRACTS §10.5.
+
+Both top-level and nested objects reject positional arrays, unknown/duplicate/missing
+fields and wrong types, including object-shaped enum tags. Malformed/trailing JSON,
+floats or strings in integer fields, out-of-range integers, unreadable/nonregular inputs
+and oversized files fail INVALID_INPUT/2. Each input uses the existing bounded reader and
+`--max-bytes` (1..16777216); paths are OS paths with Unicode/spaces and the existing symlink
+policy. Input files are not modified. Precedence is grammar, existing regular database
+admission, Application::open, bounded DTO parsing, then the one owning facade operation.
+Path/open errors use field_path db; JSON/file errors use contract or proposal; facade
+errors use candidate with the unchanged exhaustive LibraryError mapping above. An existing
+empty library therefore returns INPUT_INCOMPLETE/3 on a valid request; malformed DTOs
+perform no business writes. Opens still configure pragmas and retain the check/open race;
+there is no filesystem read-only or combined atomic multi-read guarantee.
+
+The v1 single JSON line and newline, best-effort stderr and fatal stdout exit 6 apply to
+both operations, grammar and errors. An explicit write may already be committed when
+stdout fails: exit 6 does not imply rollback and triggers no automatic retry. Inspect the
+stored descriptor/head through existing query commands. `--call-id` is correlation only,
+not an idempotency token. Fixtures and programmatic GLB checks are synthetic evidence,
+not real generated assets, authorization, budget approval, provider access or production
+acceptance. Full AW-033:B, product, real-data, paid/provider, F0, AI and engines are NOT_RUN.

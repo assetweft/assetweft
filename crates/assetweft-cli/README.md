@@ -622,3 +622,27 @@ streams a regular local file through the existing Catalog managed-object commit.
 Success scope `committed_local_managed_object` returns exact version_id and actual Core content_hash/byte_length in one compact v1 JSON line. Core validates metadata/length/hash/cap, publishes before its short registration transaction, and may leave an orphan on later failure. No readback, replay, stale-lock break or partial-state repair is attempted. This verifies local managed bytes only; declarations remain independent of license, quality, readiness, provider or product verification.
 
 Source admission errors are INVALID_INPUT (2). Core Library errors retain the existing mapping; Storage Invalid maps to INVALID_INPUT (2), Corrupt to FAIL (1), Busy/Io to INTERNAL (6). A stdout failure returns 6 even after a durable commit; inspect the existing public state before deciding what to do, never automatically replay. Stderr is best effort. Path prechecks and open have replacement races: this is for private local files, with no adversarial filesystem or filesystem-readonly guarantee. No URL, network, shell or stdin source is accepted.
+
+`workflow claim --db EXISTING_DB --run-id RUN` durably claims at most one ready
+step, returning `persisted_workflow_step_claim` with the exact `run_id` and
+`step_id` (or null). Null does not classify completion or cancellation. Claim
+executes nothing and never auto-finishes.
+
+`workflow finish --db EXISTING_DB --run-id RUN --step-id STEP --outcome FILE`
+records a caller-supplied actual outcome for an already RUNNING step. FILE must
+be an object with required string `state` (exactly `succeeded` or `failed`) and
+string `raw`; optional `evidence` is a string or null. Omission/null means no
+pointer; an empty string remains an empty pointer. Unknown/duplicate fields and
+positional arrays are rejected. Core enforces UTF-8 byte limits (raw 1048576,
+evidence 4096); the global JSON input cap also applies. Successful recording
+returns PASS/exit 0 even for a failed outcome. The submitted outcome echo is an
+ACK marked `caller_supplied_not_executed_or_verified`, not a fresh database
+query or verification of evidence, model output, rights or quality.
+
+After restart, read `workflow status`, explicitly finish only known actual
+outcomes of RUNNING work, then claim the next step. Unknown work must never be
+replayed. There is no automatic resume, execution, retry, reset or provider call.
+Cancellation blocks future claims, preserves results and still permits explicit
+finish of RUNNING work; it does not stop remote processes or refund fees.
+A stdout failure (exit 6) can follow a committed claim or finish: never retry an
+ambiguous mutation automatically. Use status to reconcile it.

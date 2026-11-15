@@ -184,6 +184,18 @@ fn grammar() -> Command {
                         .arg(run_id()),
                 )
                 .subcommand(
+                    Command::new("claim")
+                        .about("Durably claim one ready step; never executes or finishes it")
+                        .arg(db()).arg(run_id()),
+                )
+                .subcommand(
+                    Command::new("finish")
+                        .about("Record a caller-supplied actual outcome; no execution or verification")
+                        .arg(db()).arg(run_id())
+                        .arg(Arg::new("step-id").long("step-id").required(true).value_parser(value_parser!(String)))
+                        .arg(Arg::new("outcome").long("outcome").required(true).value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
                     Command::new("cancel")
                         .about("Persist a cancellation request; never stops processes or refunds")
                         .arg(db())
@@ -416,7 +428,10 @@ fn run() -> (i32, Value) {
         let wire = match action {
             "create" => "workflow create",
             "status" => "workflow status",
-            _ => "workflow cancel",
+            "cancel" => "workflow cancel",
+            "claim" => "workflow claim",
+            "finish" => "workflow finish",
+            _ => unreachable!("clap grammar"),
         };
         return production::workflow_response(wire, call_id, action, workflow_args, limits);
     }

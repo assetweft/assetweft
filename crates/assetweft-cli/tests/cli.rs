@@ -4428,3 +4428,187 @@ fn catalog_write_first_commits_survive_broken_streams_without_duplicate_success(
         }
     }
 }
+
+// Managed commits use real files, process output and only public Application observations.
+fn object_args<'a>(
+    db: &'a Path,
+    version: &'a Path,
+    file: &'a Path,
+    len: &'a str,
+) -> Vec<&'a OsStr> {
+    vec![
+        OsStr::new("catalog"),
+        OsStr::new("commit-object"),
+        OsStr::new("--db"),
+        db.as_os_str(),
+        OsStr::new("--version"),
+        version.as_os_str(),
+        OsStr::new("--file"),
+        file.as_os_str(),
+        OsStr::new("--expected-len"),
+        OsStr::new(len),
+    ]
+}
+fn object_wire(id: &str) -> Value {
+    let mut wire = catalog_write_wire(id, "UNKNOWN", false);
+    wire["content_hash"] =
+        json!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    wire
+}
+#[test]
+fn object_commit_roundtrip_and_duplicate_preserve_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let version = dir.path().join("version.json");
+    let file = dir.path().join("bytes");
+    fs::write(&file, b"abc").unwrap();
+    for id in ["first", "second"] {
+        fs::write(&version, object_wire(id).to_string()).unwrap();
+        let mut args = object_args(&db, &version, &file, "3");
+        args.extend([OsStr::new("--call-id"), OsStr::new("object α")]);
+        let (out, value) = catalog_write_invoke(&args);
+        assert_eq!(out.status.code(), Some(0), "{value}");
+        assert!(out.stderr.is_empty());
+        assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(
+            value,
+            json!({"schema_version":1,"command":"catalog commit-object","call_id":"object α","status":"PASS","errors":[],"results":{"scope":"committed_local_managed_object","version_id":id,"content_hash":object_wire(id)["content_hash"],"byte_length":3}})
+        );
+        let mut app = Application::open(&db).unwrap();
+        let row = app.asset_version(id).unwrap().unwrap();
+        assert!(!row.authorized);
+        assert_eq!(row.source, " declared source ");
+        let stored = app.managed_object(id).unwrap().unwrap();
+        assert_eq!(stored.content_hash, row.content_hash);
+        assert_eq!(stored.byte_length, 3);
+        assert_eq!(
+            fs::read(dir.path().join("objects").join(&stored.content_hash)).unwrap(),
+            b"abc"
+        );
+        let (duplicate, _) = catalog_write_invoke(&args);
+        assert_eq!(duplicate.status.code(), Some(2));
+        assert_eq!(
+            Application::open(&db).unwrap().asset_version(id).unwrap(),
+            Some(row)
+        );
+    }
+}
+#[test]
+fn object_commit_rejects_inputs_without_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let version = dir.path().join("version.json");
+    let file = dir.path().join("bytes");
+    fs::write(&file, b"abc").unwrap();
+    for (case, len, cap, code) in [
+        ("hash", "3", "16777216", 1),
+        ("short", "2", "16777216", 2),
+        ("long", "4", "16777216", 2),
+        ("cap", "3", "2", 2),
+        ("array", "3", "16777216", 2),
+        ("presence", "3", "16777216", 2),
+        ("unknown", "3", "16777216", 2),
+    ] {
+        let mut wire = object_wire(case);
+        if case == "hash" {
+            wire["content_hash"] = json!("a".repeat(64));
+        }
+        if case == "array" {
+            wire = json!([]);
+        }
+        if case == "presence" {
+            wire["presence"] = json!(["UNKNOWN"]);
+        }
+        if case == "unknown" {
+            wire["extra"] = json!(true);
+        }
+        fs::write(&version, wire.to_string()).unwrap();
+        let mut args = object_args(&db, &version, &file, len);
+        args.extend([OsStr::new("--max-bytes"), OsStr::new(cap)]);
+        let (out, value) = catalog_write_invoke(&args);
+        assert_eq!(out.status.code(), Some(code), "{case}: {value}");
+        assert_eq!(
+            Application::open(&db).unwrap().asset_version(case).unwrap(),
+            None
+        );
+        assert_eq!(
+            Application::open(&db)
+                .unwrap()
+                .managed_object(case)
+                .unwrap(),
+            None
+        );
+    }
+    fs::write(&version, object_wire("admission").to_string()).unwrap();
+    let missing = dir.path().join("missing");
+    for source in [&missing, dir.path()] {
+        assert_eq!(
+            catalog_write_invoke(&object_args(&db, &version, source, "3"))
+                .0
+                .status
+                .code(),
+            Some(2)
+        );
+    }
+    assert_eq!(
+        catalog_write_invoke(&object_args(&missing, &version, &file, "3"))
+            .0
+            .status
+            .code(),
+        Some(2)
+    );
+    assert!(!missing.exists());
+    let empty = dir.path().join("empty.sqlite");
+    fs::write(&empty, []).unwrap();
+    assert_eq!(
+        catalog_write_invoke(&object_args(&empty, &version, &file, "3"))
+            .0
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(
+        Application::open(&db)
+            .unwrap()
+            .asset_version("admission")
+            .unwrap(),
+        None
+    );
+}
+#[test]
+fn object_commit_first_write_survives_broken_stream() {
+    for stdout in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("library.sqlite");
+        Application::open(&db)
+            .unwrap()
+            .initialize_library()
+            .unwrap();
+        let version = dir.path().join("version.json");
+        let file = dir.path().join("bytes");
+        fs::write(&version, object_wire("first").to_string()).unwrap();
+        fs::write(&file, b"abc").unwrap();
+        let args = object_args(&db, &version, &file, "3");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_assetweft"));
+        command.args(&args);
+        if stdout {
+            command.stdout(broken_output());
+        } else {
+            command.stderr(broken_output());
+        }
+        let out = command.output().unwrap();
+        catalog_write_record(&args, &out);
+        assert_eq!(out.status.code(), Some(if stdout { 6 } else { 0 }));
+        let mut app = Application::open(&db).unwrap();
+        assert!(app.asset_version("first").unwrap().is_some());
+        assert_eq!(app.managed_object("first").unwrap().unwrap().byte_length, 3);
+    }
+}

@@ -614,3 +614,11 @@ no handler readback, retry or idempotency token: duplicates retain actual Core u
 failures, and `--call-id` is correlation only. The compact v1 JSON plus newline protocol
 is unchanged. Stderr is best effort; stdout failure exits 6 even when the mutation has
 already committed. That exit does not imply rollback or make automatic replay safe.
+
+
+`assetweft [--call-id ID] [--max-bytes N] catalog commit-object --db EXISTING_DB --version VERSION_JSON --file SOURCE_FILE --expected-len N`
+streams a regular local file through the existing Catalog managed-object commit. Version JSON uses the same strict 12-field metadata object as register-version. Expected length is an explicit u64 (including zero); global max-bytes (1..=16777216) bounds both JSON transport and Core managed bytes. No prior register-version is needed. The database must already be initialized; no implicit initialization/migration occurs.
+
+Success scope `committed_local_managed_object` returns exact version_id and actual Core content_hash/byte_length in one compact v1 JSON line. Core validates metadata/length/hash/cap, publishes before its short registration transaction, and may leave an orphan on later failure. No readback, replay, stale-lock break or partial-state repair is attempted. This verifies local managed bytes only; declarations remain independent of license, quality, readiness, provider or product verification.
+
+Source admission errors are INVALID_INPUT (2). Core Library errors retain the existing mapping; Storage Invalid maps to INVALID_INPUT (2), Corrupt to FAIL (1), Busy/Io to INTERNAL (6). A stdout failure returns 6 even after a durable commit; inspect the existing public state before deciding what to do, never automatically replay. Stderr is best effort. Path prechecks and open have replacement races: this is for private local files, with no adversarial filesystem or filesystem-readonly guarantee. No URL, network, shell or stdin source is accepted.

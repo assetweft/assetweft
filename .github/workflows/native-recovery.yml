@@ -1,5 +1,6 @@
 # 职责: AW-004:B 原生恢复准入的 Windows/macOS 真实 runner gate——异常退出（子进程强制终止 +
-#       rollback journal 回滚）、写入失败（SQLITE_READONLY/SQLITE_FULL）与既有迁移/原型测试。
+#       rollback journal 回滚）、写入失败（SQLITE_READONLY/SQLITE_FULL）与既有迁移/原型测试；
+#       AW-033A CLI 真实进程协议与标准错误输出失败回归。
 # 依赖: actions/checkout（固定 commit SHA，与 c1.yml 同一 pin）；Rust 1.97.1 由 rust-toolchain.toml 固定，
 #       经 runner 自带 rustup 安装；rusqlite 0.42.0 bundled（libsqlite3-sys 0.40.0，SQLite 3.54.1）由 Cargo.lock 固定。
 # 调用方: GitHub Actions pull_request / push main / workflow_dispatch；本地等价命令见 work 报告。
@@ -56,3 +57,9 @@ jobs:
             --test sqlite_prototype \
             --test library \
             --test native_recovery
+
+      - name: Focused native CLI protocol tests
+        shell: bash
+        run: |
+          set -eu
+          cargo test --locked -p assetweft-cli --test cli

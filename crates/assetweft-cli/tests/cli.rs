@@ -1,5 +1,5 @@
 //! Responsibility: C2 actual-binary protocol and delegation regression gate.
-//! Dependencies: core fixtures/APIs, std process, tempfile; called by workspace C1.
+//! Dependencies: core fixtures/APIs, std process, tempfile; called by C1 and native CI.
 //! Invariants: synthetic evidence only; no mocks; full stdout parse, repeat stability,
 //! bounded reads, Chinese/space paths and unchanged input bytes.
 use assetweft_core::{generation_spec as spec, validation as val};
@@ -332,7 +332,18 @@ fn broken_output() -> std::process::Stdio {
     std::process::Stdio::from(OwnedFd::from(writer))
 }
 
-#[cfg(unix)]
+// An owned read-only file handle gives the real Windows child a write failure.
+// File's default delete sharing keeps the handle valid after the temp path is removed.
+#[cfg(windows)]
+fn broken_output() -> std::process::Stdio {
+    use std::io::Write;
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let mut readonly = fs::File::open(temp.path()).unwrap();
+    assert!(readonly.write_all(b"must not write").is_err());
+    std::process::Stdio::from(readonly)
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn stderr_failure_preserves_json_protocol() {
     let path = fixture("mesh_only.glb");
@@ -385,7 +396,7 @@ fn stderr_failure_preserves_json_protocol() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn stdout_and_stderr_failure_preserves_io_exit() {
     for args in [vec!["--help"], vec!["--unknown"]] {

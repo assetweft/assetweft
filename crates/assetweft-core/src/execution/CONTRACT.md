@@ -17,7 +17,8 @@ panic leaves ATTEMPTING, replay never invokes backend. Backend Result and UNKNOW
 recording Result remain separate; NotInvoked never contains a fabricated result.
 
 Generic core PreflightError<E>/Submission<E> preserve opaque diagnostic identity;
-legacy executor_runtime exposes their concrete LibraryError aliases. UsageSupport
+legacy executor_runtime exposes concrete LibraryError enums (not type aliases), converted
+exhaustively at the adapter boundary so caller variant imports and old signatures hold. UsageSupport
 is the SAME core type. Root Application's existing submit method assembles its
 private connection with the adapter; the legacy free function forwards to it.
 Core has no RootApplication/LibraryError/rusqlite/filesystem/transport imports.

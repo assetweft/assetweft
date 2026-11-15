@@ -578,5 +578,8 @@ impl Application {
             budget,
             request,
         )
+        // Assembling the legacy boundary: generic core results become its concrete enums.
+        .map(Into::into)
+        .map_err(Into::into)
     }
 }

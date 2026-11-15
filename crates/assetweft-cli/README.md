@@ -5,7 +5,9 @@ No daemon, Python, model, shell, external resource resolution, network or remote
 `inspect`/`validate`/`plan` never touch a database. Explicit `library init` initializes
 a named local library; `workflow create` persists a graph, `workflow status` reads state,
 and `workflow cancel` persists a cancellation request. `budget approve` stores an immutable local allowance declaration and `budget balance`
-reads its local ledger. These commands never execute steps or call providers.
+reads its local ledger. `budget reserve` stores a local call intent, `budget intent`
+reads it and `budget cancel` requests local cancellation. These commands never execute
+steps or call providers.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
@@ -17,13 +19,17 @@ assetweft [--call-id ID] workflow status --db EXISTING_DB --run-id RUN
 assetweft [--call-id ID] workflow cancel --db EXISTING_DB --run-id RUN
 assetweft [--call-id ID] budget approve --db EXISTING_DB --allowance FILE
 assetweft [--call-id ID] budget balance --db EXISTING_DB --budget-id ID
+assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
+assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
-16777216, minimum 1), including `workflow create --steps` and `budget approve --allowance`; it never bounds database size
-and has no effect on init/status/cancel/balance.
+16777216, minimum 1), including `workflow create --steps`, `budget approve --allowance`
+and `budget reserve --request`; it never bounds database size and has no effect on
+init/status/cancel/balance/intent.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-`library init`, `workflow create`, `workflow cancel` and `budget approve` are explicit mutating paths.
+`library init`, `workflow create/cancel` and `budget approve/reserve/cancel` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
@@ -66,7 +72,7 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 | Module | CLI responsibility | Core policy owner |
 |---|---|---|
 | `production.rs` | plan DTO/result projection; workflow create/status/cancel | [Production](../assetweft-core/src/production/CONTRACT.md) |
-| `consumption.rs` | strict allowance DTOs; budget approve/balance | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
+| `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
 | `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
 
@@ -111,7 +117,7 @@ no claim, execution, generation, provider call or budget approval. There is no e
 read or retry after the write. New steps are pending without outcomes; use status for
 current state, which can change through existing product use cases.
 
-The following existing-file guard applies to **workflow create/status/cancel and budget approve/balance**,
+The following existing-file guard applies to **workflow create/status/cancel and all budget commands**,
 not explicit init.
 
 `--db` must name an existing regular file (symlinks followed), checked with filesystem
@@ -204,14 +210,74 @@ Zero reserved/spent describes this local ledger only, never an external fee clai
 
 Allowances, approval names and sources are **caller local declarations**, not authenticated
 user consent, paid approval, verified provider pricing, licenses or proof of a free provider
-call. No transfer, payment, billing, account creation, network, reserve/submit/cancel/
-reconcile/execution budget command is added. CLI policy stays in the existing Consumption
+call. No transfer, payment, billing, account creation, network, submit/reconcile/execution
+budget command is added. CLI policy stays in the existing Consumption
 Application facade; no SQL/connection, core API or schema change is added. This slice does
 not complete full AW-033:B, real provider or product acceptance.
 
+## Local call-intent ledger operations (AW-033:B bounded slice)
+
+```text
+assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
+assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
+```
+
+These commands use the same existing-file guard and `Application::open` described above.
+They never initialize/create a database implicitly; the inherited check/open race and
+connection pragmas still apply. `--call-id` is envelope correlation only, separate from
+`request.id` and the verbatim `--intent-id`.
+
+`reserve` reads one bounded, strict JSON **object** through the existing `--max-bytes` reader:
+
+```json
+{"id":"intent-1","account":"local-usd-cap","input_fingerprint":"caller-input-v1","unit":{"CurrencyMinor":{"currency":"USD","decimals":2}},"quote":null,"reservation":100,"source":"caller local declaration"}
+```
+
+`id`, `account`, `input_fingerprint`, `unit`, `reservation`, and `source` are required.
+`quote` may be omitted or null (unknown); integer `0` means the distinct explicit `Some(0)`.
+Request and nested currency objects reject positional arrays, unknown/duplicate/missing
+required keys, wrong types, floats, negative unsigned values and unsigned overflow.
+Wire/file failures return INVALID_INPUT/2 with field `request`. Unit encoding is the same
+as allowances. Strings and unsigned integers pass unchanged to Consumption; the CLI does
+not normalize text, convert units/currency, fill unknown prices with zero or reproduce
+core policy. Consumption alone checks bounded text, currency/scale, i64 storage limits,
+quote versus reservation, unit/approval compatibility and remaining capacity. A rejected
+request does not add an intent or reservation. Facade errors retain the exact existing
+`LibraryError` mapping and message, with field `budget`.
+
+`reserve` calls `Application::reserve_call` once and projects the **returned** intent:
+
+```json
+{"scope":"local_call_intent","intent":{"request":{"id":"intent-1","account":"local-usd-cap","input_fingerprint":"caller-input-v1","unit":{"CurrencyMinor":{"currency":"USD","decimals":2}},"quote":null,"reservation":100,"source":"caller local declaration"},"state":"PREPARING","cancelled":false,"charge":null}}
+```
+
+The same identity and exact typed descriptor returns its existing durable intent, including
+uncertain or terminal states; a conflicting descriptor fails without replacing it. No new
+reservation or replay is fabricated. `intent` calls `Application::call_intent` once and
+uses the same result shape, including `intent:null` when the API returns None (also for an
+absent/empty ID). State is explicitly one of `PREPARING`, `ATTEMPTING`, `UNKNOWN`,
+`CONFIRMED`, `RELEASED`; charge is the returned integer or null, never an inferred fee zero.
+
+`cancel` calls `Application::cancel_call` once. Its success result is only
+`{"scope":"stored_local_call_cancellation_request","intent_id":"intent-1"}`.
+There is no extra read after the write, claimed release/refund/stop, or synthesized receipt.
+Query `intent` separately for actual durable state. An unknown cancellation ID fails with
+the real core INVALID_INPUT/2 mapping. Core releases a never-submitted PREPARING reservation
+once without a receipt, retains ATTEMPTING/UNKNOWN reservations, and never refunds
+CONFIRMED/RELEASED again. Re-reserving an identical released intent returns RELEASED and
+does not renew its reservation. All of this policy stays in Consumption.
+
+PASS/0 is local ledger success only. These are caller declarations, not authentication,
+rights, approved provider prices or payment. Cancellation does not promise remote work
+or fees stop. No CLI submit, reconcile, receipt fabrication, executor/provider/process
+launch, paid/real-AI or production behavior is added. There is no retry after any result or
+stdout failure: a mutation can commit before output fails with exit 6; inspect durable
+intent/balance separately. This slice is not full AW-033:B or product acceptance.
+
 Exit mapping (CONTRACTS §10.5): 0 scoped checks pass / declaration consistent /
 library initialized / workflow created / status read / cancellation request persisted /
-local allowance stored or local balance read /
+local allowance stored, balance/intent read, or local intent reserved/cancellation requested /
 help/version; 1 core validation
 or other contract FAIL (including persisted workflow Database diagnostics); 2 malformed
 arguments, unreadable/oversized files, malformed JSON/GLB inspection, invalid or non-regular

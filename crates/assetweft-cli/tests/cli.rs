@@ -1192,10 +1192,11 @@ fn budget_args<'a>(action: &'a str, db: &'a OsStr, value: &'a OsStr) -> Vec<&'a 
         OsStr::new(action),
         OsStr::new("--db"),
         db,
-        OsStr::new(if action == "approve" {
-            "--allowance"
-        } else {
-            "--budget-id"
+        OsStr::new(match action {
+            "approve" => "--allowance",
+            "reserve" => "--request",
+            "balance" => "--budget-id",
+            _ => "--intent-id",
         }),
         value,
     ]
@@ -1643,4 +1644,537 @@ fn budget_protocol_broken_streams_keep_committed_local_declaration() {
         .status()
         .unwrap();
     assert_eq!(status.code(), Some(6));
+}
+
+// Local TEST_FIXTURE setup uses only public Application capabilities, never SQL.
+fn intent_fixture(dir: &Path) -> (PathBuf, PathBuf, Value) {
+    let (db, path, allowance) = budget_fixture(dir);
+    let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
+    assert!(out.status.success(), "{v}");
+    let request = json!({"id":" intent α ","account":allowance["id"],
+        "input_fingerprint":" TEST_FIXTURE input α ","unit":"Token",
+        "quote":null,"reservation":7,"source":" TEST_FIXTURE caller quote "});
+    fs::write(&path, request.to_string()).unwrap();
+    (db, path, request)
+}
+fn local_intent(db: &Path, id: &str) -> Value {
+    let (out, v) = invoke(&budget_args("intent", db.as_os_str(), OsStr::new(id)));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], "budget intent");
+    assert_eq!(v["results"]["scope"], "local_call_intent");
+    v["results"]["intent"].clone()
+}
+#[test]
+fn intent_reserve_reopen_exact_identity_and_quote_semantics() {
+    use assetweft_core::budget::{Allowance, Approval, Unit};
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, request) = intent_fixture(dir.path());
+    let mut args = vec![OsStr::new("--call-id"), OsStr::new("correlation-only")];
+    args.extend(budget_args("reserve", db.as_os_str(), path.as_os_str()));
+    let bytes = fs::read(&path).unwrap();
+    let (first, v) = invoke(&args);
+    assert_eq!(first.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], "budget reserve");
+    assert_eq!(v["call_id"], "correlation-only");
+    let expected = json!({"request":request,"state":"PREPARING","cancelled":false,"charge":null});
+    assert_eq!(
+        v["results"],
+        json!({"scope":"local_call_intent","intent":expected})
+    );
+    assert_eq!(local_intent(&db, " intent α "), expected);
+    assert_eq!(local_intent(&db, "correlation-only"), Value::Null);
+    assert_eq!(local_intent(&db, ""), Value::Null);
+    let (again, _) = invoke(&args);
+    assert_eq!(again.status.code(), Some(0));
+    assert_eq!(again.stdout, first.stdout);
+    assert!(first.stderr.is_empty());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    let app = Application::open(&db).unwrap();
+    let before = app.budget_balance(" 预算 α ").unwrap();
+    assert_eq!((before.reserved, before.spent), (7, 0));
+    assert_eq!(
+        serde_json::to_value(app.call_intent(" intent α ").unwrap().unwrap().request).unwrap(),
+        request
+    );
+    drop(app);
+    for (field, value) in [
+        ("input_fingerprint", json!("different")),
+        ("source", json!("different")),
+        ("quote", json!(0)),
+        ("reservation", json!(8)),
+        ("unit", json!("Task")),
+        ("account", json!("absent")),
+    ] {
+        let mut conflict = request.clone();
+        conflict[field] = value;
+        fs::write(&path, conflict.to_string()).unwrap();
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["errors"][0]["field_path"], "budget");
+        assert_eq!(
+            Application::open(&db)
+                .unwrap()
+                .budget_balance(" 预算 α ")
+                .unwrap(),
+            before
+        );
+        assert_eq!(local_intent(&db, " intent α "), expected);
+    }
+    let mut app = Application::open(&db).unwrap();
+    app.approve_budget(&Allowance {
+        id: "zero".into(),
+        unit: Unit::Token,
+        capacity: 0,
+        approval: Approval::ZeroAdditionalCost,
+        source: "TEST_FIXTURE".into(),
+    })
+    .unwrap();
+    drop(app);
+    for quote in [None, Some(Value::Null), Some(json!(0))] {
+        let mut r = request.clone();
+        r["id"] = json!("zero-intent");
+        r["account"] = json!("zero");
+        r["reservation"] = json!(0);
+        if let Some(q) = quote.clone() {
+            r["quote"] = q;
+        } else {
+            r.as_object_mut().unwrap().remove("quote");
+        }
+        fs::write(&path, r.to_string()).unwrap();
+        let (out, v) = invoke(&args);
+        if quote == Some(json!(0)) {
+            assert_eq!(out.status.code(), Some(0), "{v}");
+            assert_eq!(v["results"]["intent"]["request"]["quote"], 0);
+        } else {
+            assert_eq!(out.status.code(), Some(2), "{v}");
+            assert_eq!(local_intent(&db, "zero-intent"), Value::Null);
+        }
+    }
+    // Omitted and explicit-null quotes remain unknown on an ordinary allowance.
+    let mut r = request.clone();
+    r["id"] = json!("omitted-quote");
+    r.as_object_mut().unwrap().remove("quote");
+    fs::write(&path, r.to_string()).unwrap();
+    let (out, v) = invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["results"]["intent"]["request"]["quote"], Value::Null);
+    for (index, unit, amount) in [
+        (0, Unit::Task, 11),
+        (1, Unit::Second, 13),
+        (
+            2,
+            Unit::CurrencyMinor {
+                currency: "USD".into(),
+                decimals: 2,
+            },
+            12345,
+        ),
+        (3, Unit::Token, 9223372036854775807_u64),
+    ] {
+        let account = format!("exact-{index}");
+        let mut app = Application::open(&db).unwrap();
+        app.approve_budget(&Allowance {
+            id: account.clone(),
+            unit: unit.clone(),
+            capacity: amount,
+            approval: Approval::ExplicitBounded,
+            source: "TEST_FIXTURE exact integers".into(),
+        })
+        .unwrap();
+        drop(app);
+        let mut r = request.clone();
+        r["id"] = json!(account);
+        r["account"] = json!(account);
+        r["unit"] = serde_json::to_value(unit).unwrap();
+        r["quote"] = json!(amount);
+        r["reservation"] = json!(amount);
+        fs::write(&path, r.to_string()).unwrap();
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(v["results"]["intent"]["request"], r);
+        assert_eq!(local_intent(&db, &account)["request"], r);
+        let b = Application::open(&db)
+            .unwrap()
+            .budget_balance(&account)
+            .unwrap();
+        assert_eq!((b.reserved, b.spent), (amount, 0));
+    }
+}
+
+#[test]
+fn intent_cancel_projects_all_states_without_replay_or_refund() {
+    use assetweft_core::budget::{Receipt, Request, Resolution};
+    use std::cell::Cell;
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, request) = intent_fixture(dir.path());
+    let (out, v) = invoke(&budget_args("reserve", db.as_os_str(), path.as_os_str()));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    let id = request["id"].as_str().unwrap();
+    assert_eq!(local_intent(&db, id)["state"], "PREPARING");
+    for _ in 0..2 {
+        let (out, v) = invoke(&budget_args("cancel", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(v["command"], "budget cancel");
+        assert_eq!(
+            v["results"],
+            json!({"scope":"stored_local_call_cancellation_request","intent_id":id})
+        );
+    }
+    assert_eq!(
+        local_intent(&db, id),
+        json!({"request":request,"state":"RELEASED","cancelled":true,"charge":0})
+    );
+    let (out, v) = invoke(&budget_args("reserve", db.as_os_str(), path.as_os_str()));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["results"]["intent"], local_intent(&db, id));
+    let app = Application::open(&db).unwrap();
+    assert_eq!(
+        (
+            app.budget_balance(" 预算 α ").unwrap().reserved,
+            app.budget_balance(" 预算 α ").unwrap().spent
+        ),
+        (0, 0)
+    );
+    assert!(app.call_receipts(id).unwrap().is_empty());
+    drop(app);
+    let count = Cell::new(0);
+    for (id, interrupted, terminal, charge) in [
+        ("attempt α", true, "RELEASED", 0),
+        ("unknown α", false, "CONFIRMED", 5),
+    ] {
+        let mut r = request.clone();
+        r["id"] = json!(id);
+        let typed: Request = serde_json::from_value(r.clone()).unwrap();
+        let mut app = Application::open(&db).unwrap();
+        app.reserve_call(&typed).unwrap();
+        if interrupted {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    app.submit_test_fixture(id, || {
+                        count.set(count.get() + 1);
+                        panic!("TEST_FIXTURE interruption");
+                    })
+                    .unwrap();
+                }))
+                .is_err()
+            );
+        } else {
+            assert!(
+                app.submit_test_fixture(id, || count.set(count.get() + 1))
+                    .unwrap()
+            );
+        }
+        drop(app);
+        let state = if interrupted { "ATTEMPTING" } else { "UNKNOWN" };
+        assert_eq!(
+            local_intent(&db, id),
+            json!({"request":r,"state":state,"cancelled":false,"charge":null})
+        );
+        for _ in 0..2 {
+            let (out, v) = invoke(&budget_args("cancel", db.as_os_str(), OsStr::new(id)));
+            assert_eq!(out.status.code(), Some(0), "{v}");
+        }
+        fs::write(&path, r.to_string()).unwrap();
+        let (out, v) = invoke(&budget_args("reserve", db.as_os_str(), path.as_os_str()));
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(
+            v["results"]["intent"],
+            json!({"request":r,"state":state,"cancelled":true,"charge":null})
+        );
+        let mut app = Application::open(&db).unwrap();
+        assert_eq!(
+            (
+                app.budget_balance(" 预算 α ").unwrap().reserved,
+                app.budget_balance(" 预算 α ").unwrap().spent
+            ),
+            (7, 0)
+        );
+        assert!(app.call_receipts(id).unwrap().is_empty());
+        assert!(
+            !app.submit_test_fixture(id, || count.set(count.get() + 1))
+                .unwrap()
+        );
+        let receipt = Receipt {
+            id: format!("receipt-{id}"),
+            source: "TEST_FIXTURE explicit reconciliation".into(),
+            resolution: if interrupted {
+                Resolution::AuthoritativeNoCharge
+            } else {
+                Resolution::Confirmed { charge }
+            },
+            usage: vec![],
+        };
+        app.reconcile_call(id, &receipt).unwrap();
+        drop(app);
+        assert_eq!(
+            local_intent(&db, id),
+            json!({"request":r,"state":terminal,"cancelled":true,"charge":charge})
+        );
+        let (out, v) = invoke(&budget_args("cancel", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        let app = Application::open(&db).unwrap();
+        let b = app.budget_balance(" 预算 α ").unwrap();
+        assert_eq!((b.reserved, b.spent), (0, charge));
+        assert_eq!(app.call_receipts(id).unwrap(), vec![receipt]);
+        drop(app);
+        let (out, v) = invoke(&budget_args("reserve", db.as_os_str(), path.as_os_str()));
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(v["results"]["intent"]["state"], terminal);
+    }
+    assert_eq!(count.get(), 2);
+}
+
+#[test]
+fn intent_strict_wire_and_core_policy_failures_are_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, good) = intent_fixture(dir.path());
+    let args = budget_args("reserve", db.as_os_str(), path.as_os_str());
+    let baseline = Application::open(&db)
+        .unwrap()
+        .budget_balance(" 预算 α ")
+        .unwrap();
+    let mut bad = vec![
+        "{broken".to_string(),
+        "null".into(),
+        "[]".into(),
+        r#"["i","a","f","Token",null,7,"s"]"#.into(),
+    ];
+    for field in [
+        "id",
+        "account",
+        "input_fingerprint",
+        "unit",
+        "reservation",
+        "source",
+    ] {
+        let mut v = good.clone();
+        v.as_object_mut().unwrap().remove(field);
+        bad.push(v.to_string());
+        let mut v = good.clone();
+        v[field] = Value::Null;
+        bad.push(v.to_string());
+    }
+    for field in [
+        "id",
+        "account",
+        "input_fingerprint",
+        "unit",
+        "quote",
+        "reservation",
+        "source",
+    ] {
+        let key = serde_json::to_string(field).unwrap();
+        bad.push(format!(
+            "{{{key}:{},{}",
+            good[field],
+            &good.to_string()[1..]
+        ));
+    }
+    for (field, value) in [
+        ("extra", json!(true)),
+        ("id", json!(4)),
+        ("account", json!([])),
+        ("input_fingerprint", json!(true)),
+        ("source", json!(3)),
+        ("unit", json!("token")),
+        ("quote", json!(-1)),
+        ("quote", json!(1.5)),
+        ("quote", json!("0")),
+        ("reservation", json!(-1)),
+        ("reservation", json!(1.5)),
+        ("reservation", json!("7")),
+        ("unit", json!({"CurrencyMinor":["USD",2]})),
+        ("unit", json!({"CurrencyMinor":{"currency":"USD"}})),
+        (
+            "unit",
+            json!({"CurrencyMinor":{"currency":"USD","decimals":2,"extra":0}}),
+        ),
+        ("unit", json!({"CurrencyMinor":{"currency":3,"decimals":2}})),
+        (
+            "unit",
+            json!({"CurrencyMinor":{"currency":"USD","decimals":256}}),
+        ),
+    ] {
+        let mut v = good.clone();
+        v[field] = value;
+        bad.push(v.to_string());
+    }
+    for unit in [
+        r#"{"CurrencyMinor":{"currency":"USD","currency":"USD","decimals":2}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":2,"decimals":2}}"#,
+    ] {
+        bad.push(good.to_string().replace("\"Token\"", unit));
+    }
+    bad.push(
+        good.to_string()
+            .replace("\"reservation\":7", "\"reservation\":18446744073709551616"),
+    );
+    for raw in bad {
+        fs::write(&path, &raw).unwrap();
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{raw}: {v}");
+        assert_eq!(v["errors"][0]["field_path"], "request", "{raw}: {v}");
+        assert_eq!(v["results"], Value::Null);
+        let app = Application::open(&db).unwrap();
+        assert!(app.call_intent(" intent α ").unwrap().is_none());
+        assert_eq!(app.budget_balance(" 预算 α ").unwrap(), baseline);
+    }
+    for (field, value, code) in [
+        ("id", json!(""), 2),
+        ("input_fingerprint", json!("x\0y"), 2),
+        ("source", json!("s".repeat(4097)), 2),
+        ("account", json!("absent"), 1),
+        ("unit", json!("Task"), 2),
+        (
+            "unit",
+            json!({"CurrencyMinor":{"currency":"usd","decimals":2}}),
+            2,
+        ),
+        (
+            "unit",
+            json!({"CurrencyMinor":{"currency":"USD","decimals":10}}),
+            2,
+        ),
+        ("quote", json!(8), 2),
+        ("quote", json!(9223372036854775808_u64), 2),
+        ("reservation", json!(9223372036854775808_u64), 2),
+        ("reservation", json!(101), 2),
+    ] {
+        let mut v = good.clone();
+        v[field] = value;
+        fs::write(&path, v.to_string()).unwrap();
+        let (out, result) = invoke(&args);
+        assert_eq!(out.status.code(), Some(code), "{result}");
+        assert_eq!(result["errors"][0]["field_path"], "budget");
+        let app = Application::open(&db).unwrap();
+        assert!(
+            app.call_intent(v["id"].as_str().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(app.budget_balance(" 预算 α ").unwrap(), baseline);
+    }
+    fs::write(&path, good.to_string()).unwrap();
+    let mut limited = args.clone();
+    limited.extend([OsStr::new("--max-bytes"), OsStr::new("8")]);
+    let (out, v) = invoke(&limited);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["errors"][0]["field_path"], "request");
+    fs::remove_file(&path).unwrap();
+    let (out, v) = invoke(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["errors"][0]["field_path"], "request");
+}
+
+#[test]
+fn intent_database_arguments_help_and_missing_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, _) = intent_fixture(dir.path());
+    let missing = dir.path().join("missing.sqlite");
+    let empty = dir.path().join("empty.sqlite");
+    fs::write(&empty, b"").unwrap();
+    for (p, code, field) in [
+        (missing.as_path(), 2, "db"),
+        (dir.path(), 2, "db"),
+        (empty.as_path(), 3, "budget"),
+    ] {
+        for (action, value) in [
+            ("reserve", path.as_os_str()),
+            ("intent", OsStr::new("absent")),
+            ("cancel", OsStr::new("absent")),
+        ] {
+            let (out, v) = invoke(&budget_args(action, p.as_os_str(), value));
+            assert_eq!(out.status.code(), Some(code), "{v}");
+            assert_eq!(v["errors"][0]["field_path"], field);
+            assert_eq!(v["command"], format!("budget {action}"));
+        }
+    }
+    assert!(!missing.exists());
+    assert_eq!(fs::read(&empty).unwrap(), b"");
+    for id in ["absent", ""] {
+        assert_eq!(local_intent(&db, id), Value::Null);
+        let expected = Application::open(&db)
+            .unwrap()
+            .cancel_call(id)
+            .unwrap_err()
+            .to_string();
+        let (out, v) = invoke(&budget_args("cancel", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["errors"][0]["message"], expected);
+    }
+    for (action, flag) in [
+        ("reserve", "--request"),
+        ("intent", "--intent-id"),
+        ("cancel", "--intent-id"),
+    ] {
+        for tail in [vec![], vec!["--db", "x"], vec![flag, "x"]] {
+            let mut args = vec![
+                OsStr::new("--call-id"),
+                OsStr::new("arg-id"),
+                OsStr::new("budget"),
+                OsStr::new(action),
+            ];
+            args.extend(tail.iter().map(OsStr::new));
+            let (out, v) = invoke(&args);
+            assert_eq!(out.status.code(), Some(2));
+            assert_eq!(v["call_id"], "arg-id");
+        }
+        let (out, v) = invoke(&[
+            OsStr::new("budget"),
+            OsStr::new(action),
+            OsStr::new("--help"),
+            OsStr::new("--call-id"),
+            OsStr::new("help-id"),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(v["call_id"], "help-id");
+        assert!(v["results"]["text"].as_str().unwrap().contains(flag));
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn intent_mutating_stdout_failure_retains_commit_without_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, request) = intent_fixture(dir.path());
+    let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(budget_args("reserve", db.as_os_str(), path.as_os_str()))
+        .stdout(broken_output())
+        .stderr(broken_output())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(6));
+    assert_eq!(
+        local_intent(&db, " intent α "),
+        json!({"request":request,"state":"PREPARING","cancelled":false,"charge":null})
+    );
+    let app = Application::open(&db).unwrap();
+    let b = app.budget_balance(" 预算 α ").unwrap();
+    assert_eq!((b.reserved, b.spent), (7, 0));
+    assert!(app.call_receipts(" intent α ").unwrap().is_empty());
+    drop(app);
+    for (action, value) in [
+        ("intent", OsStr::new(" intent α ")),
+        ("cancel", OsStr::new(" intent α ")),
+        ("cancel", OsStr::new("absent")),
+    ] {
+        let args = budget_args(action, db.as_os_str(), value);
+        let (ordinary, _) = invoke(&args);
+        let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stderr(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(ordinary.stdout, failed.stdout);
+        assert_eq!(ordinary.status.code(), failed.status.code());
+    }
+    assert_eq!(local_intent(&db, " intent α ")["state"], "RELEASED");
+    assert_eq!(
+        Application::open(&db)
+            .unwrap()
+            .budget_balance(" 预算 α ")
+            .unwrap()
+            .reserved,
+        0
+    );
 }

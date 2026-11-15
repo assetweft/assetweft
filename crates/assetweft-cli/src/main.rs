@@ -101,7 +101,7 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("budget")
-                .about("Immutable LOCAL allowance declarations and local ledger balances; no payment")
+                .about("LOCAL declarations and call-intent ledger operations; no payment or provider submission")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("approve")
@@ -115,6 +115,27 @@ fn grammar() -> Command {
                         .about("Read the exact local allowance, reserved and spent integers")
                         .arg(db())
                         .arg(Arg::new("budget-id").long("budget-id").required(true)
+                            .value_parser(value_parser!(String))),
+                )
+                .subcommand(
+                    Command::new("reserve")
+                        .about("Reserve a caller's LOCAL call intent; no authentication or provider price approval")
+                        .arg(db())
+                        .arg(Arg::new("request").long("request").required(true)
+                            .value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("intent")
+                        .about("Read the durable LOCAL call intent; no provider query")
+                        .arg(db())
+                        .arg(Arg::new("intent-id").long("intent-id").required(true)
+                            .value_parser(value_parser!(String))),
+                )
+                .subcommand(
+                    Command::new("cancel")
+                        .about("Request LOCAL call cancellation; remote work and fees may continue")
+                        .arg(db())
+                        .arg(Arg::new("intent-id").long("intent-id").required(true)
                             .value_parser(value_parser!(String))),
                 ),
         )
@@ -255,10 +276,13 @@ fn run() -> (i32, Value) {
     }
     if command == "budget" {
         let (action, budget_args) = args.subcommand().expect("clap requires a budget action");
-        let wire = if action == "approve" {
-            "budget approve"
-        } else {
-            "budget balance"
+        let wire = match action {
+            "approve" => "budget approve",
+            "balance" => "budget balance",
+            "reserve" => "budget reserve",
+            "intent" => "budget intent",
+            "cancel" => "budget cancel",
+            _ => unreachable!("clap grammar"),
         };
         return consumption::budget_response(wire, call_id, action, budget_args, limits);
     }

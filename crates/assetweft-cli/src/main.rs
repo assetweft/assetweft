@@ -74,6 +74,14 @@ fn grammar() -> Command {
                 .about("Register declarations/exact references or query stored metadata/head; no readiness check")
                 .subcommand_required(true)
                 .subcommand(
+                    Command::new("commit-object")
+                        .about("Commit verified local managed bytes; no rights/readiness verification")
+                        .arg(db())
+                        .arg(Arg::new("version").long("version").required(true).value_parser(value_parser!(PathBuf)))
+                        .arg(Arg::new("file").long("file").required(true).value_parser(value_parser!(PathBuf)))
+                        .arg(Arg::new("expected-len").long("expected-len").required(true).value_parser(value_parser!(u64))),
+                )
+                .subcommand(
                     Command::new("register-version")
                         .about("Register immutable declared metadata; no managed bytes or rights verification")
                         .arg(db())
@@ -372,6 +380,7 @@ fn run() -> (i32, Value) {
     if command == "catalog" {
         let (action, query_args) = args.subcommand().expect("clap requires a catalog action");
         let wire = match action {
+            "commit-object" => "catalog commit-object",
             "register-version" => "catalog register-version",
             "add-reference" => "catalog add-reference",
             "version" => "catalog version",
@@ -379,7 +388,10 @@ fn run() -> (i32, Value) {
             "current" => "catalog current",
             _ => unreachable!("clap grammar"),
         };
-        if matches!(action, "register-version" | "add-reference") {
+        if matches!(
+            action,
+            "commit-object" | "register-version" | "add-reference"
+        ) {
             return catalog::write_response(wire, call_id, action, query_args, limits);
         }
         return catalog::query_response(wire, call_id, action, query_args);

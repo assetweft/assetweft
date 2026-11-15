@@ -265,6 +265,60 @@ pub(super) fn write_response(
             );
         }
     };
+    if action == "commit-object" {
+        let path = args.get_one::<PathBuf>("version").expect("required");
+        let VersionObject(version) = match read_json(path, limits, "version") {
+            Ok(input) => input,
+            Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
+        };
+        let source = args.get_one::<PathBuf>("file").expect("required");
+        // Admission is for private local files; path checks cannot prevent replacement races.
+        let open = || -> std::io::Result<std::fs::File> {
+            if !std::fs::metadata(source)?.is_file() {
+                return Err(std::io::Error::other("--file must name a regular file"));
+            }
+            let file = std::fs::File::open(source)?;
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::other("--file must name a regular file"));
+            }
+            Ok(file)
+        };
+        let mut file = match open() {
+            Ok(file) => file,
+            Err(e) => {
+                return finish(
+                    2,
+                    "INVALID_INPUT",
+                    json!([error("file", "INVALID_INPUT", e)]),
+                    Value::Null,
+                );
+            }
+        };
+        let expected = *args.get_one::<u64>("expected-len").expect("required");
+        return match app.commit_object(&version, &mut file, expected, limits.max_bytes) {
+            Ok(stored) => finish(
+                0,
+                "PASS",
+                json!([]),
+                json!({"scope":"committed_local_managed_object","version_id":version.version_id,"content_hash":stored.content_hash,"byte_length":stored.byte_length}),
+            ),
+            Err(e) => {
+                use assetweft_core::storage::StorageError;
+                let (code, status) = match &e {
+                    StorageError::Library(e) => library_outcome(e),
+                    StorageError::Invalid(_) => (2, "INVALID_INPUT"),
+                    StorageError::Corrupt => (1, "FAIL"),
+                    StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
+                };
+                finish(
+                    code,
+                    status,
+                    json!([error("catalog", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
     let result = match action {
         "register-version" => {
             let path = args.get_one::<PathBuf>("version").expect("required");

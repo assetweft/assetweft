@@ -7,7 +7,8 @@ a named local library; `workflow create` persists a graph, `workflow status` rea
 and `workflow cancel` persists a cancellation request. `budget approve` stores an immutable local allowance declaration and `budget balance`
 reads its local ledger. `budget reserve` stores a local call intent, `budget intent`
 reads it and `budget cancel` requests local cancellation. These commands never execute
-steps or call providers.
+steps or call providers. `candidate show/receipt` query stored local descriptors and
+historical acceptance receipts through Production.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
@@ -22,12 +23,14 @@ assetweft [--call-id ID] budget balance --db EXISTING_DB --budget-id ID
 assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
 assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
+assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
 16777216, minimum 1), including `workflow create --steps`, `budget approve --allowance`
 and `budget reserve --request`; it never bounds database size and has no effect on
-init/status/cancel/balance/intent.
+init/status/cancel/balance/intent/candidate queries.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
 `library init`, `workflow create/cancel` and `budget approve/reserve/cancel` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
@@ -35,7 +38,8 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
 `command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
-`workflow status`, `workflow cancel`, `budget approve`, `budget balance`, `arguments`,
+`workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
+`budget reserve`, `budget intent`, `budget cancel`, `candidate show`, `candidate receipt`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
@@ -71,7 +75,7 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 
 | Module | CLI responsibility | Core policy owner |
 |---|---|---|
-| `production.rs` | plan DTO/result projection; workflow create/status/cancel | [Production](../assetweft-core/src/production/CONTRACT.md) |
+| `production.rs` | plan DTO/result projection; workflow create/status/cancel; stored candidate queries | [Production](../assetweft-core/src/production/CONTRACT.md) |
 | `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
 | `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
@@ -117,7 +121,7 @@ no claim, execution, generation, provider call or budget approval. There is no e
 read or retry after the write. New steps are pending without outcomes; use status for
 current state, which can change through existing product use cases.
 
-The following existing-file guard applies to **workflow create/status/cancel and all budget commands**,
+The following existing-file guard applies to **workflow create/status/cancel, all budget commands and candidate queries**,
 not explicit init.
 
 `--db` must name an existing regular file (symlinks followed), checked with filesystem
@@ -314,3 +318,52 @@ Old SEMANTIC declarations without these fields now intentionally return
 `"canonicalization_id":"TEST_FIXTURE:rig","canonicalization_version":"TEST_FIXTURE:v1"`.
 Identity agreement is declaration consistency only: unknown algorithms remain
 `NOT_RUN`, and authorization remains unverified. No normalizer is executed.
+
+
+## Stored candidate queries (AW-033:B bounded slice)
+
+Both commands require an existing initialized local library and use the existing-file guard
+above. They never initialize/migrate, propose, accept, generate, submit or reconcile. The
+metadata precheck and `Application::open` pragmas do not guarantee filesystem read-only
+behavior; a disappearance race can still create a file. Business records are only queried.
+
+`--candidate-id` is passed verbatim to core (no trim or normalization). Core alone owns
+identity validation, lookup/embedded identity binding, schema and decoding. `--call-id` is
+independent correlation data. Errors use the existing LibraryError variant mapping above,
+with `field_path: candidate`; path/open failures use `db`. No typed NotFound is invented.
+
+`candidate show` calls `Application::candidate` once. Example complete v1 wire for a valid
+missing ID (one compact line plus newline):
+
+```json
+{"schema_version":1,"command":"candidate show","call_id":"lookup-1","status":"PASS","errors":[],"results":{"scope":"stored_local_candidate_descriptor","candidate":null}}
+```
+
+For a stored row, `candidate` is the exact existing Candidate serde object, including id,
+base_version, candidate_version, expected_revision, editable, measured base/proposed
+snapshots, source, scope, not_run and contract (including null). It performs no remeasurement,
+proposed-component validation or quality assessment.
+
+`candidate receipt` calls `Application::candidate_attempt` once. A valid missing receipt,
+including a staged candidate with no attempt, returns:
+
+```json
+{"schema_version":1,"command":"candidate receipt","call_id":"lookup-2","status":"PASS","errors":[],"results":{"scope":"stored_local_candidate_acceptance_receipt","receipt":null}}
+```
+
+A stored receipt retains the existing externally tagged serde enum: exactly one of
+`{"NotRun":{"candidate":...,"reason":...,"report":null}}`,
+`{"Rejected":{"candidate":...,"report":...}}`,
+`{"Accepted":{"candidate":...,"current":...,"report":...}}`, or
+`{"Conflict":{"candidate":...,"current":...,"report":...}}` (ellipsis denotes unchanged
+stored values, not literal wire JSON). NotRun can also contain its stored report object.
+All nested report scope/source/components/not_run, unknown quality and historical Current
+values are preserved. It never fills an absent receipt by attempting acceptance, revalidates
+bytes or refreshes Current from Catalog's separate current-head query.
+
+Outer PASS/exit 0 means only the query succeeded; inner NotRun/Rejected/Conflict is unchanged.
+A historical Accepted under TEST_FIXTURE_GLB_STRUCTURE_V1 is not fresh validation,
+quality/rights/F0/provider/production acceptance or proof that the bytes still exist.
+Repeated/reopened queries preserve the stored values even after fixture bytes disappear;
+concurrent business writes can change what separate invocations observe. Full AW-033:B,
+product acceptance, providers, paid execution, F0, AI and engines remain outside this slice.

@@ -69,6 +69,25 @@ fn grammar() -> Command {
             ),
         )
         .subcommand(
+            Command::new("candidate")
+                .about("Query stored local descriptors and historical receipts; no validation or acceptance")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("show")
+                        .about("Read the stored local candidate descriptor; no remeasurement")
+                        .arg(db())
+                        .arg(Arg::new("candidate-id").long("candidate-id").required(true)
+                            .value_parser(value_parser!(String))),
+                )
+                .subcommand(
+                    Command::new("receipt")
+                        .about("Read the stored historical acceptance receipt; no fresh validation")
+                        .arg(db())
+                        .arg(Arg::new("candidate-id").long("candidate-id").required(true)
+                            .value_parser(value_parser!(String))),
+                ),
+        )
+        .subcommand(
             Command::new("workflow")
                 .about(
                     "Create/read local workflow state or request cancellation; no execution or auto-init",
@@ -285,6 +304,15 @@ fn run() -> (i32, Value) {
             _ => unreachable!("clap grammar"),
         };
         return consumption::budget_response(wire, call_id, action, budget_args, limits);
+    }
+    if command == "candidate" {
+        let (action, query_args) = args.subcommand().expect("clap requires a candidate query");
+        let wire = match action {
+            "show" => "candidate show",
+            "receipt" => "candidate receipt",
+            _ => unreachable!("clap grammar"),
+        };
+        return production::candidate_response(wire, call_id, action, query_args);
     }
     if command == "workflow" {
         let (action, workflow_args) = args.subcommand().expect("clap requires a workflow action");

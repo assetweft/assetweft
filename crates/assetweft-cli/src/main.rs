@@ -4,6 +4,7 @@
 //! Invariants: one compact v1 JSON line; stderr is best effort, stdout failure exits 6. Only explicit library init initializes/migrates; no generation, shell, network or replay.
 
 mod assurance;
+mod catalog;
 mod consumption;
 mod production;
 mod protocol;
@@ -67,6 +68,32 @@ fn grammar() -> Command {
                     .default_value("static-mesh")
                     .value_parser(["static-mesh", "rigged-character", "animated-character"]),
             ),
+        )
+        .subcommand(
+            Command::new("catalog")
+                .about("Query stored local metadata and fixture head; no availability or acceptance check")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("version")
+                        .about("Read stored exact version metadata; no byte validation")
+                        .arg(db())
+                        .arg(Arg::new("version-id").long("version-id").required(true)
+                            .value_parser(value_parser!(String))),
+                )
+                .subcommand(
+                    Command::new("references")
+                        .about("Read stored ordered exact component references; no expansion")
+                        .arg(db())
+                        .arg(Arg::new("version-id").long("version-id").required(true)
+                            .value_parser(value_parser!(String))),
+                )
+                .subcommand(
+                    Command::new("current")
+                        .about("Read stored local fixture head and contract; no fresh validation")
+                        .arg(db())
+                        .arg(Arg::new("asset-id").long("asset-id").required(true)
+                            .value_parser(value_parser!(String))),
+                ),
         )
         .subcommand(
             Command::new("candidate")
@@ -304,6 +331,16 @@ fn run() -> (i32, Value) {
             _ => unreachable!("clap grammar"),
         };
         return consumption::budget_response(wire, call_id, action, budget_args, limits);
+    }
+    if command == "catalog" {
+        let (action, query_args) = args.subcommand().expect("clap requires a catalog query");
+        let wire = match action {
+            "version" => "catalog version",
+            "references" => "catalog references",
+            "current" => "catalog current",
+            _ => unreachable!("clap grammar"),
+        };
+        return catalog::query_response(wire, call_id, action, query_args);
     }
     if command == "candidate" {
         let (action, query_args) = args.subcommand().expect("clap requires a candidate query");

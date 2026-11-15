@@ -687,7 +687,7 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
             .contains("not initialized")
     );
     assert_eq!(fs::read(&empty).unwrap(), b"", "no auto-init/migration");
-    // Creation/execution/submission syntax does not exist and must fail truthfully.
+    // Execution/submission and unqualified create syntax still fail truthfully.
     for argv in [
         vec![
             OsStr::new("workflow"),
@@ -760,4 +760,427 @@ fn workflow_protocol_survives_broken_streams() {
             .unwrap();
         assert_eq!(status.code(), Some(6), "{argv:?}");
     }
+}
+
+fn library_init_args(db: &OsStr) -> Vec<&OsStr> {
+    vec![
+        OsStr::new("library"),
+        OsStr::new("init"),
+        OsStr::new("--db"),
+        db,
+    ]
+}
+fn create_args<'a>(db: &'a OsStr, run: &'a OsStr, steps: &'a OsStr) -> Vec<&'a OsStr> {
+    let mut args = workflow_args("create", db, run);
+    args.extend([OsStr::new("--steps"), steps]);
+    args
+}
+
+#[test]
+fn library_init_create_status_cancel_durable_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("显式 库.sqlite");
+    let steps = dir.path().join("步骤 α.json");
+    let input = br#"[{"id":"later","dependencies":[" seed "]},{"id":" seed ","dependencies":[]}]"#;
+    fs::write(&steps, input).unwrap();
+    let mut init = library_init_args(db.as_os_str());
+    init.extend([OsStr::new("--call-id"), OsStr::new("init-id")]);
+    let (out, v) = invoke(&init);
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], "library init");
+    assert_eq!(v["call_id"], "init-id");
+    assert_eq!(v["status"], "PASS");
+    assert_eq!(v["results"], json!({"scope":"initialized_library"}));
+    Application::open(&db).unwrap().close().unwrap();
+    let run = OsStr::new(" 运行 α ");
+    let mut create = vec![OsStr::new("--call-id"), OsStr::new("create-id")];
+    create.extend(create_args(db.as_os_str(), run, steps.as_os_str()));
+    let (out, v) = invoke(&create);
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], "workflow create");
+    assert_eq!(v["call_id"], "create-id");
+    assert_eq!(
+        v["results"],
+        json!({"scope":"persisted_workflow_created","run_id":" 运行 α "})
+    );
+    let expected = json!([
+        {"id":"later","state":"pending","raw":null,"evidence":null},
+        {"id":" seed ","state":"pending","raw":null,"evidence":null}
+    ]);
+    let (out, v) = invoke(&workflow_args("status", db.as_os_str(), run));
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(v["results"]["steps"], expected);
+    assert_eq!(v["results"]["cancellation_requested"], false);
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(app.workflow_steps(run.to_str().unwrap()).unwrap().len(), 2);
+    // Dependency order is retained, not topologically sorted or identities trimmed.
+    assert_eq!(
+        app.claim_workflow_step(run.to_str().unwrap()).unwrap(),
+        Some(" seed ".into())
+    );
+    app.finish_workflow_step(
+        run.to_str().unwrap(),
+        " seed ",
+        &Outcome::Success {
+            raw: "exact result".into(),
+            evidence: Some("fixture".into()),
+        },
+    )
+    .unwrap();
+    app.close().unwrap();
+    let (out, _) = invoke(&workflow_args("cancel", db.as_os_str(), run));
+    assert_eq!(out.status.code(), Some(0));
+    let (_, before) = invoke(&workflow_args("status", db.as_os_str(), run));
+    assert_eq!(before["results"]["cancellation_requested"], true);
+    let (out, _) = invoke(&init);
+    assert_eq!(out.status.code(), Some(0));
+    let (_, after) = invoke(&workflow_args("status", db.as_os_str(), run));
+    assert_eq!(
+        before, after,
+        "repeat init preserves workflow, outcome and cancellation"
+    );
+    let (out, v) = invoke(&create);
+    assert_eq!(out.status.code(), Some(2), "duplicate SQL constraint: {v}");
+    assert_eq!(v["status"], "INVALID_INPUT");
+    assert_eq!(v["call_id"], "create-id");
+    let (_, unchanged) = invoke(&workflow_args("status", db.as_os_str(), run));
+    assert_eq!(unchanged, after);
+    assert_eq!(fs::read(&steps).unwrap(), input);
+}
+
+#[test]
+fn workflow_create_rejects_wire_and_core_graph_without_partial_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("校验 库.sqlite");
+    let steps = dir.path().join("步骤.json");
+    assert_eq!(
+        invoke(&library_init_args(db.as_os_str())).0.status.code(),
+        Some(0)
+    );
+    // Shape failures belong to the CLI; graph policy retains actual core Database => FAIL.
+    let cases = [
+        ("{", 2),
+        ("{}", 2),
+        (r#"[["a",[]]]"#, 2),
+        (r#"[{"id":"a","id":"b","dependencies":[]}]"#, 2),
+        ("[{}]", 2),
+        (r#"[{"id":"a"}]"#, 2),
+        (r#"[{"id":"a","dependencies":null}]"#, 2),
+        (r#"[{"id":1,"dependencies":[]}]"#, 2),
+        (r#"[{"id":"a","dependencies":[1]}]"#, 2),
+        (r#"[{"id":"a","dependencies":[],"extra":true}]"#, 2),
+        ("[]", 1),
+        (
+            r#"[{"id":"a","dependencies":[]},{"id":"a","dependencies":[]}]"#,
+            1,
+        ),
+        (r#"[{"id":"a","dependencies":["absent"]}]"#, 1),
+        (
+            r#"[{"id":"a","dependencies":["b"]},{"id":"b","dependencies":["a"]}]"#,
+            1,
+        ),
+        (
+            r#"[{"id":"a","dependencies":[]},{"id":"b","dependencies":["a","a"]}]"#,
+            1,
+        ),
+    ];
+    for (index, (input, code)) in cases.iter().enumerate() {
+        let run = format!("rejected-{index}");
+        fs::write(&steps, input).unwrap();
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("invalid-create")];
+        args.extend(create_args(
+            db.as_os_str(),
+            OsStr::new(&run),
+            steps.as_os_str(),
+        ));
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(*code), "{input}: {v}");
+        assert_eq!(v["command"], "workflow create");
+        assert_eq!(v["call_id"], "invalid-create");
+        assert_eq!(
+            v["status"],
+            if *code == 2 { "INVALID_INPUT" } else { "FAIL" }
+        );
+        assert_eq!(v["results"], Value::Null);
+        let app = Application::open(&db).unwrap();
+        assert!(
+            app.workflow_steps(&run).is_err(),
+            "failed creation left a run"
+        );
+        app.close().unwrap();
+    }
+    let valid = r#"[{"id":"a","dependencies":[]}]"#;
+    fs::write(&steps, valid).unwrap();
+    for run in [String::new(), "r".repeat(129), "bad\nrun".into()] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("invalid-run")];
+        args.extend(create_args(
+            db.as_os_str(),
+            OsStr::new(&run),
+            steps.as_os_str(),
+        ));
+        let (out, v) = invoke(&args);
+        assert_eq!(v["call_id"], "invalid-run");
+        assert_eq!(out.status.code(), Some(1), "core owns run policy: {v}");
+        assert_eq!(v["status"], "FAIL");
+        assert!(
+            Application::open(&db)
+                .unwrap()
+                .workflow_steps(&run)
+                .is_err()
+        );
+    }
+    let mut args = create_args(db.as_os_str(), OsStr::new("bounded"), steps.as_os_str());
+    args.extend([OsStr::new("--max-bytes"), OsStr::new("1")]);
+    let (out, v) = invoke(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["errors"][0]["field_path"], "steps");
+    assert!(
+        Application::open(&db)
+            .unwrap()
+            .workflow_steps("bounded")
+            .is_err()
+    );
+    let absent_steps = dir.path().join("missing steps.json");
+    let (out, v) = invoke(&create_args(
+        db.as_os_str(),
+        OsStr::new("unreadable"),
+        absent_steps.as_os_str(),
+    ));
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["errors"][0]["field_path"], "steps");
+    assert!(
+        Application::open(&db)
+            .unwrap()
+            .workflow_steps("unreadable")
+            .is_err()
+    );
+    // Core's existing 64-step bound, not a second CLI policy.
+    fs::write(
+        &steps,
+        serde_json::to_vec(
+            &(0..65)
+                .map(|i| json!({"id":i.to_string(),"dependencies":[]}))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let (out, v) = invoke(&create_args(
+        db.as_os_str(),
+        OsStr::new("too-many"),
+        steps.as_os_str(),
+    ));
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert!(
+        Application::open(&db)
+            .unwrap()
+            .workflow_steps("too-many")
+            .is_err()
+    );
+}
+
+#[test]
+fn explicit_init_and_create_database_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let steps = dir.path().join("步骤.json");
+    fs::write(&steps, r#"[{"id":"a","dependencies":[]}]"#).unwrap();
+    let missing = dir.path().join("不存在.sqlite");
+    let nonregular = dir.path().join("目录 db");
+    fs::create_dir(&nonregular).unwrap();
+    for db in [&missing, &nonregular] {
+        let (out, v) = invoke(&create_args(
+            db.as_os_str(),
+            OsStr::new("new"),
+            steps.as_os_str(),
+        ));
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["errors"][0]["field_path"], "db");
+    }
+    assert!(!missing.exists());
+    assert!(nonregular.is_dir());
+    let empty = dir.path().join("空 db.sqlite");
+    fs::write(&empty, []).unwrap();
+    let (out, v) = invoke(&create_args(
+        empty.as_os_str(),
+        OsStr::new("new"),
+        steps.as_os_str(),
+    ));
+    assert_eq!(out.status.code(), Some(3), "{v}");
+    assert_eq!(v["status"], "INPUT_INCOMPLETE");
+    assert_eq!(fs::read(&empty).unwrap(), b"");
+    let corrupt = dir.path().join("损坏 db.sqlite");
+    let bytes = b"not a SQLite database - keep original bytes";
+    fs::write(&corrupt, bytes).unwrap();
+    let parent_missing = dir.path().join("missing parent").join("db.sqlite");
+    for db in [&corrupt, &parent_missing, &nonregular] {
+        let (out, v) = invoke(&library_init_args(db.as_os_str()));
+        assert_ne!(out.status.code(), Some(0), "{v}");
+        assert_eq!(v["results"], Value::Null);
+    }
+    assert_eq!(fs::read(&corrupt).unwrap(), bytes);
+    assert!(!parent_missing.parent().unwrap().exists());
+    for input in ["", ":memory:", "file:never-create.sqlite"] {
+        let (out, v) = invoke(&library_init_args(OsStr::new(input)));
+        assert_eq!(out.status.code(), Some(2), "{v}");
+    }
+}
+
+#[test]
+fn cli_created_pending_cancellation_has_ready_control() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("取消 对照.sqlite");
+    let steps = dir.path().join("独立步骤.json");
+    fs::write(
+        &steps,
+        r#"[{"id":"ready","dependencies":[]},{"id":"also-ready","dependencies":[]}]"#,
+    )
+    .unwrap();
+    assert!(
+        invoke(&library_init_args(db.as_os_str()))
+            .0
+            .status
+            .success()
+    );
+    for run in ["control", "target"] {
+        assert!(
+            invoke(&create_args(
+                db.as_os_str(),
+                OsStr::new(run),
+                steps.as_os_str()
+            ))
+            .0
+            .status
+            .success()
+        );
+    }
+    assert!(
+        invoke(&workflow_args(
+            "cancel",
+            db.as_os_str(),
+            OsStr::new("target")
+        ))
+        .0
+        .status
+        .success()
+    );
+    let mut app = Application::open(&db).unwrap();
+    let before = app.workflow_steps("target").unwrap();
+    assert!(
+        before
+            .iter()
+            .all(|s| s.state == State::Pending && s.outcome.is_none())
+    );
+    assert!(app.workflow_cancelled("target").unwrap());
+    assert!(!app.workflow_cancelled("control").unwrap());
+    assert_eq!(
+        app.claim_workflow_step("control").unwrap(),
+        Some("ready".into())
+    );
+    assert_eq!(app.claim_workflow_step("target").unwrap(), None);
+    assert_eq!(app.workflow_steps("target").unwrap(), before);
+    app.close().unwrap();
+    let mut app = Application::open(&db).unwrap();
+    assert!(app.workflow_cancelled("target").unwrap());
+    assert_eq!(app.claim_workflow_step("target").unwrap(), None);
+    assert_eq!(app.workflow_steps("target").unwrap(), before);
+}
+
+#[test]
+fn init_create_nested_help_and_required_arguments() {
+    for command in [
+        vec!["library"],
+        vec!["library", "init"],
+        vec!["workflow"],
+        vec!["workflow", "create"],
+    ] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("nested-id")];
+        args.extend(command.iter().map(OsStr::new));
+        args.push(OsStr::new("--help"));
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(v["status"], "HELP");
+        assert_eq!(v["call_id"], "nested-id");
+        args.pop();
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["call_id"], "nested-id");
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn init_create_broken_streams_do_not_replay_mutations() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("输出 db.sqlite");
+    let steps = dir.path().join("步骤.json");
+    fs::write(&steps, r#"[{"id":"a","dependencies":[]}]"#).unwrap();
+    let mut init = vec![OsStr::new("--call-id"), OsStr::new("stream-id")];
+    init.extend(library_init_args(db.as_os_str()));
+    let out = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&init)
+        .stderr(broken_output())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["call_id"], "stream-id");
+    assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
+    let mut create = vec![OsStr::new("--call-id"), OsStr::new("stream-id")];
+    create.extend(create_args(
+        db.as_os_str(),
+        OsStr::new("created"),
+        steps.as_os_str(),
+    ));
+    let out = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&create)
+        .stderr(broken_output())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["call_id"], "stream-id");
+    assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
+    // Duplicate creation errors survive broken stderr without becoming success.
+    let out = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&create)
+        .stderr(broken_output())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["call_id"], "stream-id");
+    let failed_db = dir.path().join("missing parent").join("db.sqlite");
+    let mut failed_init = vec![OsStr::new("--call-id"), OsStr::new("failed-init")];
+    failed_init.extend(library_init_args(failed_db.as_os_str()));
+    let out = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&failed_init)
+        .stderr(broken_output())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["call_id"], "failed-init");
+    let ambiguous_db = dir.path().join("stdout failed.sqlite");
+    let ambiguous_init = library_init_args(ambiguous_db.as_os_str());
+    let ambiguous_create = create_args(db.as_os_str(), OsStr::new("ambiguous"), steps.as_os_str());
+    for argv in [&ambiguous_init, &ambiguous_create, &create, &failed_init] {
+        let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(argv)
+            .stdout(broken_output())
+            .stderr(broken_output())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(6), "{argv:?}");
+    }
+    // Output failure does not roll back the committed operation or trigger a replay.
+    let mut initialized = Application::open(&ambiguous_db).unwrap();
+    initialized
+        .create_workflow("core-schema-probe", &[step("a", &[])])
+        .unwrap();
+    initialized.close().unwrap();
+    let app = Application::open(&db).unwrap();
+    let records = app.workflow_steps("ambiguous").unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].state, State::Pending);
+    assert_eq!(records[0].outcome, None);
 }

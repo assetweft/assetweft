@@ -484,8 +484,7 @@ advance current, create an acceptance receipt, validate quality or rights, or su
 caller-provided PASS as authority. An identical typed proposal follows core idempotency;
 a conflicting descriptor under the same identity fails without replacing it. Use existing
 `candidate show`, `candidate receipt` and `catalog current` to observe durable state.
-There is no candidate attempt/accept/execute/submit command; terminal acceptance status
-mapping requires a separate bounded follow-up against CONTRACTS §10.5.
+Candidate attempt is the bounded transport described below; no execute/submit command is exposed.
 
 Both top-level and nested objects reject positional arrays, unknown/duplicate/missing
 fields and wrong types, including object-shaped enum tags. Malformed/trailing JSON,
@@ -507,3 +506,55 @@ stored descriptor/head through existing query commands. `--call-id` is correlati
 not an idempotency token. Fixtures and programmatic GLB checks are synthetic evidence,
 not real generated assets, authorization, budget approval, provider access or production
 acceptance. Full AW-033:B, product, real-data, paid/provider, F0, AI and engines are NOT_RUN.
+
+
+## Local fixture candidate acceptance attempt (AW-033:B bounded slice)
+
+`candidate attempt --db EXISTING_DB --candidate-id ID` passes the ID verbatim to
+`Application::attempt_accept_candidate` exactly once. It uses the shared existing regular
+database admission, never creates/initializes a missing database, and accepts no report or
+PASS input. Production owns validation, policy, VerifiedAcceptance, conditional Catalog
+head advance and the atomic durable receipt. The CLI makes no extra candidate/current/receipt
+queries and performs no retry or fresh validation of its own. Every successful facade return
+has exactly `results: {"scope":"local_fixture_candidate_acceptance_attempt","receipt":<returned Acceptance>}`;
+the receipt is the unchanged existing core serde value, including candidate, reason, report
+and historical Current where present. The exhaustive outer transport projection is:
+
+| Core variant | Status / exit | Error code |
+|---|---|---|
+| Accepted | PASS / 0 | none (`errors: []`) |
+| Rejected | FAIL / 1 | REJECTED |
+| Conflict | FAIL / 1 | CONFLICT |
+| NotRun | UNSUPPORTED / 5 | NOT_RUN |
+
+Conflict is an expected-head/revision precondition conflict, distinct from a report failure.
+Code 5 deliberately coarsely projects incomplete local acceptance capability: missing
+predeclared contract, absent current, current-contract mismatch, required quality or
+unsupported roles retain the exact core reason/report in the receipt. The adapter does not
+parse reason strings or inspect report statuses/counts to invent finer taxonomy. NOT_RUN
+is never PASS or FAIL. Facade errors keep the existing exhaustive LibraryError mapping
+and null results. Grammar and global `--call-id` / `--max-bytes` remain unchanged; max-bytes
+parsing bounds neither the database nor result and does not override the stored contract.
+
+The core persists all four outcomes atomically; only Accepted advances current. Its stored
+receipt wins before any new validation. Repeating an attempt returns that original historical
+receipt, even after a later head advance or loss of owned CAS bytes; this is core receipt-first
+behavior, not CLI retry/replay logic. `--call-id` is correlation only, not idempotency authority.
+Use existing query commands for explicit observation. Application::open remains create-capable
+with its current pragmas; regular-file admission retains the documented check/open race.
+
+The single v1 JSON line plus newline, best-effort stderr and fatal stdout exit 6 apply to
+every outcome, facade error and grammar error. A receipt and head change may have committed
+before stdout fails, including when both streams fail. Exit 6 implies neither rollback nor a
+safe retry; no automatic retry occurs. Nonaccepted outcomes retain a durable receipt without
+advancing the head. PASS for Accepted establishes only the returned declared local fixture
+structure, never quality, license/rights, provider authorization, F0, engine, product or
+production approval. No generation, provider or payment operation is invoked.
+
+Actual-binary regressions use independent public Application/SQLite/CAS control fixtures,
+first-time receipts, all four variants (including missing contract, quality and contract
+mismatch), later-head/CAS-loss historical replay, ID/DB/grammar/correlation and native broken
+streams. Direct old/future/corrupt-schema fixtures remain NOT_RUN because public APIs do not
+construct them. Author evidence is scoped to the tested environment; current full CI, native
+Windows matrix, independent review and protected integration are root-owned gates. Full
+AW-033:B, real data, AI, engines, provider, paid, F0, product and production remain NOT_RUN.

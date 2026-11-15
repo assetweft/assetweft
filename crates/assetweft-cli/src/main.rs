@@ -97,7 +97,7 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("candidate")
-                .about("Initialize/stage local fixtures or query stored records; no candidate acceptance")
+                .about("Initialize/stage/attempt local fixtures or query stored records; no generation")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("initialize")
@@ -114,6 +114,13 @@ fn grammar() -> Command {
                         .arg(db())
                         .arg(Arg::new("proposal").long("proposal").required(true)
                             .value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("attempt")
+                        .about("Attempt a local fixture acceptance contract; may commit a receipt and head")
+                        .arg(db())
+                        .arg(Arg::new("candidate-id").long("candidate-id").required(true)
+                            .value_parser(value_parser!(String))),
                 )
                 .subcommand(
                     Command::new("show")
@@ -363,6 +370,7 @@ fn run() -> (i32, Value) {
         let wire = match action {
             "initialize" => "candidate initialize",
             "propose" => "candidate propose",
+            "attempt" => "candidate attempt",
             "show" => "candidate show",
             "receipt" => "candidate receipt",
             _ => unreachable!("clap grammar"),

@@ -191,19 +191,27 @@ fn independent_connections_race_capacity_and_once_claim() {
     } else {
         "y"
     };
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+    let (done_tx0, done_rx0) = sync_channel(1);
+    let (done_tx1, done_rx1) = sync_channel(1);
     let count = Arc::new(AtomicUsize::new(0));
     let mut threads = vec![];
-    for _ in 0..2 {
+    for (done_tx, wait_rx) in [(done_tx0, done_rx1), (done_tx1, done_rx0)] {
         let p = p.clone();
         let b = barrier.clone();
         let count = count.clone();
         threads.push(std::thread::spawn(move || {
             let mut a = Application::open(&p).unwrap();
             b.wait();
-            a.submit_test_fixture(id, || {
-                count.fetch_add(1, Ordering::SeqCst);
-            })
-            .unwrap()
+            let won = a
+                .submit_test_fixture(id, || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    wait_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                })
+                .unwrap();
+            let _ = done_tx.send(());
+            won
         }));
     }
     assert_eq!(

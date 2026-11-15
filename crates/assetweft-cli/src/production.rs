@@ -1,4 +1,4 @@
-//! Responsibility: Production CLI incoming adapter for plan, workflows, explicit fixture initialization/staging/attempts and stored candidate queries.
+//! Responsibility: Production CLI incoming adapter for plan, workflow claim/explicit outcome recording, explicit fixture initialization/staging/attempts and stored candidate queries.
 //! Dependencies: shared transport, Production specification and existing Application/candidate/workflow values.
 //! Callers: main command dispatch; DTOs and persisted-record projection remain private here.
 //! Invariants: core owns graph/state/lock/acceptance policy and atomic receipts; no execution, SQL, retry or implicit init.
@@ -323,6 +323,36 @@ impl<'de> serde::Deserialize<'de> for StepObject {
         deserializer.deserialize_map(ObjectVisitor)
     }
 }
+/// String-first transport input; the core owns outcome byte bounds and transition policy.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutcomeInput {
+    state: String,
+    raw: String,
+    evidence: Option<String>,
+}
+struct OutcomeObject(OutcomeInput);
+impl<'de> serde::Deserialize<'de> for OutcomeObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor;
+        impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
+            type Value = OutcomeObject;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an outcome object with state, raw and optional evidence")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                <OutcomeInput as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(OutcomeObject)
+            }
+        }
+        deserializer.deserialize_map(ObjectVisitor)
+    }
+}
 fn issue_exit(code: spec::IssueCode) -> i32 {
     match code {
         spec::IssueCode::LockViolation => 4,
@@ -421,6 +451,82 @@ pub(super) fn workflow_response(
             }
         };
     }
+    if action == "claim" {
+        return match app.claim_workflow_step(run) {
+            Ok(step) => finish(
+                0,
+                "PASS",
+                json!([]),
+                json!({
+                    "scope":"persisted_workflow_step_claim", "run_id":run, "step_id":step,
+                }),
+            ),
+            Err(e) => {
+                let (code, status) = library_outcome(&e);
+                finish(
+                    code,
+                    status,
+                    json!([error("workflow", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
+    if action == "finish" {
+        let step = args.get_one::<String>("step-id").expect("required");
+        let path = args.get_one::<PathBuf>("outcome").expect("required");
+        let OutcomeObject(input) = match read_json(path, limits, "outcome") {
+            Ok(input) => input,
+            Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
+        };
+        let outcome = match input.state.as_str() {
+            "succeeded" => Outcome::Success {
+                raw: input.raw,
+                evidence: input.evidence,
+            },
+            "failed" => Outcome::Failure {
+                raw: input.raw,
+                evidence: input.evidence,
+            },
+            _ => {
+                return finish(
+                    2,
+                    "INVALID_INPUT",
+                    json!([error(
+                        "outcome.state",
+                        "INVALID_INPUT",
+                        "state must be succeeded or failed"
+                    )]),
+                    Value::Null,
+                );
+            }
+        };
+        return match app.finish_workflow_step(run, step, &outcome) {
+            Ok(()) => {
+                let (Outcome::Success { raw, evidence } | Outcome::Failure { raw, evidence }) =
+                    &outcome;
+                finish(
+                    0,
+                    "PASS",
+                    json!([]),
+                    json!({
+                        "scope":"persisted_workflow_step_outcome", "run_id":run, "step_id":step,
+                        "outcome_source":"caller_supplied_not_executed_or_verified",
+                        "outcome":{"state":input.state,"raw":raw,"evidence":evidence},
+                    }),
+                )
+            }
+            Err(e) => {
+                let (code, status) = library_outcome(&e);
+                finish(
+                    code,
+                    status,
+                    json!([error("workflow", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
     if action == "status" {
         let steps = match app.workflow_steps(run) {
             Ok(steps) => steps,
@@ -473,6 +579,7 @@ pub(super) fn workflow_response(
             }),
         );
     }
+    assert_eq!(action, "cancel", "clap grammar");
     match app.cancel_workflow(run) {
         Ok(()) => finish(
             0,

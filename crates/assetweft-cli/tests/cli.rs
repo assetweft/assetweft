@@ -4612,3 +4612,326 @@ fn object_commit_first_write_survives_broken_stream() {
         assert_eq!(app.managed_object("first").unwrap().unwrap().byte_length, 3);
     }
 }
+
+// Claim/finish use real independent CLI processes and owned SQLite, never raw SQL.
+fn progress_call(db: &Path, run: &str, action: &str, extra: &[&OsStr]) -> (Output, Value) {
+    let mut args = workflow_args(action, db.as_os_str(), OsStr::new(run));
+    args.extend_from_slice(extra);
+    args.extend([OsStr::new("--call-id"), OsStr::new("progress α")]);
+    catalog_write_invoke(&args)
+}
+fn progress_setup(dir: &Path, run: &str) -> PathBuf {
+    let db = dir.join("progress.sqlite");
+    assert_eq!(
+        invoke(&[
+            OsStr::new("library"),
+            OsStr::new("init"),
+            OsStr::new("--db"),
+            db.as_os_str()
+        ])
+        .0
+        .status
+        .code(),
+        Some(0)
+    );
+    let steps = dir.join("steps.json");
+    fs::write(&steps, r#"[{"id":" a α ","dependencies":[]},{"id":"b","dependencies":[" a α "]},{"id":"c","dependencies":[]}]"#).unwrap();
+    assert_eq!(
+        progress_call(
+            &db,
+            run,
+            "create",
+            &[OsStr::new("--steps"), steps.as_os_str()]
+        )
+        .0
+        .status
+        .code(),
+        Some(0)
+    );
+    db
+}
+fn progress_finish(db: &Path, run: &str, step: &str, path: &Path) -> (Output, Value) {
+    progress_call(
+        db,
+        run,
+        "finish",
+        &[
+            OsStr::new("--step-id"),
+            OsStr::new(step),
+            OsStr::new("--outcome"),
+            path.as_os_str(),
+        ],
+    )
+}
+#[test]
+fn progress_restart_order_and_exact_outcomes() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = " run α ";
+    let db = progress_setup(dir.path(), run);
+    let path = dir.path().join("outcome.json");
+    for (id, wire) in [
+        (" a α ", json!({"state":"succeeded","raw":"\n 原样 \n"})),
+        ("b", json!({"state":"succeeded","raw":"","evidence":null})),
+        ("c", json!({"state":"succeeded","raw":"尾","evidence":""})),
+    ] {
+        let (out, v) = progress_call(&db, run, "claim", &[]);
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(
+            v["results"],
+            json!({"scope":"persisted_workflow_step_claim","run_id":run,"step_id":id})
+        );
+        assert_eq!(v["call_id"], "progress α");
+        assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(
+            progress_call(&db, run, "claim", &[]).1["results"]["step_id"],
+            Value::Null
+        );
+        let (_, status) = progress_call(&db, run, "status", &[]);
+        assert!(
+            status["results"]["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["id"] == id && s["state"] == "running")
+        );
+        fs::write(&path, wire.to_string()).unwrap();
+        let (out, ack) = progress_finish(&db, run, id, &path);
+        assert_eq!(out.status.code(), Some(0), "{ack}");
+        assert_eq!(ack["command"], "workflow finish");
+        assert_eq!(ack["results"]["scope"], "persisted_workflow_step_outcome");
+        assert_eq!(
+            ack["results"]["outcome_source"],
+            "caller_supplied_not_executed_or_verified"
+        );
+        assert_eq!(ack["results"]["outcome"]["raw"], wire["raw"]);
+        assert_eq!(ack["results"]["outcome"]["evidence"], wire["evidence"]);
+        let before = progress_call(&db, run, "status", &[]).1;
+        assert_eq!(
+            progress_finish(&db, run, id, &path).0.status.code(),
+            Some(1)
+        );
+        assert_eq!(progress_call(&db, run, "status", &[]).1, before);
+    }
+    assert_eq!(
+        progress_call(&db, run, "claim", &[]).1["results"]["step_id"],
+        Value::Null
+    );
+}
+#[test]
+fn progress_failure_cancel_and_state_errors() {
+    for cancel in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = progress_setup(dir.path(), "r");
+        let path = dir.path().join("outcome.json");
+        fs::write(
+            &path,
+            r#"{"state":"failed","raw":" actual failure ","evidence":"证据\n指针"}"#,
+        )
+        .unwrap();
+        for (run, step) in [("missing", " a α "), ("r", "missing"), ("r", "b")] {
+            assert_eq!(
+                progress_finish(&db, run, step, &path).0.status.code(),
+                Some(1)
+            );
+        }
+        assert_eq!(
+            progress_call(&db, "missing", "claim", &[]).0.status.code(),
+            Some(1)
+        );
+        assert_eq!(
+            progress_call(&db, "r", "claim", &[]).0.status.code(),
+            Some(0)
+        );
+        if cancel {
+            assert_eq!(
+                progress_call(&db, "r", "cancel", &[]).0.status.code(),
+                Some(0)
+            );
+        }
+        assert_eq!(
+            progress_finish(&db, "r", " a α ", &path).0.status.code(),
+            Some(0)
+        );
+        let (_, v) = progress_call(&db, "r", "status", &[]);
+        assert_eq!(v["results"]["steps"][0]["state"], "failed");
+        assert_eq!(v["results"]["steps"][0]["evidence"], "证据\n指针");
+        let next = progress_call(&db, "r", "claim", &[]).1;
+        assert_eq!(
+            next["results"]["step_id"],
+            if cancel { Value::Null } else { json!("c") }
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let db = progress_setup(dir.path(), "cancel-only");
+    assert_eq!(
+        progress_call(&db, "cancel-only", "cancel", &[])
+            .0
+            .status
+            .code(),
+        Some(0)
+    );
+    assert_eq!(
+        progress_call(&db, "cancel-only", "claim", &[]).1["results"]["step_id"],
+        Value::Null
+    );
+    assert_eq!(
+        Application::open(&db)
+            .unwrap()
+            .workflow_steps("cancel-only")
+            .unwrap()[0]
+            .state,
+        State::Pending
+    );
+}
+#[test]
+fn progress_strict_wire_and_core_byte_bounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = progress_setup(dir.path(), "r");
+    assert_eq!(
+        progress_call(&db, "r", "claim", &[]).0.status.code(),
+        Some(0)
+    );
+    let path = dir.path().join("outcome.json");
+    for wire in [
+        "[]",
+        "{}",
+        r#"{"raw":""}"#,
+        r#"{"state":"succeeded"}"#,
+        r#"{"state":"succeeded","raw":"","x":0}"#,
+        r#"{"state":"succeeded","state":"failed","raw":""}"#,
+        r#"{"state":"succeeded","raw":"","raw":"x"}"#,
+        r#"{"state":"succeeded","raw":"","evidence":null,"evidence":""}"#,
+        r#"{"state":{},"raw":""}"#,
+        r#"{"state":{"Success":{}},"raw":""}"#,
+        r#"{"state":"Success","raw":""}"#,
+        r#"{"state":"succeeded ","raw":""}"#,
+        r#"{"state":null,"raw":""}"#,
+        r#"{"state":"failed","raw":1}"#,
+        r#"{"state":"failed","raw":null}"#,
+        r#"{"state":"failed","raw":"","evidence":3}"#,
+    ] {
+        fs::write(&path, wire).unwrap();
+        assert_eq!(
+            progress_finish(&db, "r", " a α ", &path).0.status.code(),
+            Some(2),
+            "{wire}"
+        );
+        assert_eq!(
+            Application::open(&db).unwrap().workflow_steps("r").unwrap()[0].state,
+            State::Running
+        );
+    }
+    for (raw, evidence, code) in [
+        ("é".repeat(524289), "".to_owned(), 1),
+        ("".to_owned(), "é".repeat(2049), 1),
+        ("é".repeat(524288), "é".repeat(2048), 0),
+    ] {
+        fs::write(
+            &path,
+            json!({"state":"succeeded","raw":raw,"evidence":evidence}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            progress_finish(&db, "r", " a α ", &path).0.status.code(),
+            Some(code)
+        );
+        if code == 1 {
+            assert_eq!(
+                Application::open(&db).unwrap().workflow_steps("r").unwrap()[0].state,
+                State::Running
+            );
+        } else {
+            assert_eq!(
+                Application::open(&db).unwrap().workflow_steps("r").unwrap()[0].outcome,
+                Some(Outcome::Success {
+                    raw,
+                    evidence: Some(evidence)
+                })
+            );
+        }
+    }
+    assert_eq!(
+        progress_call(
+            &db,
+            "r",
+            "finish",
+            &[
+                OsStr::new("--step-id"),
+                OsStr::new("b"),
+                OsStr::new("--outcome"),
+                path.as_os_str(),
+                OsStr::new("--max-bytes"),
+                OsStr::new("2")
+            ]
+        )
+        .0
+        .status
+        .code(),
+        Some(2)
+    );
+}
+#[test]
+fn progress_first_mutations_survive_broken_streams() {
+    for stdout in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = progress_setup(dir.path(), "r");
+        let path = dir.path().join("outcome.json");
+        fs::write(
+            &path,
+            r#"{"state":"succeeded","raw":"actual","evidence":"unverified"}"#,
+        )
+        .unwrap();
+        for action in ["claim", "finish"] {
+            let expected = if action == "claim" {
+                State::Pending
+            } else {
+                State::Running
+            };
+            assert_eq!(
+                Application::open(&db).unwrap().workflow_steps("r").unwrap()[0].state,
+                expected
+            );
+            let mut args = workflow_args(action, db.as_os_str(), OsStr::new("r"));
+            if action == "finish" {
+                args.extend([
+                    OsStr::new("--step-id"),
+                    OsStr::new(" a α "),
+                    OsStr::new("--outcome"),
+                    path.as_os_str(),
+                ]);
+            }
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_assetweft"));
+            cmd.args(&args);
+            if stdout {
+                cmd.stdout(broken_output());
+            } else {
+                cmd.stderr(broken_output());
+            }
+            let out = cmd.output().unwrap();
+            catalog_write_record(&args, &out);
+            assert_eq!(out.status.code(), Some(if stdout { 6 } else { 0 }));
+            let row = Application::open(&db)
+                .unwrap()
+                .workflow_steps("r")
+                .unwrap()
+                .remove(0);
+            assert_eq!(
+                row.state,
+                if action == "claim" {
+                    State::Running
+                } else {
+                    State::Succeeded
+                }
+            );
+            if action == "finish" {
+                assert_eq!(
+                    row.outcome,
+                    Some(Outcome::Success {
+                        raw: "actual".into(),
+                        evidence: Some("unverified".into())
+                    })
+                );
+            }
+        }
+    }
+}

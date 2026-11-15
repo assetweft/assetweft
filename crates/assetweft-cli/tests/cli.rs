@@ -1,7 +1,7 @@
 //! Responsibility: C2 actual-binary protocol and delegation regression gate.
 //! Dependencies: core fixtures/APIs, std process, tempfile; called by C1 and native CI.
 //! Invariants: synthetic evidence only; no mocks; full stdout parse, repeat stability,
-//! bounded reads, Chinese/space paths and unchanged input bytes.
+//! bounded reads, Chinese/space paths, unchanged input bytes and immutable local allowances.
 use assetweft_core::{
     application::Application,
     generation_spec as spec, validation as val,
@@ -1183,4 +1183,464 @@ fn init_create_broken_streams_do_not_replay_mutations() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].state, State::Pending);
     assert_eq!(records[0].outcome, None);
+}
+
+// Local declarations only: real CLI processes and SQLite through Application, no provider.
+fn budget_args<'a>(action: &'a str, db: &'a OsStr, value: &'a OsStr) -> Vec<&'a OsStr> {
+    vec![
+        OsStr::new("budget"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db,
+        OsStr::new(if action == "approve" {
+            "--allowance"
+        } else {
+            "--budget-id"
+        }),
+        value,
+    ]
+}
+fn budget_fixture(dir: &Path) -> (PathBuf, PathBuf, Value) {
+    let db = dir.join("预算 本地.sqlite");
+    let (out, v) = invoke(&library_init_args(db.as_os_str()));
+    assert!(out.status.success(), "{v}");
+    let path = dir.join("声明 α.json");
+    let value = json!({"id":" 预算 α ","unit":"Token","capacity":100,
+        "approval":"ExplicitBounded","source":" TEST_FIXTURE 本地声明 "});
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    (db, path, value)
+}
+fn declared_balance(db: &Path, id: &str) -> Value {
+    let (out, v) = invoke(&budget_args("balance", db.as_os_str(), OsStr::new(id)));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], "budget balance");
+    assert_eq!(v["status"], "PASS");
+    v["results"].clone()
+}
+#[test]
+fn budget_declarations_reopen_exactly_and_never_reset_reservations() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, mut declaration) = budget_fixture(dir.path());
+    for (index, (unit, capacity, approval)) in [
+        (json!("Token"), 100_u64, "ExplicitBounded"),
+        (json!("Task"), 0, "ExplicitBounded"),
+        (json!("Second"), 0, "ZeroAdditionalCost"),
+        (
+            json!({"CurrencyMinor":{"currency":"USD","decimals":2}}),
+            12345,
+            "ExplicitBounded",
+        ),
+        (
+            json!({"CurrencyMinor":{"currency":"JPY","decimals":0}}),
+            0,
+            "ZeroAdditionalCost",
+        ),
+        (json!("Token"), 9223372036854775807, "ExplicitBounded"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        declaration["id"] = json!(format!(" 预算 {index} "));
+        declaration["unit"] = unit;
+        declaration["capacity"] = json!(capacity);
+        declaration["approval"] = json!(approval);
+        let bytes = serde_json::to_vec(&declaration).unwrap();
+        if index == 5 {
+            assert!(
+                std::str::from_utf8(&bytes)
+                    .unwrap()
+                    .contains("\"capacity\":9223372036854775807")
+            );
+        }
+        fs::write(&path, &bytes).unwrap();
+        let mut args = budget_args("approve", db.as_os_str(), path.as_os_str());
+        args.extend([OsStr::new("--call-id"), OsStr::new("预算-call")]);
+        let (first, v) = invoke(&args);
+        assert_eq!(first.status.code(), Some(0), "{v}");
+        assert_eq!(v["command"], "budget approve");
+        assert_eq!(v["call_id"], "预算-call");
+        assert_eq!(
+            v["results"],
+            json!({"scope":"stored_local_allowance_declaration","allowance":declaration})
+        );
+        let (again, _) = invoke(&args);
+        assert_eq!(again.stdout, first.stdout);
+        assert!(again.status.success());
+        assert!(first.stderr.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let id = declaration["id"].as_str().unwrap();
+        assert_eq!(
+            declared_balance(&db, id),
+            json!({"scope":"local_budget_balance",
+            "allowance":declaration,"reserved":0,"spent":0})
+        );
+        let app = Application::open(&db).unwrap();
+        assert_eq!(
+            serde_json::to_value(app.budget_balance(id).unwrap().allowance).unwrap(),
+            declaration
+        );
+    }
+    // Seed only a local reservation through the existing facade; no submit/callback.
+    let id = " 预算 0 ";
+    let mut app = Application::open(&db).unwrap();
+    app.reserve_call(&assetweft_core::budget::Request {
+        id: "local-reservation".into(),
+        account: id.into(),
+        input_fingerprint: "TEST_FIXTURE:input".into(),
+        unit: assetweft_core::budget::Unit::Token,
+        quote: Some(7),
+        reservation: 7,
+        source: "TEST_FIXTURE local quote".into(),
+    })
+    .unwrap();
+    let original = app.budget_balance(id).unwrap();
+    drop(app);
+    let original_wire = serde_json::to_value(&original.allowance).unwrap();
+    // Deliberately different key order still yields the same typed descriptor.
+    fs::write(&path, format!("{{\"source\":{},\"approval\":\"ExplicitBounded\",\"capacity\":100,\"unit\":\"Token\",\"id\":{}}}", original_wire["source"], json!(id))).unwrap();
+    let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
+    assert!(out.status.success(), "{v}");
+    for (field, value) in [
+        ("capacity", json!(101)),
+        ("unit", json!("Task")),
+        ("approval", json!("ZeroAdditionalCost")),
+        ("source", json!("different local source")),
+    ] {
+        let mut conflict = original_wire.clone();
+        conflict[field] = value;
+        // Approval conflict must be valid core input to reach immutable identity check.
+        if field == "approval" {
+            conflict["capacity"] = json!(0);
+        }
+        fs::write(&path, serde_json::to_vec(&conflict).unwrap()).unwrap();
+        let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert!(
+            v["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("allowance identity conflict"),
+            "{v}"
+        );
+        let app = Application::open(&db).unwrap();
+        assert_eq!(app.budget_balance(id).unwrap(), original);
+    }
+    assert_eq!(
+        declared_balance(&db, id),
+        json!({"scope":"local_budget_balance",
+        "allowance":original_wire,"reserved":7,"spent":0})
+    );
+    let zero = Application::open(&db)
+        .unwrap()
+        .budget_balance(" 预算 1 ")
+        .unwrap();
+    let mut conflict = serde_json::to_value(&zero.allowance).unwrap();
+    conflict["approval"] = json!("ZeroAdditionalCost");
+    fs::write(&path, conflict.to_string()).unwrap();
+    let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
+    assert_eq!(out.status.code(), Some(2), "{v}");
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("allowance identity conflict")
+    );
+    assert_eq!(
+        Application::open(&db)
+            .unwrap()
+            .budget_balance(" 预算 1 ")
+            .unwrap(),
+        zero
+    );
+}
+
+#[test]
+fn budget_wire_rejects_bad_shapes_and_core_rejections_leave_no_partial_allowance() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, good) = budget_fixture(dir.path());
+    let args = budget_args("approve", db.as_os_str(), path.as_os_str());
+    let (out, v) = invoke(&args);
+    assert!(out.status.success(), "{v}");
+    let baseline = declared_balance(&db, good["id"].as_str().unwrap());
+    let mut bad = vec!["{broken".to_string(),"null".into(),"[]".into(),
+        r#"["x","Token",0,"ExplicitBounded","s"]"#.into(),
+        r#"{"id":"x","id":"x","unit":"Token","capacity":0,"approval":"ExplicitBounded","source":"s"}"#.into()];
+    for field in ["id", "unit", "capacity", "approval", "source"] {
+        let mut value = good.clone();
+        value.as_object_mut().unwrap().remove(field);
+        bad.push(value.to_string());
+        let mut value = good.clone();
+        value[field] = Value::Null;
+        bad.push(value.to_string());
+    }
+    for (field, value) in [
+        ("extra", json!(true)),
+        ("id", json!(4)),
+        ("source", json!([])),
+        ("approval", json!("explicitbounded")),
+        ("capacity", json!(-1)),
+        ("capacity", json!(1.5)),
+        ("capacity", json!("10")),
+        ("unit", json!("token")),
+        ("unit", json!(["Token"])),
+    ] {
+        let mut v = good.clone();
+        v[field] = value;
+        bad.push(v.to_string());
+    }
+    for unit in [
+        r#"{"CurrencyMinor":["USD",2]}"#,
+        r#"{"CurrencyMinor":{}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD"}}"#,
+        r#"{"CurrencyMinor":{"decimals":2}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":2,"extra":0}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","currency":"USD","decimals":2}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":2,"decimals":2}}"#,
+        r#"{"CurrencyMinor":{"currency":3,"decimals":2}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":-1}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":1.5}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":256}}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":2},"Token":null}"#,
+    ] {
+        bad.push(format!(r#"{{"id":"shape-rejected","unit":{unit},"capacity":0,"approval":"ExplicitBounded","source":"s"}}"#));
+    }
+    bad.push(r#"{"id":"overflow","unit":"Token","capacity":18446744073709551616,"approval":"ExplicitBounded","source":"s"}"#.into());
+    for raw in bad {
+        fs::write(&path, &raw).unwrap();
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{raw}: {v}");
+        assert_eq!(v["errors"][0]["field_path"], "allowance", "{raw}: {v}");
+        assert_eq!(v["status"], "INVALID_INPUT");
+        assert_eq!(v["results"], Value::Null);
+        assert_eq!(
+            declared_balance(&db, good["id"].as_str().unwrap()),
+            baseline
+        );
+        let app = Application::open(&db).unwrap();
+        assert!(app.budget_balance("shape-rejected").is_err());
+        assert!(app.budget_balance("overflow").is_err());
+    }
+    for (field, value, message) in [
+        (
+            "capacity",
+            json!(9223372036854775808_u64),
+            "SQLite integer limit",
+        ),
+        (
+            "unit",
+            json!({"CurrencyMinor":{"currency":"usd","decimals":2}}),
+            "currency scale",
+        ),
+        (
+            "unit",
+            json!({"CurrencyMinor":{"currency":"US","decimals":2}}),
+            "currency scale",
+        ),
+        (
+            "unit",
+            json!({"CurrencyMinor":{"currency":"USD","decimals":10}}),
+            "currency scale",
+        ),
+        (
+            "approval",
+            json!("ZeroAdditionalCost"),
+            "zero cost capacity",
+        ),
+        ("source", json!(""), "bounded text"),
+        ("source", json!("s".repeat(4097)), "bounded text"),
+        ("source", json!("x\0y"), "bounded text"),
+        ("id", json!(""), "bounded text"),
+        ("id", json!("x".repeat(4097)), "bounded text"),
+        ("id", json!("x\0y"), "bounded text"),
+    ] {
+        let mut v = good.clone();
+        v["id"] = json!("core-rejected");
+        v[field] = value;
+        fs::write(&path, v.to_string()).unwrap();
+        let (out, result) = invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{result}");
+        assert_eq!(result["errors"][0]["field_path"], "budget");
+        assert!(
+            result["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{result}"
+        );
+        assert!(
+            Application::open(&db)
+                .unwrap()
+                .budget_balance(v["id"].as_str().unwrap())
+                .is_err()
+        );
+        assert_eq!(
+            declared_balance(&db, good["id"].as_str().unwrap()),
+            baseline
+        );
+    }
+    fs::write(&path, good.to_string()).unwrap();
+    let mut limited = args.clone();
+    limited.extend([OsStr::new("--max-bytes"), OsStr::new("8")]);
+    let (out, v) = invoke(&limited);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["errors"][0]["field_path"], "allowance");
+    fs::remove_file(&path).unwrap();
+    let (out, v) = invoke(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["errors"][0]["field_path"], "allowance");
+}
+
+#[test]
+fn budget_database_admission_and_missing_identity_are_truthful() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, good) = budget_fixture(dir.path());
+    let missing = dir.path().join("missing.sqlite");
+    let empty = dir.path().join("empty.sqlite");
+    fs::write(&empty, b"").unwrap();
+    for (p, code, field) in [
+        (missing.as_path(), 2, "db"),
+        (dir.path(), 2, "db"),
+        (empty.as_path(), 3, "budget"),
+    ] {
+        for (action, value) in [
+            ("approve", path.as_os_str()),
+            ("balance", OsStr::new("missing")),
+        ] {
+            let (out, v) = invoke(&budget_args(action, p.as_os_str(), value));
+            assert_eq!(out.status.code(), Some(code), "{v}");
+            assert_eq!(v["errors"][0]["field_path"], field);
+            assert_eq!(v["command"], format!("budget {action}"));
+        }
+    }
+    assert!(!missing.exists());
+    assert_eq!(fs::read(&empty).unwrap(), b"");
+    for id in ["missing", ""] {
+        let expected = Application::open(&db)
+            .unwrap()
+            .budget_balance(id)
+            .unwrap_err()
+            .to_string();
+        let (out, v) = invoke(&budget_args("balance", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(1), "{v}");
+        assert_eq!(v["status"], "FAIL");
+        assert_eq!(v["errors"][0]["message"], expected); // empty query ID stays verbatim; core does not validate it.
+    }
+    let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
+    assert!(out.status.success(), "{v}");
+    assert_eq!(
+        declared_balance(&db, good["id"].as_str().unwrap())["allowance"],
+        good
+    );
+}
+
+#[test]
+fn budget_required_arguments_nested_help_and_call_id() {
+    for args in [
+        vec!["budget"],
+        vec!["budget", "approve"],
+        vec!["budget", "balance"],
+        vec!["budget", "approve", "--db", "x"],
+        vec!["budget", "balance", "--db", "x"],
+        vec!["budget", "approve", "--allowance", "x"],
+        vec!["budget", "balance", "--budget-id", "x"],
+        vec!["budget", "reserve"],
+        vec!["budget", "submit"],
+        vec!["budget", "reconcile"],
+    ] {
+        let mut os = vec![OsStr::new("--call-id"), OsStr::new("arg-id")];
+        os.extend(args.iter().map(OsStr::new));
+        let (out, v) = invoke(&os);
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["call_id"], "arg-id");
+        assert_eq!(v["command"], "arguments");
+    }
+    for action in [None, Some("approve"), Some("balance")] {
+        let mut args = vec![OsStr::new("budget")];
+        if let Some(a) = action {
+            args.push(OsStr::new(a));
+        }
+        args.extend([
+            OsStr::new("--help"),
+            OsStr::new("--call-id"),
+            OsStr::new("help-id"),
+        ]);
+        let (out, v) = invoke(&args);
+        assert!(out.status.success(), "{v}");
+        assert_eq!(v["status"], "HELP");
+        assert_eq!(v["call_id"], "help-id");
+        let text = v["results"]["text"].as_str().unwrap();
+        if action.is_none() {
+            assert!(text.contains("approve") && text.contains("balance"));
+        } else {
+            assert!(text.contains("--db"));
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn budget_protocol_broken_streams_keep_committed_local_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, good) = budget_fixture(dir.path());
+    for (action, value) in [
+        ("approve", path.as_os_str()),
+        ("balance", OsStr::new(" 预算 α ")),
+        ("balance", OsStr::new("absent")),
+    ] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("budget-io")];
+        args.extend(budget_args(action, db.as_os_str(), value));
+        let (ordinary, v) = invoke(&args);
+        assert_eq!(
+            ordinary.status.code(),
+            Some(if value == OsStr::new("absent") { 1 } else { 0 }),
+            "{v}"
+        );
+        let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stderr(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(failed.stdout, ordinary.stdout);
+        assert_eq!(failed.status.code(), ordinary.status.code());
+        let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stdout(broken_output())
+            .stderr(broken_output())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(6));
+    }
+    // First declaration commits even when the real child cannot report it; no retry occurs.
+    let mut committed = good.clone();
+    committed["id"] = json!("committed-output-lost");
+    fs::write(&path, committed.to_string()).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(budget_args("approve", db.as_os_str(), path.as_os_str()))
+        .stdout(broken_output())
+        .stderr(broken_output())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(6));
+    assert_eq!(
+        declared_balance(&db, "committed-output-lost"),
+        json!({"scope":"local_budget_balance","allowance":committed,"reserved":0,"spent":0})
+    );
+    fs::write(&path, b"{broken").unwrap();
+    let args = budget_args("approve", db.as_os_str(), path.as_os_str());
+    let (ordinary, v) = invoke(&args);
+    assert_eq!(ordinary.status.code(), Some(2), "{v}");
+    let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&args)
+        .stderr(broken_output())
+        .output()
+        .unwrap();
+    assert_eq!(failed.stdout, ordinary.stdout);
+    assert_eq!(failed.status.code(), Some(2));
+    let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&args)
+        .stdout(broken_output())
+        .stderr(broken_output())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(6));
 }

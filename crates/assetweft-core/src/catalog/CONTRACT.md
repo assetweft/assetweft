@@ -155,7 +155,13 @@ reference_guard through snapshot/copy/publication, and uses the existing bind.
 SQLite stepping, schema/integrity checks, snapshot object query, sidecar rejection,
 chunked hashing/copy, progress/deadline order, owner isolation and no-clobber
 publication remain concrete. The clock starts at the original boundary; no
-transaction spans filesystem copy or callback. Failed/cancelled operations leave
+write transaction spans filesystem copy or callback. Snapshot stepping holds a
+source read transaction after its first progress check: actual page_size ×
+page_count must fit max_bytes before any snapshot page is copied, including Done.
+That pinned view cannot grow/restart between steps; WAL commits after pinning
+belong to a later snapshot, while rollback-journal writers may wait. The read
+transaction ends before object inspection/copy; final file hashing and cumulative
+DB/object byte accounting remain authoritative. Failed/cancelled operations leave
 no successful manifest. Metadata-only UNKNOWN/MISSING does not become ready bytes.
 
 head_application validates exact asset identity before HeadQuery. head_sqlite owns

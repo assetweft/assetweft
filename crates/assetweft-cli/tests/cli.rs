@@ -326,12 +326,18 @@ fn semantic_identity_plan_cannot_bypass_core() {
     }
 }
 
-// A closed Unix socket peer gives the real child EPIPE on writes, including on macOS.
-// No synthetic writer or production fault switch is involved.
+// Shut down the writer itself: dropping a peer alone leaves writes possible while
+// another process holds that peer. The real child must inherit an unwritable socket.
 #[cfg(unix)]
 fn broken_output() -> std::process::Stdio {
-    use std::os::{fd::OwnedFd, unix::net::UnixStream};
-    let (writer, reader) = UnixStream::pair().unwrap();
+    use std::{
+        io::Write,
+        net::Shutdown,
+        os::{fd::OwnedFd, unix::net::UnixStream},
+    };
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer.shutdown(Shutdown::Write).unwrap();
+    assert!(writer.write_all(b"must not write").is_err());
     drop(reader);
     std::process::Stdio::from(OwnedFd::from(writer))
 }

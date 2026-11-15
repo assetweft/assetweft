@@ -1,14 +1,14 @@
-//! Responsibility: Production CLI incoming adapter for plan, workflows, explicit fixture initialization/staging and stored candidate queries.
+//! Responsibility: Production CLI incoming adapter for plan, workflows, explicit fixture initialization/staging/attempts and stored candidate queries.
 //! Dependencies: shared transport, Production specification and existing Application/candidate/workflow values.
 //! Callers: main command dispatch; DTOs and persisted-record projection remain private here.
-//! Invariants: core owns graph/state/lock policy; no execution, SQL, replay or implicit init.
+//! Invariants: core owns graph/state/lock/acceptance policy and atomic receipts; no execution, SQL, retry or implicit init.
 
 use crate::protocol::{envelope, error, existing_database, library_outcome, read_json, source};
 use assetweft_core::{
     LockMode,
     application::Application,
     assurance as val,
-    candidate::{FixtureContract, Proposal},
+    candidate::{Acceptance, FixtureContract, Proposal},
     library::ComponentRole,
     production::specification as spec,
     workflow::{Outcome, State, Step, StepRecord},
@@ -196,7 +196,7 @@ pub(super) fn candidate_write_response(
     }
 }
 
-/// Read exactly one stored value through its owner; query PASS is not acceptance.
+/// Delegate one candidate operation; only core decides and durably records acceptance.
 pub(super) fn candidate_response(
     wire: &str,
     call_id: Option<&String>,
@@ -210,7 +210,7 @@ pub(super) fn candidate_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let app = match Application::open(db) {
+    let mut app = match Application::open(db) {
         Ok(app) => app,
         Err(e) => {
             return finish(
@@ -223,15 +223,64 @@ pub(super) fn candidate_response(
     };
     let result = match action {
         "show" => app.candidate(id).map(|candidate| {
-            json!({"scope":"stored_local_candidate_descriptor","candidate":candidate})
+            (
+                0,
+                "PASS",
+                json!([]),
+                json!({"scope":"stored_local_candidate_descriptor","candidate":candidate}),
+            )
         }),
         "receipt" => app.candidate_attempt(id).map(|receipt| {
-            json!({"scope":"stored_local_candidate_acceptance_receipt","receipt":receipt})
+            (
+                0,
+                "PASS",
+                json!([]),
+                json!({"scope":"stored_local_candidate_acceptance_receipt","receipt":receipt}),
+            )
+        }),
+        "attempt" => app.attempt_accept_candidate(id).map(|receipt| {
+            // Exhaustive transport projection only: receipt/report/reason stay core-owned.
+            let (code, status, errors) = match &receipt {
+                Acceptance::Accepted { .. } => (0, "PASS", json!([])),
+                Acceptance::Rejected { .. } => (
+                    1,
+                    "FAIL",
+                    json!([error(
+                        "candidate",
+                        "REJECTED",
+                        "Local fixture candidate acceptance rejected"
+                    )]),
+                ),
+                Acceptance::Conflict { .. } => (
+                    1,
+                    "FAIL",
+                    json!([error(
+                        "candidate",
+                        "CONFLICT",
+                        "Candidate expected-head/revision precondition conflict"
+                    )]),
+                ),
+                Acceptance::NotRun { .. } => (
+                    5,
+                    "UNSUPPORTED",
+                    json!([error(
+                        "candidate",
+                        "NOT_RUN",
+                        "Local fixture candidate acceptance NOT_RUN; see exact core receipt"
+                    )]),
+                ),
+            };
+            (
+                code,
+                status,
+                errors,
+                json!({"scope":"local_fixture_candidate_acceptance_attempt","receipt":receipt}),
+            )
         }),
         _ => unreachable!("clap grammar"),
     };
     match result {
-        Ok(value) => finish(0, "PASS", json!([]), value),
+        Ok((code, status, errors, value)) => finish(code, status, errors, value),
         Err(e) => {
             let (code, status) = library_outcome(&e);
             finish(

@@ -3496,3 +3496,326 @@ fn candidate_write_broken_streams_preserve_durable_commits_and_errors() {
     }
     assert_eq!(app.candidate("not-written").unwrap(), None);
 }
+
+// Attempt transport uses genuine first writes; controls run in independent libraries.
+fn candidate_attempt_fixture(dir: &Path, mode: &str) -> (PathBuf, Application, String) {
+    let (db, mut app, mut proposal) = candidate_fixture(dir, mode == "Rejected");
+    match mode {
+        "NoContract" => proposal.contract = None,
+        "Quality" => proposal.contract.as_mut().unwrap().required_quality = vec!["QUALITY".into()],
+        "Mismatch" => proposal.contract.as_mut().unwrap().max_component_bytes = 512 * 1024,
+        _ => {}
+    }
+    app.propose_candidate(&proposal).unwrap();
+    if mode == "Conflict" {
+        let mut winner = proposal.clone();
+        winner.id = "winner".into();
+        winner.candidate_version = "other".into();
+        app.propose_candidate(&winner).unwrap();
+        assert!(matches!(
+            app.attempt_accept_candidate(&winner.id).unwrap(),
+            assetweft_core::candidate::Acceptance::Accepted { .. }
+        ));
+    }
+    assert_eq!(app.candidate_attempt(&proposal.id).unwrap(), None);
+    (db, app, proposal.id)
+}
+fn candidate_attempt_projection(mode: &str) -> (i32, &'static str, Option<&'static str>) {
+    match mode {
+        "Accepted" => (0, "PASS", None),
+        "Rejected" => (1, "FAIL", Some("REJECTED")),
+        "Conflict" => (1, "FAIL", Some("CONFLICT")),
+        _ => (5, "UNSUPPORTED", Some("NOT_RUN")),
+    }
+}
+#[test]
+fn candidate_attempt_first_write_exact_receipts_and_historical_replay() {
+    use assetweft_core::candidate::Acceptance;
+    for mode in [
+        "Accepted",
+        "Rejected",
+        "Conflict",
+        "NoContract",
+        "Quality",
+        "Mismatch",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let control = tempfile::tempdir().unwrap();
+        let (_, mut core, control_id) = candidate_attempt_fixture(control.path(), mode);
+        let expected = core.attempt_accept_candidate(&control_id).unwrap();
+        assert!(
+            matches!((&expected, mode),
+            (Acceptance::Accepted { current, .. }, "Accepted") if current.revision == 1)
+                || matches!(
+                    (&expected, mode),
+                    (Acceptance::Rejected { .. }, "Rejected")
+                        | (
+                            Acceptance::Conflict {
+                                current: assetweft_core::catalog::domain::Current {
+                                    revision: 1,
+                                    ..
+                                },
+                                ..
+                            },
+                            "Conflict"
+                        )
+                        | (
+                            Acceptance::NotRun { report: None, .. },
+                            "NoContract" | "Quality"
+                        )
+                        | (
+                            Acceptance::NotRun {
+                                report: Some(_),
+                                ..
+                            },
+                            "Mismatch"
+                        )
+                )
+        );
+        let (db, app, id) = candidate_attempt_fixture(dir.path(), mode);
+        let before = app.candidate_current("character").unwrap();
+        app.close().unwrap();
+        let mut args = candidate_args("attempt", db.as_os_str(), OsStr::new(&id));
+        args.extend([
+            OsStr::new("--call-id"),
+            OsStr::new("attempt α"),
+            OsStr::new("--max-bytes"),
+            OsStr::new("1"),
+        ]);
+        let (out, value) = candidate_invoke(&args);
+        let (code, status, error_code) = candidate_attempt_projection(mode);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "first attempt {mode}: {value}"
+        );
+        assert_eq!(value["command"], "candidate attempt");
+        assert_eq!(value["call_id"], "attempt α");
+        assert_eq!(value["status"], status);
+        assert_eq!(
+            value["results"],
+            json!({"scope":"local_fixture_candidate_acceptance_attempt","receipt":expected})
+        );
+        if let Some(code) = error_code {
+            assert_eq!(value["errors"][0]["code"], code);
+            assert_eq!(value["errors"][0]["field_path"], "candidate");
+        } else {
+            assert_eq!(value["errors"], json!([]));
+        }
+        let mut reopened = Application::open(&db).unwrap();
+        assert_eq!(
+            reopened.candidate_attempt(&id).unwrap(),
+            Some(expected.clone())
+        );
+        let after = reopened.candidate_current("character").unwrap();
+        if let Acceptance::Accepted { current, .. } = &expected {
+            assert_eq!(after.as_ref(), Some(current));
+        } else {
+            assert_eq!(after, before, "nonaccepted attempt must not advance {mode}");
+        }
+        // A genuinely later head must not refresh the tested historic receipt.
+        let head = after.unwrap();
+        let mut next = core.candidate(&control_id).unwrap().unwrap();
+        next.id = "later-head".into();
+        let proposal = assetweft_core::candidate::Proposal {
+            id: next.id,
+            base_version: head.version_id.clone(),
+            candidate_version: if head.version_id == "other" {
+                "proposed"
+            } else {
+                "other"
+            }
+            .into(),
+            expected_revision: head.revision,
+            editable: vec![assetweft_core::library::ComponentRole::Mesh],
+            lock_mode: assetweft_core::LockMode::Byte,
+            contract: Some(head.contract.clone()),
+        };
+        reopened.propose_candidate(&proposal).unwrap();
+        assert!(matches!(
+            reopened.attempt_accept_candidate(&proposal.id).unwrap(),
+            Acceptance::Accepted { .. }
+        ));
+        let later = reopened.candidate_current("character").unwrap();
+        let managed = reopened.managed_object("mesh0").unwrap().unwrap();
+        reopened.close().unwrap();
+        assert_eq!(candidate_invoke(&args).0.stdout, out.stdout);
+        let owned = dir.path().join("objects").join(managed.content_hash);
+        assert!(owned.is_file());
+        fs::remove_file(&owned).unwrap();
+        let (replay, _) = candidate_invoke(&args);
+        assert_eq!(replay.status.code(), Some(code));
+        assert_eq!(replay.stdout, out.stdout);
+        let reopened = Application::open(&db).unwrap();
+        assert_eq!(reopened.candidate_attempt(&id).unwrap(), Some(expected));
+        assert_eq!(reopened.candidate_current("character").unwrap(), later);
+        assert!(!owned.exists());
+    }
+}
+#[test]
+fn candidate_attempt_database_identity_grammar_and_call_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut app, id) = candidate_attempt_fixture(dir.path(), "Accepted");
+    let before = app.candidate_current("character").unwrap();
+    for invalid in [
+        "missing",
+        "",
+        " candidate-1",
+        "candidate-1 ",
+        "..",
+        "invalid/id",
+    ] {
+        let expected = app.attempt_accept_candidate(invalid).unwrap_err();
+        let (out, value) = candidate_invoke(&candidate_args(
+            "attempt",
+            db.as_os_str(),
+            OsStr::new(invalid),
+        ));
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert_eq!(value["status"], "INVALID_INPUT");
+        assert_eq!(value["errors"][0]["message"], expected.to_string());
+        assert_eq!(value["results"], Value::Null);
+    }
+    let missing = dir.path().join("missing.sqlite");
+    let empty = dir.path().join("empty.sqlite");
+    fs::write(&empty, []).unwrap();
+    for (path, code, status) in [
+        (missing.as_path(), 2, "INVALID_INPUT"),
+        (dir.path(), 2, "INVALID_INPUT"),
+        (empty.as_path(), 3, "INPUT_INCOMPLETE"),
+    ] {
+        let (out, value) = candidate_invoke(&candidate_args(
+            "attempt",
+            path.as_os_str(),
+            OsStr::new(&id),
+        ));
+        assert_eq!(out.status.code(), Some(code), "{value}");
+        assert_eq!(value["status"], status);
+        assert_eq!(value["results"], Value::Null);
+    }
+    assert!(!missing.exists());
+    assert_eq!(fs::metadata(&empty).unwrap().len(), 0);
+    let valid = candidate_args("attempt", db.as_os_str(), OsStr::new(&id));
+    for tail in [
+        vec![OsStr::new("--extra")],
+        vec![OsStr::new("--report"), OsStr::new("PASS")],
+        vec![OsStr::new("--max-bytes"), OsStr::new("0")],
+    ] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("grammar α")];
+        args.extend(valid.clone());
+        args.extend(tail);
+        let (out, value) = candidate_invoke(&args);
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(value["call_id"], "grammar α");
+    }
+    for args in [
+        vec![OsStr::new("candidate"), OsStr::new("attempt")],
+        valid[..4].to_vec(),
+        vec![
+            OsStr::new("candidate"),
+            OsStr::new("attempt"),
+            OsStr::new("--candidate-id"),
+            OsStr::new(&id),
+        ],
+    ] {
+        assert_eq!(candidate_invoke(&args).0.status.code(), Some(2));
+    }
+    let (_, help) = candidate_invoke(&[
+        OsStr::new("candidate"),
+        OsStr::new("attempt"),
+        OsStr::new("--help"),
+    ]);
+    assert_eq!(help["status"], "HELP");
+    assert!(
+        help["results"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("--candidate-id")
+    );
+    assert_eq!(app.candidate_attempt(&id).unwrap(), None);
+    assert_eq!(app.candidate_current("character").unwrap(), before);
+}
+#[cfg(any(unix, windows))]
+#[test]
+fn candidate_attempt_broken_streams_retain_first_commits_and_domain_outcomes() {
+    use assetweft_core::candidate::Acceptance;
+    for mode in [
+        "Accepted",
+        "Rejected",
+        "Conflict",
+        "NoContract",
+        "Quality",
+        "Mismatch",
+    ] {
+        for stream in ["stderr", "stdout", "both"] {
+            let dir = tempfile::tempdir().unwrap();
+            let control = tempfile::tempdir().unwrap();
+            let (_, mut core, core_id) = candidate_attempt_fixture(control.path(), mode);
+            let expected = core.attempt_accept_candidate(&core_id).unwrap();
+            let (db, app, id) = candidate_attempt_fixture(dir.path(), mode);
+            let before = app.candidate_current("character").unwrap();
+            app.close().unwrap();
+            let args = candidate_args("attempt", db.as_os_str(), OsStr::new(&id));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_assetweft"));
+            command.args(&args);
+            if stream != "stderr" {
+                command.stdout(broken_output());
+            }
+            if stream != "stdout" {
+                command.stderr(broken_output());
+            }
+            let output = command.output().unwrap();
+            let (code, status, _) = candidate_attempt_projection(mode);
+            assert_eq!(
+                output.status.code(),
+                Some(if stream == "stderr" { code } else { 6 }),
+                "{mode}/{stream}"
+            );
+            if stream == "stderr" {
+                let v: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(v["status"], status);
+                assert_eq!(
+                    v["results"],
+                    json!({"scope":"local_fixture_candidate_acceptance_attempt","receipt":expected})
+                );
+            }
+            let reopened = Application::open(&db).unwrap();
+            assert_eq!(
+                reopened.candidate_attempt(&id).unwrap(),
+                Some(expected.clone())
+            );
+            let head = reopened.candidate_current("character").unwrap();
+            if let Acceptance::Accepted { current, .. } = expected {
+                assert_eq!(head, Some(current));
+            } else {
+                assert_eq!(head, before);
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, id) = candidate_attempt_fixture(dir.path(), "Accepted");
+    for invalid in [false, true] {
+        let mut args = candidate_args("attempt", db.as_os_str(), OsStr::new("missing"));
+        if invalid {
+            args.push(OsStr::new("--extra"));
+        }
+        let ordinary = candidate_invoke(&args).0;
+        assert_eq!(ordinary.status.code(), Some(2));
+        let failed = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&args)
+            .stderr(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), ordinary.status.code());
+        assert_eq!(failed.stdout, ordinary.stdout);
+        for both in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_assetweft"));
+            command.args(&args).stdout(broken_output());
+            if both {
+                command.stderr(broken_output());
+            }
+            assert_eq!(command.output().unwrap().status.code(), Some(6));
+        }
+    }
+    assert_eq!(app.candidate_attempt(&id).unwrap(), None);
+}

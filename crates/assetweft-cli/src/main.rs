@@ -1,15 +1,24 @@
-//! Responsibility: M6 bounded read-only CLI and v1 JSON wire DTOs.
-//! Dependencies: clap grammar, serde wire parsing, Assurance checks and Production specification APIs.
+//! Responsibility: M6 bounded machine CLI: read-only GLB/declaration checks plus persisted
+//! workflow status/cancel over a caller-supplied existing library; v1 JSON wire DTOs.
+//! Dependencies: clap grammar, serde wire parsing, Assurance checks, Production specification
+//! and the shared Application workflow use cases.
 //! Callers: humans, automation, C1 black-box tests.
-//! Invariants: one JSON line stdout; no generation, DB, shell or network calls;
-//! supplied context is a declaration, never authenticated by this process.
-use assetweft_core::{assurance as val, production::specification as spec};
-use clap::{Arg, Command, error::ErrorKind, value_parser};
+//! Invariants: one JSON line stdout; no generation, shell or network calls; workflow commands
+//! only parse, project and report persisted Production state, never execute or reconcile.
+//! Supplied context is a declaration, never authenticated by this process.
+use assetweft_core::{
+    application::Application,
+    assurance as val,
+    library::LibraryError,
+    production::specification as spec,
+    workflow::{Outcome, State, StepRecord},
+};
+use clap::{Arg, ArgMatches, Command, error::ErrorKind, value_parser};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::{
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 fn grammar() -> Command {
@@ -18,9 +27,23 @@ fn grammar() -> Command {
             .required(true)
             .value_parser(value_parser!(PathBuf))
     };
+    let db = || {
+        Arg::new("db")
+            .long("db")
+            .required(true)
+            .value_parser(value_parser!(PathBuf))
+    };
+    let run_id = || {
+        Arg::new("run-id")
+            .long("run-id")
+            .required(true)
+            .value_parser(value_parser!(String))
+    };
     Command::new("assetweft")
         .version(env!("CARGO_PKG_VERSION"))
-        .about("Read-only GLB inspect/validate and generation declaration plan; no execution")
+        .about(
+            "Bounded GLB/declaration checks plus persisted workflow status/cancel; no generation",
+        )
         .arg(Arg::new("call-id").long("call-id").global(true))
         .arg(
             Arg::new("max-bytes")
@@ -38,6 +61,25 @@ fn grammar() -> Command {
                     .default_value("static-mesh")
                     .value_parser(["static-mesh", "rigged-character", "animated-character"]),
             ),
+        )
+        .subcommand(
+            Command::new("workflow")
+                .about(
+                    "Persisted local workflow state: status reads, cancel requests; no execution",
+                )
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("status")
+                        .about("Read a run's cancellation request and ordered persisted steps")
+                        .arg(db())
+                        .arg(run_id()),
+                )
+                .subcommand(
+                    Command::new("cancel")
+                        .about("Persist a cancellation request; never stops processes or refunds")
+                        .arg(db())
+                        .arg(run_id()),
+                ),
         )
         .subcommand(
             Command::new("plan")
@@ -86,6 +128,171 @@ fn issue_exit(code: spec::IssueCode) -> i32 {
         spec::IssueCode::InputIncomplete => 3,
         spec::IssueCode::Unsupported => 5,
         spec::IssueCode::Fail => 1,
+    }
+}
+/// Rejects a missing or non-regular `--db` before any create-capable `Application::open`.
+/// This precheck is not race-proof and does not make the later open read-only.
+fn existing_database(path: &Path) -> Result<(), Value> {
+    if path.as_os_str().is_empty() {
+        return Err(error(
+            "db",
+            "INVALID_INPUT",
+            "--db must name an existing regular file",
+        ));
+    }
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(error(
+            "db",
+            "INVALID_INPUT",
+            "--db must be a regular file, not a directory or special file",
+        )),
+        Err(e) => Err(error(
+            "db",
+            "INVALID_INPUT",
+            format!("--db does not exist or cannot be read: {e}"),
+        )),
+    }
+}
+/// Deterministic `LibraryError` categories only; no error-string parsing and no typed NotFound.
+fn library_outcome(failure: &LibraryError) -> (i32, &'static str) {
+    match failure {
+        LibraryError::InvalidInput(_) | LibraryError::Constraint(_) => (2, "INVALID_INPUT"),
+        LibraryError::Uninitialized => (3, "INPUT_INCOMPLETE"),
+        LibraryError::FutureSchema(_) => (5, "UNSUPPORTED"),
+        LibraryError::Busy(_) | LibraryError::Io(_) => (6, "INTERNAL"),
+        LibraryError::Database(_) | LibraryError::UnknownValue(_) => (1, "FAIL"),
+    }
+}
+/// Local wire projection of a non-Serialize persisted record; exhaustive, meaning-preserving.
+fn step_value(record: &StepRecord) -> Result<Value, String> {
+    let (state, raw, evidence) = match (&record.state, record.outcome.as_ref()) {
+        (State::Pending, None) => ("pending", None, None),
+        (State::Running, None) => ("running", None, None),
+        (State::Succeeded, Some(Outcome::Success { raw, evidence })) => {
+            ("succeeded", Some(raw.as_str()), evidence.as_deref())
+        }
+        (State::Failed, Some(Outcome::Failure { raw, evidence })) => {
+            ("failed", Some(raw.as_str()), evidence.as_deref())
+        }
+        (state, outcome) => {
+            return Err(format!(
+                "inconsistent persisted step state: {state:?}/{outcome:?}"
+            ));
+        }
+    };
+    Ok(json!({"id":record.id,"state":state,"raw":raw,"evidence":evidence}))
+}
+/// Status reads steps then cancellation sequentially (not an atomic snapshot); cancel only
+/// persists the request and never asserts process, billing or budget effects.
+fn workflow_response(
+    wire: &str,
+    call_id: Option<&String>,
+    action: &str,
+    args: &ArgMatches,
+) -> (i32, Value) {
+    let db = args.get_one::<PathBuf>("db").expect("required");
+    let run = args.get_one::<String>("run-id").expect("required");
+    let finish =
+        |code, status, errors, results| (code, envelope(wire, call_id, status, errors, results));
+    if let Err(e) = existing_database(db) {
+        return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
+    }
+    if run.is_empty() {
+        return finish(
+            2,
+            "INVALID_INPUT",
+            json!([error(
+                "run_id",
+                "INVALID_INPUT",
+                "--run-id must not be empty"
+            )]),
+            Value::Null,
+        );
+    }
+    let mut app = match Application::open(db) {
+        Ok(app) => app,
+        Err(e) => {
+            return finish(
+                2,
+                "INVALID_INPUT",
+                json!([error("db", "INVALID_INPUT", e.to_string())]),
+                Value::Null,
+            );
+        }
+    };
+    if action == "status" {
+        let steps = match app.workflow_steps(run) {
+            Ok(steps) => steps,
+            Err(e) => {
+                let (code, status) = library_outcome(&e);
+                return finish(
+                    code,
+                    status,
+                    json!([error("workflow", status, e.to_string())]),
+                    Value::Null,
+                );
+            }
+        };
+        let cancelled = match app.workflow_cancelled(run) {
+            Ok(cancelled) => cancelled,
+            Err(e) => {
+                let (code, status) = library_outcome(&e);
+                return finish(
+                    code,
+                    status,
+                    json!([error("workflow", status, e.to_string())]),
+                    Value::Null,
+                );
+            }
+        };
+        let mut projected = Vec::with_capacity(steps.len());
+        for record in &steps {
+            match step_value(record) {
+                Ok(value) => projected.push(value),
+                Err(message) => {
+                    return finish(
+                        1,
+                        "FAIL",
+                        json!([error("workflow", "FAIL", message)]),
+                        Value::Null,
+                    );
+                }
+            }
+        }
+        return finish(
+            0,
+            "PASS",
+            json!([]),
+            json!({
+                "scope":"persisted_workflow_state",
+                "snapshot":"SEQUENTIAL_STEPS_THEN_CANCELLATION_NOT_ATOMIC",
+                "run_id":run,
+                "cancellation_requested":cancelled,
+                "steps":projected,
+            }),
+        );
+    }
+    match app.cancel_workflow(run) {
+        Ok(()) => finish(
+            0,
+            "PASS",
+            json!([]),
+            json!({
+                "scope":"persisted_cancellation_request_only",
+                "run_id":run,
+                "cancellation_requested":true,
+            }),
+        ),
+        Err(e) => {
+            let (code, status) = library_outcome(&e);
+            finish(
+                code,
+                status,
+                json!([error("workflow", status, e.to_string())]),
+                Value::Null,
+            )
+        }
     }
 }
 fn run() -> (i32, Value) {
@@ -148,6 +355,14 @@ fn run() -> (i32, Value) {
     };
     let (command, args) = matches.subcommand().expect("clap requires subcommand");
     let call_id = matches.get_one::<String>("call-id");
+    if command == "workflow" {
+        let (action, workflow_args) = args.subcommand().expect("clap requires a workflow action");
+        let wire = match action {
+            "status" => "workflow status",
+            _ => "workflow cancel",
+        };
+        return workflow_response(wire, call_id, action, workflow_args);
+    }
     let limits = val::ValidationLimits {
         max_bytes: *matches.get_one::<u64>("max-bytes").expect("default"),
     };

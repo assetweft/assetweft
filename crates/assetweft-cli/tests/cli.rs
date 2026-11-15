@@ -2,7 +2,11 @@
 //! Dependencies: core fixtures/APIs, std process, tempfile; called by C1 and native CI.
 //! Invariants: synthetic evidence only; no mocks; full stdout parse, repeat stability,
 //! bounded reads, Chinese/space paths and unchanged input bytes.
-use assetweft_core::{generation_spec as spec, validation as val};
+use assetweft_core::{
+    application::Application,
+    generation_spec as spec, validation as val,
+    workflow::{Outcome, State, Step},
+};
 use serde_json::{Value, json};
 use std::{
     ffi::OsStr,
@@ -407,5 +411,353 @@ fn stdout_and_stderr_failure_preserves_io_exit() {
             .status()
             .unwrap();
         assert_eq!(status.code(), Some(6));
+    }
+}
+
+fn step(id: &str, dependencies: &[&str]) -> Step {
+    Step {
+        id: id.into(),
+        dependencies: dependencies.iter().map(|d| (*d).into()).collect(),
+    }
+}
+fn workflow_args<'a>(action: &'a str, db: &'a OsStr, run: &'a OsStr) -> Vec<&'a OsStr> {
+    vec![
+        OsStr::new("workflow"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db,
+        OsStr::new("--run-id"),
+        run,
+    ]
+}
+// Seeds durable state only through the existing product API: initialize, create, then a
+// real succeeded record and a real claimed/running record left unresolved.
+fn seed_workflow(dir: &Path) -> PathBuf {
+    let path = dir.join("库 状态 db.sqlite");
+    let mut app = Application::open(&path).unwrap();
+    app.initialize_library().unwrap();
+    app.create_workflow(
+        "运行-α",
+        &[
+            step("准备", &[]),
+            step("生成", &["准备"]),
+            step("校验", &["生成"]),
+        ],
+    )
+    .unwrap();
+    assert!(
+        app.run_workflow_step("运行-α", |id| {
+            assert_eq!(id, "准备");
+            Outcome::Success {
+                raw: "raw:准备\nline2".into(),
+                evidence: Some("artifact:准备".into()),
+            }
+        })
+        .unwrap()
+    );
+    assert_eq!(
+        app.claim_workflow_step("运行-α").unwrap().as_deref(),
+        Some("生成")
+    );
+    app.close().unwrap();
+    path
+}
+
+#[test]
+fn workflow_status_projects_persisted_state_deterministically() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seed_workflow(dir.path());
+    let run = OsStr::new("运行-α");
+    let mut args = vec![OsStr::new("--call-id"), OsStr::new("wf-状态")];
+    args.extend(workflow_args("status", db.as_os_str(), run));
+    let (out, v) = invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], "workflow status");
+    assert_eq!(v["call_id"], "wf-状态");
+    assert_eq!(v["status"], "PASS");
+    assert_eq!(v["errors"], json!([]));
+    assert_eq!(v["results"]["run_id"], "运行-α");
+    assert_eq!(v["results"]["cancellation_requested"], false);
+    let steps = v["results"]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 3);
+    let ids: Vec<_> = steps.iter().map(|s| s["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["准备", "生成", "校验"]);
+    assert_eq!(steps[0]["state"], "succeeded");
+    assert_eq!(steps[0]["raw"], "raw:准备\nline2");
+    assert_eq!(steps[0]["evidence"], "artifact:准备");
+    assert_eq!(steps[1]["state"], "running");
+    assert_eq!(steps[1]["raw"], Value::Null);
+    assert_eq!(steps[1]["evidence"], Value::Null);
+    assert_eq!(steps[2]["state"], "pending");
+    assert_eq!(steps[2]["raw"], Value::Null);
+    assert_eq!(steps[2]["evidence"], Value::Null);
+    assert!(out.stderr.is_empty());
+    let (again, _) = invoke(&args);
+    assert_eq!(out.stdout, again.stdout);
+    assert_eq!(out.status.code(), again.status.code());
+    // A fresh process opening the same durable store sees identical values.
+    let app = Application::open(&db).unwrap();
+    assert_eq!(
+        app.workflow_steps("运行-α").unwrap()[0].state,
+        State::Succeeded
+    );
+    assert!(!app.workflow_cancelled("运行-α").unwrap());
+    drop(app);
+    // Existing product use cases advance state; status reports the new persisted facts.
+    let mut app = Application::open(&db).unwrap();
+    app.create_workflow("失败-运行", &[step("a", &[]), step("b", &["a"])])
+        .unwrap();
+    assert!(
+        app.run_workflow_step("失败-运行", |_| Outcome::Failure {
+            raw: "err:raw".into(),
+            evidence: None,
+        })
+        .unwrap()
+    );
+    app.finish_workflow_step(
+        "运行-α",
+        "生成",
+        &Outcome::Success {
+            raw: "raw:生成".into(),
+            evidence: None,
+        },
+    )
+    .unwrap();
+    app.close().unwrap();
+    let (out2, v2) = invoke(&args);
+    assert_eq!(out2.status.code(), Some(0));
+    assert_eq!(v2["results"]["steps"][1]["state"], "succeeded");
+    assert_eq!(v2["results"]["steps"][1]["raw"], "raw:生成");
+    assert_eq!(v2["results"]["steps"][1]["evidence"], Value::Null);
+    assert_eq!(v2["results"]["steps"][2]["state"], "pending");
+    let mut failed = vec![OsStr::new("--call-id"), OsStr::new("wf-failed")];
+    failed.extend(workflow_args(
+        "status",
+        db.as_os_str(),
+        OsStr::new("失败-运行"),
+    ));
+    let (out3, v3) = invoke(&failed);
+    assert_eq!(out3.status.code(), Some(0));
+    assert_eq!(v3["results"]["steps"][0]["state"], "failed");
+    assert_eq!(v3["results"]["steps"][0]["raw"], "err:raw");
+    assert_eq!(v3["results"]["steps"][0]["evidence"], Value::Null);
+    assert_eq!(v3["results"]["steps"][1]["state"], "pending");
+}
+
+#[test]
+fn workflow_cancel_persists_request_and_keeps_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seed_workflow(dir.path());
+    let args = workflow_args("cancel", db.as_os_str(), OsStr::new("运行-α"));
+    let (out, v) = invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], "workflow cancel");
+    assert_eq!(v["status"], "PASS");
+    assert_eq!(v["errors"], json!([]));
+    assert_eq!(v["results"]["run_id"], "运行-α");
+    assert_eq!(v["results"]["cancellation_requested"], true);
+    assert_eq!(v["results"]["scope"], "persisted_cancellation_request_only");
+    let rendered = v.to_string();
+    for overclaim in ["refund", "stopped", "released", "terminated"] {
+        assert!(!rendered.contains(overclaim), "{rendered}");
+    }
+    // Repeating the explicit request remains a scoped success with identical output.
+    let (again, v_again) = invoke(&args);
+    assert_eq!(out.stdout, again.stdout);
+    assert_eq!(v_again["results"]["cancellation_requested"], true);
+    // Reopen proves the durable flag and unchanged records/results.
+    let mut app = Application::open(&db).unwrap();
+    assert!(app.workflow_cancelled("运行-α").unwrap());
+    let steps = app.workflow_steps("运行-α").unwrap();
+    assert_eq!(steps[0].state, State::Succeeded);
+    assert_eq!(
+        steps[0].outcome,
+        Some(Outcome::Success {
+            raw: "raw:准备\nline2".into(),
+            evidence: Some("artifact:准备".into()),
+        })
+    );
+    assert_eq!(steps[1].state, State::Running);
+    assert_eq!(steps[2].state, State::Pending);
+    assert_eq!(app.claim_workflow_step("运行-α").unwrap(), None);
+    app.close().unwrap();
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(app.claim_workflow_step("运行-α").unwrap(), None);
+    drop(app);
+    // Status of the same run reports the request, not a stopped process.
+    let (out_status, v_status) = invoke(&workflow_args(
+        "status",
+        db.as_os_str(),
+        OsStr::new("运行-α"),
+    ));
+    assert_eq!(out_status.status.code(), Some(0));
+    assert_eq!(v_status["results"]["cancellation_requested"], true);
+    assert_eq!(v_status["results"]["steps"][1]["state"], "running");
+    assert_eq!(v_status["results"]["steps"][2]["state"], "pending");
+}
+
+#[test]
+fn workflow_errors_are_truthful_and_never_create_the_db() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("不存在 库.sqlite");
+    let run = OsStr::new("运行-α");
+    let mut args = vec![OsStr::new("--call-id"), OsStr::new("missing-db")];
+    args.extend(workflow_args("status", missing.as_os_str(), run));
+    let (out, v) = invoke(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["status"], "INVALID_INPUT");
+    assert_eq!(v["call_id"], "missing-db");
+    assert_eq!(v["errors"][0]["field_path"], "db");
+    assert_eq!(v["results"], Value::Null);
+    assert!(
+        !missing.exists(),
+        "CLI must not create the supplied db path"
+    );
+    // A directory (non-regular path) is rejected just as explicitly and left alone.
+    let dirdb = dir.path().join("目录 db");
+    fs::create_dir(&dirdb).unwrap();
+    let cancel = workflow_args("cancel", dirdb.as_os_str(), run);
+    let (out, v) = invoke(&cancel);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["errors"][0]["field_path"], "db");
+    assert!(dirdb.is_dir());
+    // Unknown run fails truthfully with the preserved core diagnostic.
+    let db = seed_workflow(dir.path());
+    let (out, v) = invoke(&workflow_args(
+        "status",
+        db.as_os_str(),
+        OsStr::new("不存在-run"),
+    ));
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(v["status"], "FAIL");
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown run")
+    );
+    let (out, _) = invoke(&workflow_args(
+        "cancel",
+        db.as_os_str(),
+        OsStr::new("不存在-run"),
+    ));
+    assert_eq!(out.status.code(), Some(1));
+    // Empty identity is rejected verbatim, never trimmed or substituted.
+    let (out, v) = invoke(&workflow_args("status", db.as_os_str(), OsStr::new("")));
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(v["status"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["field_path"], "run_id");
+    let app = Application::open(&db).unwrap();
+    assert!(!app.workflow_cancelled("运行-α").unwrap());
+    assert_eq!(
+        app.workflow_steps("运行-α").unwrap()[0].state,
+        State::Succeeded
+    );
+    drop(app);
+    // Missing required flags stay an argument error.
+    for argv in [
+        vec![OsStr::new("workflow"), OsStr::new("status")],
+        vec![
+            OsStr::new("workflow"),
+            OsStr::new("status"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+        ],
+        vec![
+            OsStr::new("workflow"),
+            OsStr::new("cancel"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+        ],
+    ] {
+        let (out, v) = invoke(&argv);
+        assert_eq!(out.status.code(), Some(2), "{argv:?}");
+        assert_eq!(v["status"], "INVALID_INPUT");
+    }
+    // An existing but uninitialized file is reported, never auto-initialized or migrated.
+    let empty = dir.path().join("空 库.sqlite");
+    fs::write(&empty, b"").unwrap();
+    let (out, v) = invoke(&workflow_args("status", empty.as_os_str(), run));
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(v["status"], "INPUT_INCOMPLETE");
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not initialized")
+    );
+    assert_eq!(fs::read(&empty).unwrap(), b"", "no auto-init/migration");
+    // Creation/execution/submission syntax does not exist and must fail truthfully.
+    for argv in [
+        vec![
+            OsStr::new("workflow"),
+            OsStr::new("submit"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+            OsStr::new("--run-id"),
+            run,
+        ],
+        vec![
+            OsStr::new("workflow"),
+            OsStr::new("run"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+            OsStr::new("--run-id"),
+            run,
+        ],
+        vec![OsStr::new("submit")],
+        vec![OsStr::new("create")],
+    ] {
+        let (out, v) = invoke(&argv);
+        assert_eq!(out.status.code(), Some(2), "{argv:?}");
+        assert_eq!(v["status"], "INVALID_INPUT");
+    }
+    let app = Application::open(&db).unwrap();
+    assert_eq!(
+        app.workflow_steps("运行-α").unwrap()[0].state,
+        State::Succeeded
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn workflow_protocol_survives_broken_streams() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seed_workflow(dir.path());
+    let mut args = vec![OsStr::new("--call-id"), OsStr::new("wf-id")];
+    args.extend(workflow_args(
+        "status",
+        db.as_os_str(),
+        OsStr::new("运行-α"),
+    ));
+    let ordinary = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&args)
+        .output()
+        .unwrap();
+    let broken_err = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(&args)
+        .stderr(broken_output())
+        .output()
+        .unwrap();
+    assert_eq!(broken_err.status.code(), ordinary.status.code());
+    assert_eq!(broken_err.stdout, ordinary.stdout);
+    let value: Value = serde_json::from_slice(&broken_err.stdout).unwrap();
+    assert_eq!(value["call_id"], "wf-id");
+    // A closed stdout must map to the existing INTERNAL exit 6 on success and error paths.
+    let mut missing = vec![OsStr::new("--call-id"), OsStr::new("wf-id")];
+    let missing_db = dir.path().join("缺失 库.sqlite");
+    missing.extend(workflow_args(
+        "status",
+        missing_db.as_os_str(),
+        OsStr::new("运行-α"),
+    ));
+    for argv in [args, missing] {
+        let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(&argv)
+            .stdout(broken_output())
+            .stderr(broken_output())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(6), "{argv:?}");
     }
 }

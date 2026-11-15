@@ -64,7 +64,11 @@ component identity/source checks and exact role/lock descriptor construction.
 `staging_application::{propose,read}` are actual use cases; Staging supplies exact
 Catalog owner facts and measured snapshots and freezes an internally constructed
 FrozenProposal. CandidateRead supplies the read-only query. Neither port exposes
-SQLite, paths, CAS handles or trusted acceptance reports. AcceptanceError's stable
+SQLite, paths, CAS handles or trusted acceptance reports. The read use case binds
+the persisted descriptor's embedded candidate id to its lookup key and rejects a
+mismatch before any acceptance measurement, storage lease or write; the acceptance
+commit and both receipt queries therefore reuse that single validated identity.
+AcceptanceError's stable
 categories are reused internally without changing the accepted acceptance core.
 
 `staging_sqlite` owns descriptor SQL/encoding and bounded managed-byte helpers.

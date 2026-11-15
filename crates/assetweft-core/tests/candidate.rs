@@ -4,7 +4,7 @@
 use assetweft_core::{
     LockMode,
     application::Application,
-    candidate::{Acceptance, Proposal},
+    candidate::{Acceptance, Candidate, Proposal},
     library::{AssetVersion, ComponentReference, ComponentRole, Presence},
 };
 use rusqlite::Connection;
@@ -612,4 +612,101 @@ fn persistent_storage_lease_is_bounded_busy_without_advancing() {
     );
     assert!(a.candidate(&p.id).unwrap().is_some());
     assert!(a.candidate_attempt(&p.id).unwrap().is_none());
+}
+
+fn candidate_receipts(path: &std::path::Path) -> Vec<(String, String)> {
+    let raw = Connection::open(path).unwrap();
+    let mut statement = raw
+        .prepare("SELECT candidate_id,receipt FROM aw_candidate_attempts ORDER BY candidate_id")
+        .unwrap();
+    statement
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<(String, String)>, _>>()
+        .unwrap()
+}
+
+/// Reproduce restored/corrupt data: an aw_candidates row whose descriptor embeds
+/// a different id. The real 005 migration forbids UPDATE, so the exact wire bytes
+/// are re-inserted under another primary key; no product write path is used.
+fn insert_restored_candidate(
+    path: &std::path::Path,
+    row_id: &str,
+    embedded_id: &str,
+    template: &Candidate,
+) {
+    let mut descriptor = serde_json::to_value(template).unwrap();
+    descriptor["id"] = serde_json::Value::String(embedded_id.into());
+    let encoded = serde_json::to_string(&descriptor).unwrap();
+    let raw = Connection::open(path).unwrap();
+    raw.execute(
+        "INSERT INTO aw_candidates(id,base_version,candidate_version,descriptor) VALUES(?1,?2,?3,?4)",
+        rusqlite::params![
+            row_id,
+            template.base_version,
+            template.candidate_version,
+            encoded
+        ],
+    )
+    .unwrap();
+}
+
+fn identity_error() -> assetweft_core::library::LibraryError {
+    assetweft_core::library::LibraryError::InvalidInput("candidate identity")
+}
+
+#[test]
+fn persisted_descriptor_identity_is_bound_to_the_lookup_key() {
+    let (d, mut a, p) = glb_setup();
+    let path = d.path().join("library.sqlite");
+    let candidate = a.propose_candidate(&p).unwrap();
+    let durable = a.attempt_accept_candidate(&p.id).unwrap();
+    assert!(matches!(&durable, Acceptance::Accepted { .. }));
+    let head = a.candidate_current("character").unwrap();
+    assert_eq!(head.as_ref().unwrap().revision, 1);
+    let receipts = candidate_receipts(&path);
+    assert_eq!(receipts.len(), 1);
+
+    // (1) row cand-a embeds the id of the accepted candidate.
+    insert_restored_candidate(&path, "cand-a", &candidate.id, &candidate);
+    // (2) embedded id has no aw_candidates row at all.
+    insert_restored_candidate(&path, "cand-c", "cand-ghost", &candidate);
+    // (3) embedded id names a real candidate that has no receipt yet.
+    let mut pending = p.clone();
+    pending.id = "cand-b2".into();
+    pending.candidate_version = "other".into();
+    let staged = a.propose_candidate(&pending).unwrap();
+    insert_restored_candidate(&path, "cand-d", &staged.id, &staged);
+
+    for row in ["cand-a", "cand-c", "cand-d"] {
+        assert_eq!(a.candidate(row), Err(identity_error()), "{row} read");
+        assert_eq!(
+            a.attempt_accept_candidate(row),
+            Err(identity_error()),
+            "{row} attempt"
+        );
+    }
+    // Catalog head and both receipts stay exactly as before, under both keys.
+    assert_eq!(a.candidate_current("character").unwrap(), head);
+    assert_eq!(candidate_receipts(&path), receipts);
+    for row in ["cand-a", "cand-c", "cand-d", "cand-ghost"] {
+        assert!(a.candidate_attempt(row).unwrap().is_none(), "{row} receipt");
+    }
+
+    // A matching identity keeps reading and keeps its original durable receipt.
+    assert_eq!(a.candidate(&p.id).unwrap(), Some(candidate.clone()));
+    assert_eq!(a.candidate_attempt(&p.id).unwrap(), Some(durable.clone()));
+    assert_eq!(a.attempt_accept_candidate(&p.id).unwrap(), durable);
+
+    // The identity mismatch must outrank component measurement/IO: the managed
+    // object that validation would read is gone, yet no byte/IO error surfaces.
+    let object = d
+        .path()
+        .join("objects")
+        .join(&candidate.proposed[0].measured_sha256);
+    fs::remove_file(&object).unwrap();
+    assert_eq!(a.attempt_accept_candidate("cand-a"), Err(identity_error()));
+    assert_eq!(a.candidate("cand-a"), Err(identity_error()));
+    assert_eq!(a.candidate_current("character").unwrap(), head);
+    assert_eq!(candidate_receipts(&path), receipts);
 }

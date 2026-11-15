@@ -1,6 +1,6 @@
 //! Responsibility: proposal/read use cases and sealed internally produced descriptor.
 //! Dependencies: staging domain and semantic capability only; callers: Application and the Production acceptance adapter.
-//! Invariants: input policy precedes IO, exact owner checks precede measurement, lock policy precedes freeze.
+//! Invariants: input policy precedes IO, exact owner checks precede measurement, lock policy precedes freeze, a supplied id may only name its own descriptor.
 use super::{
     domain::Candidate,
     staging_domain::{self, Proposal},
@@ -38,7 +38,15 @@ pub(crate) fn read(
     if !staging_domain::id_ok(id) {
         return Err(StagingError::InvalidInput("candidate id"));
     }
-    port.candidate(id)
+    match port.candidate(id)? {
+        // The descriptor is the only identity later used for measurement, Catalog
+        // advance and receipt rows. A restored row whose embedded id differs from its
+        // lookup key cannot be trusted, so fail before any measurement, lease or write.
+        Some(candidate) if candidate.id != id => {
+            Err(StagingError::InvalidInput("candidate identity"))
+        }
+        candidate => Ok(candidate),
+    }
 }
 
 #[cfg(test)]
@@ -53,6 +61,7 @@ mod tests {
         calls: Vec<String>,
         changed: bool,
         source: String,
+        stored: Option<Candidate>,
     }
     impl Staging for Port {
         fn owners(&mut self, _: &str, _: &str) -> Result<Owners, StagingError> {
@@ -92,7 +101,7 @@ mod tests {
     impl CandidateRead for Port {
         fn candidate(&mut self, _: &str) -> Result<Option<Candidate>, StagingError> {
             self.calls.push("read".into());
-            Ok(None)
+            Ok(self.stored.clone())
         }
     }
     fn proposal() -> Proposal {
@@ -111,6 +120,7 @@ mod tests {
             calls: vec![],
             changed: false,
             source: "TEST_FIXTURE".into(),
+            stored: None,
         }
     }
     #[test]
@@ -171,5 +181,22 @@ mod tests {
         );
         assert_eq!(read(&mut io, "id").unwrap(), None);
         assert_eq!(io.calls.last().unwrap(), "read");
+    }
+    #[test]
+    fn stored_descriptor_identity_must_equal_the_lookup_key() {
+        let mut io = port();
+        let mut mismatched = propose(&mut port(), &proposal()).unwrap();
+        mismatched.id = "other".into();
+        io.stored = Some(mismatched);
+        assert_eq!(
+            read(&mut io, "id"),
+            Err(StagingError::InvalidInput("candidate identity"))
+        );
+        assert_eq!(io.calls, ["read"]);
+        let mut io = port();
+        let matched = propose(&mut port(), &proposal()).unwrap();
+        io.stored = Some(matched.clone());
+        assert_eq!(read(&mut io, "id").unwrap(), Some(matched));
+        assert_eq!(io.calls, ["read"]);
     }
 }

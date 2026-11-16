@@ -1,0 +1,21 @@
+{
+  "name": "assetweft-viewport-static",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node build.mjs",
+    "compare": "node compare.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.9.0",
+    "three": "0.181.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.181.0",
+    "typescript": "5.9.3",
+    "esbuild": "0.25.12",
+    "pngjs": "7.0.0"
+  }
+}

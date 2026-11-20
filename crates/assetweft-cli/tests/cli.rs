@@ -6192,3 +6192,53 @@ fn motion_strike_writes_only_a_new_supported_glb() {
     assert_eq!(run(&output, &rejected).1["status"], "NOT_RUN");
     assert!(!rejected.exists());
 }
+
+#[test]
+fn motion_idle_checks_chain_structure_before_source_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/rigged-simple/RiggedSimple.glb");
+    let output = dir.path().join("clips.glb");
+    let run = |input: &Path| {
+        invoke(&[
+            OsStr::new("motion-strike"),
+            input.as_os_str(),
+            OsStr::new("--with-idle"),
+            OsStr::new("--out"),
+            output.as_os_str(),
+        ])
+    };
+    let (p, r) = run(&source);
+    assert!(p.status.success(), "{r}");
+    assert_eq!(r["results"]["constraint"], "fixed-root distal sway");
+    assert_eq!(r["results"]["idle_clip"], "AssetWeft_Idle");
+    fs::remove_file(&output).unwrap();
+
+    // Two equally unpinned derivatives. Preserve BIN, all labels and JSON chunk length.
+    let bytes = fs::read(&source).unwrap();
+    for (old, new, reason) in [
+        ("[3,4]", "[4,3]", "topology matched"), // joint ordering does not change parentage
+        (
+            "\"skeleton\":3,\"joints\":[3,4]",
+            "\"skeleton\":1,\"joints\":[1,4]",
+            "direct parent",
+        ),
+    ] {
+        let mut changed = bytes.clone();
+        let at = changed
+            .windows(old.len())
+            .position(|s| s == old.as_bytes())
+            .unwrap();
+        changed[at..at + old.len()].copy_from_slice(new.as_bytes());
+        let other = dir.path().join("other.glb");
+        fs::write(&other, changed).unwrap();
+        let (p, r) = run(&other);
+        assert_eq!(p.status.code(), Some(1));
+        assert_eq!(r["status"], "NOT_RUN");
+        assert!(
+            r["errors"][0]["message"].as_str().unwrap().contains(reason),
+            "{r}"
+        );
+        assert!(!output.exists());
+    }
+}

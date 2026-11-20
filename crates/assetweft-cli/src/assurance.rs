@@ -101,6 +101,9 @@ pub(super) fn rig_profile_response(
             path("out"),
             limits,
         ),
+        "motion-strike" if args.get_flag("with-idle") => {
+            assetweft_core::motion::add_strike_with_idle(path("file"), path("out"), limits)
+        }
         "motion-strike" => assetweft_core::motion::add_strike(path("file"), path("out"), limits),
         _ => unreachable!("clap grammar"),
     };

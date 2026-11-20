@@ -53,6 +53,7 @@ fn grammar() -> Command {
         .subcommand(Command::new("inspect").arg(file()))
         .subcommand(Command::new("motion-strike")
             .about("Append the in-place strike clip to Cesium Rigged Simple")
+            .arg(Arg::new("with-idle").long("with-idle").help("Include a looping fixed-root distal sway").action(clap::ArgAction::SetTrue))
             .arg(file())
             .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf))))
         .subcommand(Command::new("rig-bend")

@@ -13,7 +13,7 @@ query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
-assetweft [--call-id ID] motion-strike RiggedSimple.glb --out NEW_FILE.glb
+assetweft [--call-id ID] motion-strike RiggedSimple.glb [--with-idle] --out NEW_FILE.glb
 assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
 assetweft [--call-id ID] validate FILE.glb [--role static-mesh|rigged-character|animated-character]
 assetweft [--call-id ID] plan --request request.json --trusted-context context.json

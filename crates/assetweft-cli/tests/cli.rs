@@ -5925,3 +5925,86 @@ fn catalog_preview_wav_uses_complete_frames_of_the_requested_version() {
     assert_eq!(fs::read(dir.path().join("one.source")).unwrap(), source);
     assert_eq!(fs::read(db).unwrap(), before);
 }
+
+#[test]
+fn catalog_preview_glb_draws_transformed_geometry_for_each_version() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let original = include_bytes!("../../../examples/godot-static/triangle.glb");
+    let mut changed = original.to_vec();
+    // Move the third vertex from (0,1,0) to (1,1,0), preserving both extrema.
+    let json_len = u32::from_le_bytes(original[12..16].try_into().unwrap()) as usize;
+    let x = 28 + json_len + 24;
+    changed[x..x + 4].copy_from_slice(&1.0f32.to_le_bytes());
+    let a = add_preview_source(&db, "left", original, "GLB");
+    let b = add_preview_source(&db, "right", &changed, "glb");
+    let mut invalid = original.to_vec();
+    invalid[x + 12..x + 14].copy_from_slice(&9u16.to_le_bytes());
+    add_preview_source(&db, "bad-index", &invalid, "GLB");
+    let mut unsupported = original.to_vec();
+    let scene = original
+        .windows(10)
+        .position(|w| w == br#""scene":0,"#)
+        .unwrap();
+    unsupported[scene..scene + 10].fill(b' '); // no selected default scene
+    add_preview_source(&db, "no-scene", &unsupported, "GLB");
+    let db_before = fs::read(&db).unwrap();
+    for id in ["bad-index", "no-scene"] {
+        let (out, value) = invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert!(value["results"].is_null());
+        assert!(!root.path().join("previews").exists());
+    }
+    for (id, bytes, cas) in [("left", original.as_slice(), a), ("right", &changed[..], b)] {
+        let value = export_call(&db, "preview", id);
+        assert_eq!(value["scope"], "local_version_png_preview");
+        let target = root.path().join(value["relative_path"].as_str().unwrap());
+        assert_eq!(
+            target,
+            root.path()
+                .join("previews")
+                .join(format!("{}.glb-v1.png", sha256(id.as_bytes())))
+        );
+        let image = fs::read(&target).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&image))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(
+            (info.width, info.height, info.color_type),
+            (128, 128, png::ColorType::Rgba)
+        );
+        for y in 0..128 {
+            for x in 0..128 {
+                // Normalized position in the world-space 2:3 bounding rectangle, in units of 1/448.
+                let u = 224 + 3 * (2 * x + 1 - 128);
+                let v = 2 * (240 - 2 * y - 1);
+                let inside = (0..=448).contains(&u)
+                    && (0..=448).contains(&v)
+                    && if id == "left" { u + v <= 448 } else { u >= v };
+                let i = ((y * 128 + x) * 4) as usize;
+                assert_eq!(
+                    pixels[i..i + 4],
+                    if inside { [0, 255, 0, 255] } else { [0; 4] },
+                    "{id} {x},{y}"
+                );
+            }
+        }
+        assert_eq!(export_call(&db, "preview", id), value);
+        fs::write(&target, b"conflict").unwrap();
+        let (out, _) = invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(fs::read(target).unwrap(), b"conflict");
+        assert_eq!(fs::read(cas).unwrap(), bytes);
+        assert_eq!(
+            fs::read(root.path().join(format!("{id}.source"))).unwrap(),
+            bytes
+        );
+    }
+    assert_eq!(fs::read(db).unwrap(), db_before);
+}

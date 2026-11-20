@@ -224,14 +224,14 @@ requires the kernel to report mount roots through statx and Windows rejects repa
 paths concurrently outside the lease or forging private receipt state is outside
 that storage contract. Backup and sync do not consume export receipts.
 
-## Exact-version PNG and WAV previews
+## Exact-version PNG, WAV and GLB previews
 
 `Application::preview(version_id)` and `catalog preview --db DB --version-id ID`
-resolve the immutable version and require its declared source format to be PNG or WAV
+resolve the immutable version and require its declared source format to be PNG, WAV or GLB
 (case-insensitive). Under the common storage lease, the adapter checks database
 identity, store ownership and the managed binding, then verifies the source file
 against the registered length and SHA-256 on every call. Unknown versions return
-CLI `INVALID_INPUT` (2). A registered managed PNG or WAV whose file is absent from its
+CLI `INVALID_INPUT` (2). A registered managed PNG, WAV or GLB whose file is absent from its
 validated object directory returns `INPUT_INCOMPLETE` (3). Both return null results.
 
 PNG input must be a single static RGBA8 PNG, at most 16 MiB, 4096 pixels on either
@@ -265,3 +265,28 @@ capped at one second. It preserves sample values, channel order and rate and
 rewrites both size fields. The maximum output size is 192,044 bytes.
 `previews/<sha256 of UTF-8 version ID>.v1.wav` uses the same source verification,
 identical-content reuse and no-replacement publication as PNG.
+
+GLB v1 produces a 128 × 128 transparent sRGB PNG of the indexed triangle
+silhouette, filled with the material's opaque base color. It views world XY
+from +Z with +Y up. The referenced vertices' projected bounds are centered
+with a uniform scale of 112 pixels per longest extent. Coverage is tested at
+pixel centers. With a single flat color shared by all triangles, overlap has
+the same color at every depth. Empty coverage (including an edge-on mesh)
+returns an error.
+
+The 64 KiB input must be a glTF 2.0 GLB with JSON and embedded BIN chunks,
+one explicit default scene, one root mesh node using TRS, one mesh, one
+TRIANGLES primitive and one double-sided, nonemissive, opaque, fully rough
+nonmetal material. Only its base color factor is used, converted from linear
+RGB to sRGB. The primitive contains only FLOAT VEC3 POSITION and unsigned
+16-bit indices, each tightly packed in its own buffer view in the same BIN.
+Counts are capped at 768 each (256 triangles). Declared extrema must match
+the decoded positions. Hierarchies, matrix nodes, other attributes, sparse
+accessors, textures, external buffers, morphs, skins, animation, cameras and
+extensions are outside this rendition. No external resource is opened.
+Coordinate, accessor, triangle and color semantics follow the
+[Khronos glTF 2.0.1 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).
+
+The CLI returns the PNG output scope `local_version_png_preview` and
+`previews/<sha256 of UTF-8 version ID>.glb-v1.png`. Source verification,
+identical-content reuse and conflict handling follow the common preview contract.

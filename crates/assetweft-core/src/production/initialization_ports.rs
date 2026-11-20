@@ -12,7 +12,7 @@ pub(crate) struct BaseOwner {
     pub asset_id: String,
     pub source: String,
 }
-pub(crate) trait Initialization {
+pub(crate) trait Initialization: super::rigged_simple::InspectOwner {
     fn base_owner(&mut self, version: &str) -> Result<BaseOwner, InitializationError>;
     /// The contract-validated bound is enforced on the actual file before CAS hashing.
     fn snapshot(

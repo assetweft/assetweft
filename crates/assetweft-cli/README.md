@@ -628,6 +628,23 @@ A successful command freezes the measured descriptor under
 `candidate attempt` records `NotRun` for the absent contract. Read that
 historical result with `candidate receipt`.
 
+### Advance a local Rigged Simple head
+
+Use the following contract JSON with `candidate initialize --db DB --version-id ORIGINAL --contract FILE`.
+Include the same object in the proposal's `contract` field and use a fresh candidate ID.
+
+```json
+{"contract_id":"RIGGED_SIMPLE_MOTION_STRUCTURE_V1","max_component_bytes":16777216,"required_quality":[]}
+```
+
+Stage with `candidate propose-rigged-simple-motion`, then run
+`candidate attempt --db DB --candidate-id ID`. The durable receipt identifies
+the two structurally validated GLBs, their managed mesh/material/rig/motion
+references, and the local head. A stale expected version or revision yields
+Conflict and preserves both candidates. Retry returns the original receipt.
+GLB structure and exact locked dependencies are the extent of this decision.
+Visual quality, Blender playback, engine import and workflow scheduling are NOT_RUN.
+
 ## Local fixture candidate acceptance attempt (AW-033:B bounded slice)
 
 `candidate attempt --db EXISTING_DB --candidate-id ID` passes the ID verbatim to

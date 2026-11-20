@@ -123,5 +123,19 @@ The separate `Application::propose_rigged_simple_motion` entry admits just the
 pinned original and idle/strike GLB pair. The four managed component versions
 bind exact indexed payloads to their owner's bytes. Mesh, materials and rig
 must also reuse the base version IDs. The normal freeze transaction rechecks
-references and preserves the immutable descriptor. This profile has no
-acceptance contract or real-asset current-head operation.
+references and preserves the immutable descriptor. With no declared contract this path retains its original staging-only scope.
+
+## Opt-in Rigged Simple structural Current
+
+An omitted contract retains the PR127 staging scope and its historical NotRun
+receipt. A new proposal may predeclare `RIGGED_SIMPLE_MOTION_STRUCTURE_V1`
+with a fixed 16 MiB ceiling per managed object and empty required_quality.
+Initialization validates the original owner and its four dependencies. Attempt
+remeasures both pinned owners and their complete indexed dependency projections,
+checks their frozen references and the three unchanged locks, and runs the
+Assurance ANIMATED_CHARACTER format and bound-joint role check on both GLBs.
+The report's two evidence rows identify the whole owners. The candidate
+snapshots identify each of the eight component selections. The existing
+Catalog conditional update and Production receipt share one transaction.
+Visual quality, playback, engine behavior, scheduling and rights verification
+remain unmeasured. Schema 6 and the fixture wire contract are preserved.

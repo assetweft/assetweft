@@ -66,6 +66,26 @@ pub(crate) fn attempt(
     let candidate = ports
         .candidate(id)?
         .ok_or(AcceptanceError::InvalidInput("missing candidate"))?;
+    let structural_contract = candidate
+        .contract
+        .as_ref()
+        .filter(|c| c.contract_id == super::rigged_simple::STRUCTURE);
+    if let Some(contract) = structural_contract {
+        super::rigged_simple::check_contract(contract)?;
+        let report = super::rigged_simple::check_pair(ports, &candidate)?;
+        let decision = if report_passes(&report, 2) {
+            Decision::Eligible(report)
+        } else {
+            Decision::Terminal(Box::new(Acceptance::Rejected {
+                candidate: candidate.clone(),
+                report,
+            }))
+        };
+        return ports.commit_acceptance(VerifiedAcceptance {
+            candidate,
+            decision,
+        });
+    }
     let pending = match &candidate.contract {
         None => Some("no predeclared GLB structure contract"),
         Some(c) if !c.required_quality.is_empty() => Some("required quality NOT_RUN"),
@@ -124,6 +144,15 @@ mod tests {
         base_error: Option<AcceptanceError>,
         calls: Vec<&'static str>,
         head: Option<Current>,
+    }
+    impl crate::production::rigged_simple::InspectOwner for Ports {
+        fn inspect_owner(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::production::rigged_simple::CheckedOwner, AcceptanceError> {
+            panic!("fixture contract reached Rigged Simple validation")
+        }
     }
     impl AcceptanceInputs for Ports {
         fn existing_receipt(&mut self, _: &str) -> Result<Option<Acceptance>, AcceptanceError> {

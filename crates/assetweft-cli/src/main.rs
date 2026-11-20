@@ -135,7 +135,7 @@ fn grammar() -> Command {
                 )
                 .subcommand(
                     Command::new("current")
-                        .about("Read stored local fixture head and contract; no fresh validation")
+                        .about("Read stored local head and contract; no fresh validation")
                         .arg(db())
                         .arg(Arg::new("asset-id").long("asset-id").required(true)
                             .value_parser(value_parser!(String))),
@@ -161,11 +161,11 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("candidate")
-                .about("Stage local candidates, attempt fixture contracts or query stored records")
+                .about("Stage local candidates, attempt declared contracts or query stored records")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("initialize")
-                        .about("Initialize an absent local fixture head under a declared contract")
+                        .about("Initialize an absent local head under a declared contract")
                         .arg(db())
                         .arg(Arg::new("version-id").long("version-id").required(true)
                             .value_parser(value_parser!(String)))
@@ -187,7 +187,7 @@ fn grammar() -> Command {
                 )
                 .subcommand(
                     Command::new("attempt")
-                        .about("Attempt a local fixture acceptance contract; may commit a receipt and head")
+                        .about("Attempt a declared local structural contract; may commit a receipt and head")
                         .arg(db())
                         .arg(Arg::new("candidate-id").long("candidate-id").required(true)
                             .value_parser(value_parser!(String))),

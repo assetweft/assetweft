@@ -30,6 +30,15 @@ fn record(conn: &Connection, id: &str, result: &Acceptance) -> Result<(), Librar
     Ok(())
 }
 
+impl crate::production::rigged_simple::InspectOwner for SqliteAcceptance<'_> {
+    fn inspect_owner(
+        &mut self,
+        version: &str,
+        pin: &str,
+    ) -> Result<crate::production::rigged_simple::CheckedOwner, AcceptanceError> {
+        crate::production::staging_sqlite::inspect_rigged_owner(self.conn, self.root, version, pin)
+    }
+}
 impl AcceptanceInputs for SqliteAcceptance<'_> {
     fn existing_receipt(&mut self, id: &str) -> Result<Option<Acceptance>, AcceptanceError> {
         crate::production::initialization_application::read(

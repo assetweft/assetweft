@@ -19,7 +19,7 @@ fn invalid(s: &'static str) -> LibraryError {
     LibraryError::InvalidInput(s)
 }
 /// Existing ceiling for managed staging when no fixture contract is declared.
-const MANAGED_BYTE_CEILING: u64 = 16 * 1024 * 1024;
+const MANAGED_BYTE_CEILING: u64 = super::rigged_simple::BYTE_LIMIT;
 pub(crate) struct SqliteStaging<'a> {
     pub conn: &'a mut Connection,
     pub root: &'a Path,
@@ -54,69 +54,134 @@ impl super::staging_ports::RiggedSimpleStaging for SqliteStaging<'_> {
         owner: &str,
         expected_sha256: &str,
     ) -> Result<Vec<ComponentSnapshot>, StagingError> {
-        use crate::motion::digest;
-        use crate::{
-            assurance::{ValidationLimits, read_bounded},
-            motion::components::rigged_simple_components,
-        };
-        let metadata = crate::catalog::sqlite_metadata::asset_version(self.conn, owner)?
-            .ok_or(StagingError::InvalidInput("owner version"))?;
-        if metadata.content_hash != expected_sha256
-            || metadata.source_format != "GLB"
-            || metadata.license_id != "CC-BY-4.0"
-        {
-            return Err(StagingError::InvalidInput("Rigged Simple owner profile"));
-        }
-        let object = measured(self.conn, self.root, owner)?;
-        let bytes = read_bounded(
-            &self.root.join("objects").join(&object.content_hash),
-            ValidationLimits {
-                max_bytes: object.byte_length,
-            },
-        )
-        .map_err(|e| StagingError::Io(e.to_string()))?;
-        if digest(&bytes) != expected_sha256 {
-            return Err(StagingError::InvalidInput("owner byte drift"));
-        }
-        let mut parts = rigged_simple_components(&bytes).map_err(StagingError::InvalidInput)?;
-        let refs = crate::catalog::sqlite_metadata::component_references(self.conn, owner)?;
-        let mut snapshot = Vec::new();
-        for r in refs {
-            super::staging_domain::component_identity(
-                &snapshot,
-                r.role.as_str(),
-                &r.component_version_id,
-            )?;
-            let index = parts
-                .iter()
-                .position(|(role, _)| *role == r.role)
-                .ok_or(StagingError::InvalidInput("Rigged Simple component roles"))?;
-            let (_, expected) = parts.swap_remove(index);
-            let component =
-                crate::catalog::sqlite_metadata::asset_version(self.conn, &r.component_version_id)?
-                    .ok_or(StagingError::InvalidInput("component version"))?;
-            if component.source == "TEST_FIXTURE"
-                || component.license_id != "CC-BY-4.0"
-                || component.source_format != "JSON"
-                || component.content_hash != digest(&expected)
-            {
-                return Err(StagingError::InvalidInput(
-                    "Rigged Simple component profile",
-                ));
-            }
-            let measured = measured(self.conn, self.root, &r.component_version_id)?;
-            snapshot.push(ComponentSnapshot {
-                role: r.role.as_str().into(),
-                version: r.component_version_id,
-                measured_sha256: measured.content_hash,
-            });
-        }
-        if !parts.is_empty() {
-            return Err(StagingError::InvalidInput("Rigged Simple component roles"));
-        }
-        Ok(snapshot)
+        rigged_simple_parts(self.conn, self.root, owner, expected_sha256).map(|owner| owner.parts)
     }
 }
+struct RiggedSimpleParts {
+    metadata: crate::library::AssetVersion,
+    parts: Vec<ComponentSnapshot>,
+    bytes: Vec<u8>,
+}
+
+fn rigged_simple_parts(
+    conn: &mut Connection,
+    root: &Path,
+    owner: &str,
+    expected_sha256: &str,
+) -> Result<RiggedSimpleParts, StagingError> {
+    use crate::motion::digest;
+    use crate::{
+        assurance::{ValidationLimits, read_bounded},
+        motion::components::rigged_simple_components,
+    };
+    let metadata = crate::catalog::sqlite_metadata::asset_version(conn, owner)?
+        .ok_or(StagingError::InvalidInput("owner version"))?;
+    if metadata.content_hash != expected_sha256
+        || metadata.source_format != "GLB"
+        || metadata.license_id != "CC-BY-4.0"
+    {
+        return Err(StagingError::InvalidInput("Rigged Simple owner profile"));
+    }
+    let object = measured(conn, root, owner)?;
+    let bytes = read_bounded(
+        &root.join("objects").join(&object.content_hash),
+        ValidationLimits {
+            max_bytes: object.byte_length,
+        },
+    )
+    .map_err(|e| StagingError::Io(e.to_string()))?;
+    if digest(&bytes) != expected_sha256 {
+        return Err(StagingError::InvalidInput("owner byte drift"));
+    }
+    let mut parts = rigged_simple_components(&bytes).map_err(StagingError::InvalidInput)?;
+    let refs = crate::catalog::sqlite_metadata::component_references(conn, owner)?;
+    let mut snapshot = Vec::new();
+    for r in refs {
+        super::staging_domain::component_identity(
+            &snapshot,
+            r.role.as_str(),
+            &r.component_version_id,
+        )?;
+        let index = parts
+            .iter()
+            .position(|(role, _)| *role == r.role)
+            .ok_or(StagingError::InvalidInput("Rigged Simple component roles"))?;
+        let (_, expected) = parts.swap_remove(index);
+        let component =
+            crate::catalog::sqlite_metadata::asset_version(conn, &r.component_version_id)?
+                .ok_or(StagingError::InvalidInput("component version"))?;
+        if component.source == "TEST_FIXTURE"
+            || component.license_id != "CC-BY-4.0"
+            || component.source_format != "JSON"
+            || component.content_hash != digest(&expected)
+        {
+            return Err(StagingError::InvalidInput(
+                "Rigged Simple component profile",
+            ));
+        }
+        let measured = measured(conn, root, &r.component_version_id)?;
+        snapshot.push(ComponentSnapshot {
+            role: r.role.as_str().into(),
+            version: r.component_version_id,
+            measured_sha256: measured.content_hash,
+        });
+    }
+    if !parts.is_empty() {
+        return Err(StagingError::InvalidInput("Rigged Simple component roles"));
+    }
+    Ok(RiggedSimpleParts {
+        metadata,
+        parts: snapshot,
+        bytes,
+    })
+}
+
+pub(crate) fn inspect_rigged_owner(
+    conn: &mut Connection,
+    root: &Path,
+    version: &str,
+    pin: &str,
+) -> Result<super::rigged_simple::CheckedOwner, StagingError> {
+    use crate::assurance::{RoleRequirement, SourceClass, SourceDeclaration, checks};
+    let owner = rigged_simple_parts(conn, root, version, pin)?;
+    let base = pin == crate::assurance::rig_blender::RIGGED_SIMPLE;
+    if (base && owner.metadata.source == "TEST_FIXTURE")
+        || (!base && owner.metadata.source != "PROCEDURAL")
+    {
+        return Err(StagingError::InvalidInput(
+            "Rigged Simple owner source declaration",
+        ));
+    }
+    let requirement = RoleRequirement::AnimatedCharacter;
+    let checked = checks::validate_bytes(
+        &owner.bytes,
+        requirement,
+        SourceDeclaration::declared(
+            SourceClass::parse(&owner.metadata.source).unwrap_or(SourceClass::Unknown),
+        ),
+    );
+    let evidence = ComponentEvidence {
+        role: if base {
+            "base_owner"
+        } else {
+            "candidate_owner"
+        }
+        .into(),
+        version_id: version.into(),
+        sha256: checked.file_sha256,
+        checker_version: checked.checker_version.into(),
+        requirement: requirement.as_str().into(),
+        format_status: checked.format_status.as_str().into(),
+        role_status: checked.role.status.as_str().into(),
+        not_run: checked.not_run.iter().map(|s| (*s).into()).collect(),
+    };
+    Ok(super::rigged_simple::CheckedOwner {
+        asset_id: owner.metadata.asset_id,
+        parts: owner.parts,
+        structure: evidence,
+    })
+}
+
 fn freeze(
     conn: &mut Connection,
     root: &Path,

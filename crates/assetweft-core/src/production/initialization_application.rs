@@ -32,6 +32,16 @@ pub(crate) fn initialize(
     if !id_ok(version) {
         return Err(InitializationError::InvalidInput("version identity"));
     }
+    if contract.contract_id == super::rigged_simple::STRUCTURE {
+        super::rigged_simple::check_contract(contract)?;
+        let base = super::rigged_simple::check_base(port, version)?;
+        return port.initialize(VerifiedInitialization {
+            asset_id: base.asset_id,
+            version,
+            contract,
+            snapshots: base.parts,
+        });
+    }
     check_contract(contract)?;
     if !contract.required_quality.is_empty() {
         return Err(InitializationError::InvalidInput(
@@ -117,6 +127,15 @@ mod tests {
             version: "component".into(),
             measured_sha256: "a".repeat(64),
         }]
+    }
+    impl crate::production::rigged_simple::InspectOwner for Port {
+        fn inspect_owner(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::production::rigged_simple::CheckedOwner, InitializationError> {
+            panic!("fixture contract reached Rigged Simple validation")
+        }
     }
     impl Initialization for Port {
         fn base_owner(&mut self, version: &str) -> Result<BaseOwner, InitializationError> {

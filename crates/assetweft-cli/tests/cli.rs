@@ -783,6 +783,124 @@ fn create_args<'a>(db: &'a OsStr, run: &'a OsStr, steps: &'a OsStr) -> Vec<&'a O
 }
 
 #[test]
+fn failed_historical_upgrade_preserves_library_after_cli_exit() {
+    use assetweft_core::sqlite::open_and_configure;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let baseline = dir.path().join("before.sqlite");
+    let bytes = b"historical mesh";
+    let hash = sha256(bytes);
+    let objects = dir.path().join("objects");
+    fs::create_dir(&objects).unwrap();
+    fs::write(objects.join(&hash), bytes).unwrap();
+    let owner = dir.path().join(".aw-object-owner");
+    fs::write(&owner, b"library.sqlite").unwrap();
+
+    let (conn, _) = open_and_configure(&db).unwrap();
+    conn.execute_batch(include_str!(
+        "../../assetweft-core/src/library/001_initial.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../assetweft-core/src/library/002_objects.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TABLE aw_schema_version (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), version INTEGER NOT NULL CHECK(version > 0));
+         INSERT INTO aw_schema_version VALUES(1,2);
+         INSERT INTO aw_assets VALUES('character'),('mesh');"
+    ).unwrap();
+    for (asset, version) in [("character", "character-v1"), ("mesh", "mesh-v1")] {
+        conn.execute(
+            "INSERT INTO aw_asset_versions VALUES(?1,?2,?3,'input','synthetic','UNKNOWN',0,'UNKNOWN','local','BIN','1.0.0','UNKNOWN')",
+            [version, asset, &hash],
+        ).unwrap();
+    }
+    conn.execute(
+        "INSERT INTO aw_objects VALUES(?1,?2,0,1)",
+        (&hash, bytes.len() as i64),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO aw_managed_versions VALUES('mesh-v1',?1)",
+        [&hash],
+    )
+    .unwrap();
+    // A legal v2 index collides late in 006, after the intervening migrations have run.
+    conn.execute_batch(
+        "INSERT INTO aw_component_references VALUES('character-v1','mesh','mesh-v1');
+         CREATE INDEX aw_feedback_version_order ON aw_assets(asset_id);",
+    )
+    .unwrap();
+    conn.execute("VACUUM INTO ?1", [baseline.to_str().unwrap()])
+        .unwrap();
+    drop(conn);
+
+    let args = library_init_args(db.as_os_str());
+    let (failed, result) = invoke(&args);
+    assert_eq!(failed.status.code(), Some(1), "{result}");
+    assert!(
+        result["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("index aw_feedback_version_order already exists"),
+        "{result}"
+    );
+
+    let (conn, _) = open_and_configure(&db).unwrap();
+    conn.execute("ATTACH ?1 AS original", [baseline.to_str().unwrap()])
+        .unwrap();
+    // Compare schema definitions and every row of every v2 table in both directions.
+    for table in [
+        "sqlite_schema",
+        "aw_schema_version",
+        "aw_assets",
+        "aw_asset_versions",
+        "aw_component_references",
+        "aw_objects",
+        "aw_managed_versions",
+    ] {
+        let columns = if table == "sqlite_schema" {
+            "type,name,tbl_name,sql"
+        } else {
+            "*"
+        };
+        for (left, right) in [("original", "main"), ("main", "original")] {
+            let sql = format!(
+                "SELECT EXISTS(SELECT {columns} FROM {left}.{table}
+                EXCEPT SELECT {columns} FROM {right}.{table})"
+            );
+            let differs: bool = conn.query_row(&sql, [], |r| r.get(0)).unwrap();
+            assert!(!differs, "{left}.{table} differs from {right}.{table}");
+        }
+    }
+    assert_eq!(fs::read(&owner).unwrap(), b"library.sqlite");
+    assert_eq!(fs::read(objects.join(&hash)).unwrap(), bytes);
+
+    conn.execute_batch("DROP INDEX main.aw_feedback_version_order")
+        .unwrap();
+    drop(conn);
+    let (retried, result) = invoke(&args);
+    assert!(retried.status.success(), "{result}");
+    let (conn, _) = open_and_configure(&db).unwrap();
+    let version: i64 = conn
+        .query_row("SELECT version FROM aw_schema_version", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 6);
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(
+        app.managed_object("mesh-v1").unwrap().unwrap().content_hash,
+        hash
+    );
+    let refs = app.component_references("character-v1").unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].component_version_id, "mesh-v1");
+}
+
+#[test]
 fn library_init_create_status_cancel_durable_chain() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("显式 库.sqlite");

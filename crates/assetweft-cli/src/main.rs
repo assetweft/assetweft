@@ -100,13 +100,11 @@ fn grammar() -> Command {
                         .arg(Arg::new("reference").long("reference").required(true)
                             .value_parser(value_parser!(PathBuf))),
                 )
-                .subcommand(
-                    Command::new("version")
-                        .about("Read stored exact version metadata; no byte validation")
-                        .arg(db())
-                        .arg(Arg::new("version-id").long("version-id").required(true)
-                            .value_parser(value_parser!(String))),
-                )
+                .subcommands([
+                    ("version", "Read stored exact version metadata; no byte validation"),
+                    ("file-availability", "Check local managed bytes for one exact version"),
+                ].map(|(name, help)| Command::new(name).about(help).arg(db())
+                    .arg(Arg::new("version-id").long("version-id").required(true))))
                 .subcommand(
                     Command::new("references")
                         .about("Read stored ordered exact component references; no expansion")
@@ -421,6 +419,7 @@ fn run() -> (i32, Value) {
             "register-version" => "catalog register-version",
             "add-reference" => "catalog add-reference",
             "version" => "catalog version",
+            "file-availability" => "catalog file-availability",
             "references" => "catalog references",
             "current" => "catalog current",
             "feedback-add" => "catalog feedback-add",

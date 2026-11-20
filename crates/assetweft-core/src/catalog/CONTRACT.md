@@ -90,6 +90,13 @@ Existing integration tests are unchanged; pure use-case substitutes prove
 validation/delegation only, while focused real-file tests check lease/error
 ordering and facade translations.
 
+`Application::file_availability` reads one exact version and its managed binding,
+checks existing store ownership, and verifies the managed file with the CAS
+length and hash verifier. An immutable version already retains its object against
+cooperating collection, so the query needs no storage lease or filesystem
+creation. The CLI uses a read-only SQLite connection. This observation does not
+update persisted Presence and is valid only for the bytes read during the call.
+
 ## Exact-version feedback
 
 Catalog domain owns Decision, Feedback, FeedbackRecord, HistoryQuery and their

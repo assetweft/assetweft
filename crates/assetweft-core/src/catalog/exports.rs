@@ -4,7 +4,7 @@
 use super::{domain::validate_version_id, objects_domain::StoredObject, objects_sqlite};
 use crate::{
     library::LibraryError,
-    storage::{self, Guard, StorageError},
+    storage::{self, Guard, StorageError, redirected},
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -13,19 +13,6 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
 };
-
-fn redirected(m: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        // Includes junctions and other reparse points.
-        m.file_attributes() & 0x400 != 0
-    }
-    #[cfg(not(windows))]
-    {
-        m.is_symlink()
-    }
-}
 
 pub(crate) fn database_id(path: &Path) -> Option<FileId> {
     let parent = path

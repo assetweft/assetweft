@@ -9,6 +9,14 @@ pub struct StoredObject {
     pub content_hash: String,
     pub byte_length: u64,
 }
+/// Availability observed for one exact version's managed bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAvailability {
+    UnknownVersion,
+    MetadataOnly,
+    Missing,
+    Available,
+}
 /// Explicit result of a requested single-object collection; no background deletion exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Collection {

@@ -224,17 +224,17 @@ requires the kernel to report mount roots through statx and Windows rejects repa
 paths concurrently outside the lease or forging private receipt state is outside
 that storage contract. Backup and sync do not consume export receipts.
 
-## Exact-version PNG previews
+## Exact-version PNG and WAV previews
 
 `Application::preview(version_id)` and `catalog preview --db DB --version-id ID`
-resolve the immutable version and require its declared source format to be PNG
+resolve the immutable version and require its declared source format to be PNG or WAV
 (case-insensitive). Under the common storage lease, the adapter checks database
 identity, store ownership and the managed binding, then verifies the source file
 against the registered length and SHA-256 on every call. Unknown versions return
-CLI `INVALID_INPUT` (2). A registered managed PNG whose file is absent from its
+CLI `INVALID_INPUT` (2). A registered managed PNG or WAV whose file is absent from its
 validated object directory returns `INPUT_INCOMPLETE` (3). Both return null results.
 
-Input must be a single static RGBA8 PNG, at most 16 MiB, 4096 pixels on either
+PNG input must be a single static RGBA8 PNG, at most 16 MiB, 4096 pixels on either
 axis and 4,194,304 pixels total. Nearest-neighbour sampling fits it into 128 × 128
 without enlargement and copies all four channels, including straight alpha.
 Untagged samples stay untagged. The encoder preserves explicit gAMA and cHRM
@@ -243,9 +243,25 @@ with the PNG sRGB values. ICC profiles (iCCP), video/HDR metadata (cICP, mDCV,
 cLLI), significant bits (sBIT), suggested backgrounds (bKGD) and Exif (eXIf)
 are rejected. The preview performs no profile conversion.
 
-The returned `relative_path` is `previews/<sha256 of UTF-8 version ID>.v2.png`.
+The PNG `relative_path` is `previews/<sha256 of UTF-8 version ID>.v2.png`.
 The rendition suffix gives color-aware previews their own destination. Legacy
 `<hash>.png` files remain in place. The adapter regenerates from verified CAS
 bytes, reuses a regular local target only on matching length and SHA-256, and
 publishes a new file without replacement. Conflicting entries cause an error.
 Preview writes no source, CAS or database bytes and performs no cache cleanup.
+
+
+WAV input uses the canonical little-endian RIFF/WAVE layout with exactly a
+16-byte `fmt ` chunk followed by one `data` chunk. Only PCM format tag 1,
+signed 16-bit mono or interleaved stereo, 8,000–48,000 Hz and at most 16 MiB
+are accepted. The RIFF and data sizes must exactly cover the file, the byte
+rate and block alignment must match the format, and the data must contain
+at least two whole frames. Extra chunks and extended format headers are outside
+this rendition. Layout and alignment follow Microsoft's [RIFF description](https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff-)
+and [WAVEFORMATEX fields](https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatex).
+
+The audition clip contains the first half of the source frames (rounded down),
+capped at one second. It preserves sample values, channel order and rate and
+rewrites both size fields. The maximum output size is 192,044 bytes.
+`previews/<sha256 of UTF-8 version ID>.v1.wav` uses the same source verification,
+identical-content reuse and no-replacement publication as PNG.

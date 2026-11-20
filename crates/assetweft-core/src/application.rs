@@ -146,26 +146,31 @@ impl Application {
             version_id,
         )
     }
-    /// Builds a static RGBA PNG thumbnail from this immutable version's managed bytes.
+    /// Builds a PNG thumbnail or PCM WAVE audition clip from this immutable version's managed bytes.
     /// # Errors
     /// Rejects unavailable, damaged or unsupported sources and conflicting destinations.
     pub fn preview(&mut self, id: &str) -> Result<PathBuf, crate::storage::StorageError> {
+        use crate::catalog::exports::PreviewFormat;
         use crate::storage::StorageError;
         let version = self
             .asset_version(id)?
             .ok_or(StorageError::Invalid("unknown version"))?;
-        if !version.source_format.eq_ignore_ascii_case("png") {
+        let format = if version.source_format.eq_ignore_ascii_case("png") {
+            PreviewFormat::Png
+        } else if version.source_format.eq_ignore_ascii_case("wav") {
+            PreviewFormat::Wav
+        } else {
             return Err(StorageError::Invalid(
-                "unsupported source format; PNG required",
+                "unsupported source format; PNG or WAV required",
             ));
-        }
+        };
         crate::catalog::exports::Export::open_bound(
             &self.connection,
             &self.library_root,
             self.export_database,
             id,
         )?
-        .preview()
+        .preview(format)
     }
 
     /// Materializes one independently writable copy; returns its library-relative path.

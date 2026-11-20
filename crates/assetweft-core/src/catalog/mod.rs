@@ -26,3 +26,4 @@ pub(crate) mod head_sqlite;
 
 pub(crate) mod exports;
 mod preview;
+mod wave;

@@ -99,12 +99,19 @@ pub(super) fn query_response(
     if action == "preview" {
         let version = id("version-id");
         return match app.preview(version) {
-            Ok(path) => finish(
-                0,
-                "PASS",
-                json!([]),
-                json!({"scope":"local_version_png_preview","version_id":version,"relative_path":path}),
-            ),
+            Ok(path) => {
+                let scope = if path.extension().is_some_and(|ext| ext == "wav") {
+                    "local_version_wav_preview"
+                } else {
+                    "local_version_png_preview"
+                };
+                finish(
+                    0,
+                    "PASS",
+                    json!([]),
+                    json!({"scope":scope,"version_id":version,"relative_path":path}),
+                )
+            }
             Err(e) => {
                 let (code, status) = storage_outcome(&e);
                 finish(

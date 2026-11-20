@@ -14,6 +14,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) enum PreviewFormat {
+    Png,
+    Wav,
+}
+
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -189,12 +194,15 @@ impl Export {
         })
     }
 
-    pub(crate) fn preview(self) -> Result<PathBuf, StorageError> {
+    pub(crate) fn preview(self, format: PreviewFormat) -> Result<PathBuf, StorageError> {
         let meta = fs::symlink_metadata(&self.source).map_err(preview_source_error)?;
         check_local_entry(&self.root, &self.source, fs::Metadata::is_file, &meta)?;
         let length = self.object.byte_length;
         if length > 16 * 1024 * 1024 {
-            return Err(StorageError::Invalid("PNG input exceeds 16 MiB"));
+            return Err(StorageError::Invalid(match format {
+                PreviewFormat::Png => "PNG input exceeds 16 MiB",
+                PreviewFormat::Wav => "WAV input exceeds 16 MiB",
+            }));
         }
         let mut source = Vec::new();
         File::open(&self.source)
@@ -204,14 +212,17 @@ impl Export {
         if source.len() as u64 != length || hash(&source) != self.object.content_hash {
             return Err(StorageError::Corrupt);
         }
-        let encoded = super::preview::thumbnail(&source)?;
+        let (suffix, encoded) = match format {
+            PreviewFormat::Png => ("v2.png", super::preview::thumbnail(&source)?),
+            PreviewFormat::Wav => ("v1.wav", super::wave::audition(&source)?),
+        };
         let dir = self.root.join("previews");
         match fs::create_dir(&dir) {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
             result => result?,
         }
         local_entry(&self.root, &dir, fs::Metadata::is_dir)?;
-        let relative = Path::new("previews").join(format!("{}.v2.png", self.name));
+        let relative = Path::new("previews").join(format!("{}.{suffix}", self.name));
         let target = self.root.join(&relative);
         match local_entry(&self.root, &target, fs::Metadata::is_file) {
             Ok(()) => {

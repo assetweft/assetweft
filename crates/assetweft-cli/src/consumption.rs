@@ -170,7 +170,12 @@ pub(super) fn budget_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let opened = if action == "receipts" {
+        Application::open_read_only(db)
+    } else {
+        Application::open(db)
+    };
+    let mut app = match opened {
         Ok(app) => app,
         Err(e) => {
             return finish(
@@ -216,6 +221,11 @@ pub(super) fn budget_response(
         "intent" => {
             let id = args.get_one::<String>("intent-id").expect("required");
             app.call_intent(id).map(intent_result)
+        }
+        "receipts" => {
+            let id = args.get_one::<String>("intent-id").expect("required");
+            app.call_receipts(id)
+                .map(|receipts| json!({"scope":"local_call_receipts","receipts":receipts}))
         }
         "cancel" => {
             let id = args.get_one::<String>("intent-id").expect("required");

@@ -289,6 +289,13 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(String))),
                 )
                 .subcommand(
+                    Command::new("receipts")
+                        .about("Read persisted LOCAL usage receipts for an exact call intent ID")
+                        .arg(db())
+                        .arg(Arg::new("intent-id").long("intent-id").required(true)
+                            .value_parser(value_parser!(String))),
+                )
+                .subcommand(
                     Command::new("cancel")
                         .about("Request LOCAL call cancellation; remote work and fees may continue")
                         .arg(db())
@@ -438,6 +445,7 @@ fn run() -> (i32, Value) {
             "balance" => "budget balance",
             "reserve" => "budget reserve",
             "intent" => "budget intent",
+            "receipts" => "budget receipts",
             "cancel" => "budget cancel",
             _ => unreachable!("clap grammar"),
         };

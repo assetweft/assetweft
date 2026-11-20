@@ -29,7 +29,50 @@ pub(crate) fn propose(port: &mut impl Staging, p: &Proposal) -> Result<Candidate
     }
     let base = port.snapshot(&p.base_version, max_component_bytes)?;
     let proposed = port.snapshot(&p.candidate_version, max_component_bytes)?;
-    let candidate = staging_domain::descriptor(p, editable, base, proposed)?;
+    let candidate = staging_domain::descriptor(
+        p,
+        editable,
+        base,
+        proposed,
+        "TEST_FIXTURE",
+        "MANAGED_COMPONENT_BYTE_STAGING_ONLY",
+    )?;
+    port.freeze(FrozenProposal { candidate })
+}
+/// Freeze a measured motion-only edit for the two exact supported owner files.
+pub(crate) fn propose_rigged_simple(
+    port: &mut impl super::staging_ports::RiggedSimpleStaging,
+    p: &Proposal,
+) -> Result<Candidate, StagingError> {
+    let editable = staging_domain::editable(p)?;
+    if p.contract.is_some() || editable != ["motion"] {
+        return Err(StagingError::InvalidInput(
+            "Rigged Simple motion-only byte proposal without fixture contract",
+        ));
+    }
+    let owners = port.owners(&p.base_version, &p.candidate_version)?;
+    if owners.base_asset != owners.proposed_asset {
+        return Err(StagingError::InvalidInput("candidate asset"));
+    }
+    if owners.base_source == "TEST_FIXTURE" || owners.proposed_source != "PROCEDURAL" {
+        return Err(StagingError::InvalidInput(
+            "Rigged Simple owner source declaration",
+        ));
+    }
+    let base = port.rigged_simple_snapshot(
+        &p.base_version,
+        crate::assurance::rig_blender::RIGGED_SIMPLE,
+    )?;
+    let proposed =
+        port.rigged_simple_snapshot(&p.candidate_version, crate::motion::components::IDLE_STRIKE)?;
+    let candidate = staging_domain::descriptor(
+        p,
+        editable,
+        base,
+        proposed,
+        &owners.proposed_source,
+        "RIGGED_SIMPLE_MOTION_BYTE_STAGING_V1",
+    )?;
     port.freeze(FrozenProposal { candidate })
 }
 pub(crate) fn read(

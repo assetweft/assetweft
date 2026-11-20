@@ -161,7 +161,7 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("candidate")
-                .about("Initialize/stage/attempt local fixtures or query stored records; no generation")
+                .about("Stage local candidates, attempt fixture contracts or query stored records")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("initialize")
@@ -178,6 +178,12 @@ fn grammar() -> Command {
                         .arg(db())
                         .arg(Arg::new("proposal").long("proposal").required(true)
                             .value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("propose-rigged-simple-motion")
+                        .about("Freeze an exact Cesium Rigged Simple motion-only byte candidate")
+                        .arg(db())
+                        .arg(Arg::new("proposal").long("proposal").required(true).value_parser(value_parser!(PathBuf))),
                 )
                 .subcommand(
                     Command::new("attempt")
@@ -467,12 +473,16 @@ fn run() -> (i32, Value) {
         let wire = match action {
             "initialize" => "candidate initialize",
             "propose" => "candidate propose",
+            "propose-rigged-simple-motion" => "candidate propose-rigged-simple-motion",
             "attempt" => "candidate attempt",
             "show" => "candidate show",
             "receipt" => "candidate receipt",
             _ => unreachable!("clap grammar"),
         };
-        if matches!(action, "initialize" | "propose") {
+        if matches!(
+            action,
+            "initialize" | "propose" | "propose-rigged-simple-motion"
+        ) {
             return production::candidate_write_response(wire, call_id, action, query_args, limits);
         }
         return production::candidate_response(wire, call_id, action, query_args);

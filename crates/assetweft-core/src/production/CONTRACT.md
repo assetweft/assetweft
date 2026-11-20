@@ -116,3 +116,12 @@ AttemptRead retains require_current before the original receipt SELECT/parameter
 and deserialize error. Application assembles these use cases with the mounted
 `initialization_sqlite` adapter; no legacy forward remains. Pure tests establish
 policy/order only; unchanged candidate real-file tests exercise actual SQLite/CAS.
+
+## Scoped Rigged Simple motion staging
+
+The separate `Application::propose_rigged_simple_motion` entry admits just the
+pinned original and idle/strike GLB pair. The four managed component versions
+bind exact indexed payloads to their owner's bytes. Mesh, materials and rig
+must also reuse the base version IDs. The normal freeze transaction rechecks
+references and preserves the immutable descriptor. This profile has no
+acceptance contract or real-asset current-head operation.

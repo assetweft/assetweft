@@ -172,13 +172,17 @@ pub(super) fn candidate_write_response(
                 |current| json!({"scope":"initialized_local_fixture_current","current":current}),
             )
         }
-        "propose" => {
+        "propose" | "propose-rigged-simple-motion" => {
             let path = args.get_one::<PathBuf>("proposal").expect("required");
             let ProposalObject(proposal) = match read_json(path, limits, "proposal") {
                 Ok(input) => input,
                 Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
             };
-            app.propose_candidate(&proposal).map(|candidate| json!({"scope":"staged_local_byte_fixture_candidate","candidate":candidate}))
+            if action == "propose-rigged-simple-motion" {
+                app.propose_rigged_simple_motion(&proposal).map(|candidate| json!({"scope":"staged_rigged_simple_motion_candidate","candidate":candidate}))
+            } else {
+                app.propose_candidate(&proposal).map(|candidate| json!({"scope":"staged_local_byte_fixture_candidate","candidate":candidate}))
+            }
         }
         _ => unreachable!("clap grammar"),
     };

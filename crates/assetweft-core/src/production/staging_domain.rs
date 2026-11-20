@@ -78,6 +78,8 @@ pub(crate) fn descriptor(
     editable: Vec<String>,
     base: Vec<ComponentSnapshot>,
     proposed: Vec<ComponentSnapshot>,
+    source: &str,
+    scope: &str,
 ) -> Result<Candidate, StagingError> {
     if base.len() != proposed.len() || editable.iter().any(|r| !base.iter().any(|s| &s.role == r)) {
         return Err(invalid("role set"));
@@ -99,8 +101,8 @@ pub(crate) fn descriptor(
         editable,
         base,
         proposed,
-        source: "TEST_FIXTURE".into(),
-        scope: "MANAGED_COMPONENT_BYTE_STAGING_ONLY".into(),
+        source: source.into(),
+        scope: scope.into(),
         contract: p.contract.clone(),
         not_run: vec![
             "FORMAT_AND_ROLE_VALIDATION".into(),

@@ -4935,3 +4935,153 @@ fn progress_first_mutations_survive_broken_streams() {
         }
     }
 }
+
+#[test]
+fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
+    use assetweft_core::history::HistoryQuery;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut app, _) = candidate_fixture(dir.path(), false);
+    let head = app.candidate_current("character").unwrap().unwrap();
+    let original_version = app.asset_version("base").unwrap().unwrap();
+    let original = dir
+        .path()
+        .join("objects")
+        .join(&original_version.content_hash);
+    let bytes = fs::read(&original).unwrap();
+    let long_id = "v".repeat(257);
+    let mut long_version = original_version.clone();
+    long_version.version_id = long_id.clone();
+    app.add_asset_version(&long_version).unwrap();
+    app.close().unwrap();
+
+    let run = |action: &str, db: &Path, extra: &[&str]| {
+        let mut args = vec![
+            OsStr::new("--call-id"),
+            OsStr::new("feedback α"),
+            OsStr::new("catalog"),
+            OsStr::new(action),
+            OsStr::new("--db"),
+            db.as_os_str(),
+        ];
+        args.extend(extra.iter().map(OsStr::new));
+        catalog_write_invoke(&args)
+    };
+    let success = |action: &str, extra: &[&str], scope: &str, record: &Value| {
+        let (out, value) = run(action, &db, extra);
+        assert_eq!(out.status.code(), Some(0), "{value}");
+        assert!(out.stderr.is_empty());
+        assert_eq!(
+            value,
+            json!({
+                "schema_version":1,"command":format!("catalog {action}"),"call_id":"feedback α",
+                "status":"PASS","errors":[],"results":{"scope":scope,"feedback":record}
+            })
+        );
+    };
+    let latest = |extra: &[&str], record: &Value| {
+        success(
+            "feedback-latest",
+            extra,
+            "stored_local_version_feedback",
+            record,
+        );
+    };
+    let asset = ["--asset-id", "character"];
+    let base = ["--asset-id", "character", "--version-id", "base"];
+    let proposed = ["--asset-id", "character", "--version-id", "proposed"];
+    latest(&asset, &Value::Null);
+    let first = json!({"sequence":1,"feedback_id":"first","asset_id":"character",
+        "version_id":"base","decision":"REJECT","reason":"原样 reason"});
+    let second = json!({"sequence":2,"feedback_id":"second","asset_id":"character",
+        "version_id":"proposed","decision":"ACCEPT","reason":null});
+    fn add<'a>(
+        target: &[&'a str],
+        id: &'a str,
+        decision: &'a str,
+        reason: &[&'a str],
+    ) -> Vec<&'a str> {
+        let mut args = target.to_vec();
+        args.extend(["--feedback-id", id, "--decision", decision]);
+        args.extend_from_slice(reason);
+        args
+    }
+    success(
+        "feedback-add",
+        &add(&base, "first", "REJECT", &["--reason", "原样 reason"]),
+        "appended_local_version_feedback",
+        &first,
+    );
+    latest(&proposed, &Value::Null);
+    success(
+        "feedback-add",
+        &add(&proposed, "second", "ACCEPT", &[]),
+        "appended_local_version_feedback",
+        &second,
+    );
+    let mismatch = ["--asset-id", "character", "--version-id", "mesh0"];
+    let long = ["--asset-id", "character", "--version-id", long_id.as_str()];
+    for (args, message) in [
+        (
+            add(&mismatch, "wrong", "ACCEPT", &[]),
+            "feedback version/asset mismatch",
+        ),
+        (
+            add(&proposed, "first", "ACCEPT", &[]),
+            "UNIQUE constraint failed: aw_feedback.feedback_id",
+        ),
+        (add(&long, "long", "ACCEPT", &[]), "feedback identity"),
+        (
+            add(&base, "blank", "ACCEPT", &["--reason", " "]),
+            "feedback reason",
+        ),
+    ] {
+        let (out, value) = run("feedback-add", &db, &args);
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert_eq!(value["status"], "INVALID_INPUT");
+        assert_eq!(value["results"], Value::Null);
+        assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+        let error = &value["errors"][0];
+        assert_eq!(error["field_path"], "catalog");
+        assert_eq!(error["code"], "INVALID_INPUT");
+        assert!(
+            error["message"].as_str().unwrap().contains(message),
+            "{value}"
+        );
+    }
+    let (out, value) = run("feedback-latest", &db, &long);
+    assert_eq!(out.status.code(), Some(2), "{value}");
+    assert_eq!(value["errors"][0]["field_path"], "catalog");
+    latest(&mismatch, &Value::Null);
+    latest(&asset, &second);
+    latest(&base, &first);
+    latest(&proposed, &second);
+
+    let missing = dir.path().join("missing.sqlite");
+    for (action, args) in [
+        ("feedback-latest", asset.to_vec()),
+        ("feedback-add", add(&base, "missing", "ACCEPT", &[])),
+    ] {
+        let (out, value) = run(action, &missing, &args);
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert_eq!(value["errors"][0]["field_path"], "db");
+        assert!(!missing.exists());
+    }
+
+    let mut app = Application::open(&db).unwrap();
+    for (asset_id, count) in [("character", 2), ("mesh0", 0)] {
+        let history = app
+            .feedback_history(HistoryQuery {
+                asset_id,
+                version_id: None,
+                before_sequence: None,
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(history.len(), count);
+    }
+    assert_eq!(app.candidate_current("character").unwrap(), Some(head));
+    assert_eq!(app.asset_version("base").unwrap(), Some(original_version));
+    assert_eq!(app.asset_version(&long_id).unwrap(), Some(long_version));
+    assert_eq!(fs::read(original).unwrap(), bytes);
+}

@@ -71,7 +71,7 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("catalog")
-                .about("Register declarations/exact references or query stored metadata/head; no readiness check")
+                .about("Manage local metadata, exact references and version feedback; read stored head")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("commit-object")
@@ -115,6 +115,24 @@ fn grammar() -> Command {
                         .arg(db())
                         .arg(Arg::new("asset-id").long("asset-id").required(true)
                             .value_parser(value_parser!(String))),
+                )
+                .subcommand(
+                    Command::new("feedback-add")
+                        .about("Append an opinion for an exact registered version")
+                        .arg(db())
+                        .arg(Arg::new("feedback-id").long("feedback-id").required(true))
+                        .arg(Arg::new("asset-id").long("asset-id").required(true))
+                        .arg(Arg::new("version-id").long("version-id").required(true))
+                        .arg(Arg::new("decision").long("decision").required(true)
+                            .value_parser(["ACCEPT", "REJECT"]))
+                        .arg(Arg::new("reason").long("reason")),
+                )
+                .subcommand(
+                    Command::new("feedback-latest")
+                        .about("Read the newest opinion for an asset or an exact version")
+                        .arg(db())
+                        .arg(Arg::new("asset-id").long("asset-id").required(true))
+                        .arg(Arg::new("version-id").long("version-id")),
                 ),
         )
         .subcommand(
@@ -398,11 +416,13 @@ fn run() -> (i32, Value) {
             "version" => "catalog version",
             "references" => "catalog references",
             "current" => "catalog current",
+            "feedback-add" => "catalog feedback-add",
+            "feedback-latest" => "catalog feedback-latest",
             _ => unreachable!("clap grammar"),
         };
         if matches!(
             action,
-            "commit-object" | "register-version" | "add-reference"
+            "commit-object" | "register-version" | "add-reference" | "feedback-add"
         ) {
             return catalog::write_response(wire, call_id, action, query_args, limits);
         }

@@ -1,4 +1,4 @@
-//! Responsibility: Catalog incoming adapter for declared immutable metadata/exact-reference writes and stored queries.
+//! Responsibility: Catalog incoming adapter for immutable metadata, exact references, version feedback and stored queries.
 //! Dependencies: shared CLI transport, public Application and Catalog compatibility values.
 //! Callers: main catalog command dispatch; projections remain local to this consumer.
 //! Invariants: one owning facade call per action; strict wire shapes; submitted write acknowledgements and stored queries preserve values; no SQL, policy, CAS, retry or implicit init.
@@ -7,6 +7,7 @@ use crate::protocol::{envelope, error, existing_database, library_outcome, read_
 use assetweft_core::{
     application::Application,
     assurance as val,
+    catalog::domain::{Decision, Feedback, FeedbackRecord},
     library::{AssetVersion, ComponentReference, ComponentRole, Presence},
 };
 use clap::ArgMatches;
@@ -55,6 +56,16 @@ fn reference_value(reference: ComponentReference) -> Value {
     json!({"owner_version_id":owner_version_id,"role":role,"component_version_id":component_version_id})
 }
 
+fn feedback_value(record: FeedbackRecord) -> Value {
+    let FeedbackRecord { sequence, feedback } = record;
+    let decision = match feedback.decision {
+        Decision::Accept => "ACCEPT",
+        Decision::Reject => "REJECT",
+    };
+    json!({"sequence":sequence,"feedback_id":feedback.feedback_id,"asset_id":feedback.asset_id,
+        "version_id":feedback.version_id,"decision":decision,"reason":feedback.reason})
+}
+
 pub(super) fn query_response(
     wire: &str,
     call_id: Option<&String>,
@@ -62,13 +73,7 @@ pub(super) fn query_response(
     args: &ArgMatches,
 ) -> (i32, Value) {
     let db = args.get_one::<PathBuf>("db").expect("required");
-    let id = args
-        .get_one::<String>(if action == "current" {
-            "asset-id"
-        } else {
-            "version-id"
-        })
-        .expect("required");
+    let id = |name| args.get_one::<String>(name).expect("required");
     let finish =
         |code, status, errors, results| (code, envelope(wire, call_id, status, errors, results));
     if let Err(e) = existing_database(db) {
@@ -86,15 +91,23 @@ pub(super) fn query_response(
         }
     };
     let result = match action {
-        "version" => app.asset_version(id).map(|version| {
+        "version" => app.asset_version(id("version-id")).map(|version| {
             json!({"scope":"stored_local_asset_version_metadata","version":version.map(version_value)})
         }),
-        "references" => app.component_references(id).map(|references| {
+        "references" => app.component_references(id("version-id")).map(|references| {
             json!({"scope":"stored_local_exact_component_references","references":references.into_iter().map(reference_value).collect::<Vec<_>>()})
         }),
-        "current" => app.candidate_current(id).map(|current| {
+        "current" => app.candidate_current(id("asset-id")).map(|current| {
             json!({"scope":"stored_local_candidate_current","current":current})
         }),
+        "feedback-latest" => app
+            .latest_feedback(
+                id("asset-id"),
+                args.get_one::<String>("version-id").map(String::as_str),
+            )
+            .map(|record| {
+                json!({"scope":"stored_local_version_feedback","feedback":record.map(feedback_value)})
+            }),
         _ => unreachable!("clap grammar"),
     };
     match result {
@@ -240,7 +253,7 @@ impl<'de> serde::Deserialize<'de> for ReferenceObject {
         deserializer.deserialize_map(ReferenceVisitor)
     }
 }
-/// One owning mutation; success acknowledges the submitted typed declaration without readback.
+/// One owning mutation; success projects its acknowledgement without readback.
 pub(super) fn write_response(
     wire: &str,
     call_id: Option<&String>,
@@ -338,6 +351,24 @@ pub(super) fn write_response(
             };
             app.add_component_reference(&reference).map(|()| {
                 json!({"scope":"registered_local_exact_component_reference","reference":reference_value(reference)})
+            })
+        }
+        "feedback-add" => {
+            let required = |name| args.get_one::<String>(name).expect("required");
+            let decision = match required("decision").as_str() {
+                "ACCEPT" => Decision::Accept,
+                "REJECT" => Decision::Reject,
+                _ => unreachable!("clap grammar"),
+            };
+            app.append_feedback(&Feedback {
+                feedback_id: required("feedback-id").clone(),
+                asset_id: required("asset-id").clone(),
+                version_id: required("version-id").clone(),
+                decision,
+                reason: args.get_one::<String>("reason").cloned(),
+            })
+            .map(|record| {
+                json!({"scope":"appended_local_version_feedback","feedback":feedback_value(record)})
             })
         }
         _ => unreachable!("clap grammar"),

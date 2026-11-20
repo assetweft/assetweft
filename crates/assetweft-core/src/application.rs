@@ -682,3 +682,6 @@ impl Application {
         .map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod budget_contention;

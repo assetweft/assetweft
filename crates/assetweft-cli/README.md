@@ -724,4 +724,8 @@ path under `previews/`. It verifies the exact source length and SHA-256 on every
 call. Static 8-bit RGBA input is limited to 16 MiB, 4096 pixels per axis and
 4,194,304 pixels total. Nearest-neighbour sampling preserves RGBA channels and
 fits the image inside 128 × 128 without upscaling. An identical preview can be
-reused. A conflicting file, missing object or unsupported image returns an error.
+reused. An unknown version returns `INVALID_INPUT`/2. If a registered managed
+PNG's source file is missing from the validated object directory, preview returns
+`INPUT_INCOMPLETE`/3 with `managed source file is missing`. Both errors return
+`results:null` and leave existing previews intact. A conflicting file or
+unsupported image returns an error.

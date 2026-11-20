@@ -44,7 +44,16 @@ fn local_entry(
     expected: fn(&fs::Metadata) -> bool,
 ) -> Result<(), StorageError> {
     let meta = fs::symlink_metadata(path)?;
-    if !expected(&meta) || redirected(&meta) || path.canonicalize()? != path {
+    check_local_entry(root, path, expected, &meta)
+}
+
+fn check_local_entry(
+    root: &Path,
+    path: &Path,
+    expected: fn(&fs::Metadata) -> bool,
+    meta: &fs::Metadata,
+) -> Result<(), StorageError> {
+    if !expected(meta) || redirected(meta) || path.canonicalize()? != path {
         return Err(StorageError::Invalid(
             "redirected or unexpected storage entry",
         ));
@@ -79,6 +88,14 @@ fn local_entry(
     #[cfg(any(windows, target_os = "linux"))]
     let _ = root;
     Ok(())
+}
+
+fn preview_source_error(error: io::Error) -> StorageError {
+    if error.kind() == io::ErrorKind::NotFound {
+        StorageError::MissingPreviewSource
+    } else {
+        error.into()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +143,7 @@ impl Export {
         id: &str,
     ) -> Result<Self, StorageError> {
         let session = Self::open_bound(conn, root, database, id)?;
+        local_entry(root, &session.source, fs::Metadata::is_file)?;
         objects_sqlite::verify(
             &session.source,
             &session.object.content_hash,
@@ -160,7 +178,6 @@ impl Export {
         let object = objects_sqlite::managed_record(conn, id)?
             .ok_or(StorageError::Invalid("verified managed version required"))?;
         let source = root.join("objects").join(&object.content_hash);
-        local_entry(root, &source, fs::Metadata::is_file)?;
 
         Ok(Self {
             _lease: lease,
@@ -173,12 +190,15 @@ impl Export {
     }
 
     pub(crate) fn preview(self) -> Result<PathBuf, StorageError> {
+        let meta = fs::symlink_metadata(&self.source).map_err(preview_source_error)?;
+        check_local_entry(&self.root, &self.source, fs::Metadata::is_file, &meta)?;
         let length = self.object.byte_length;
         if length > 16 * 1024 * 1024 {
             return Err(StorageError::Invalid("PNG input exceeds 16 MiB"));
         }
         let mut source = Vec::new();
-        File::open(&self.source)?
+        File::open(&self.source)
+            .map_err(preview_source_error)?
             .take(length + 1)
             .read_to_end(&mut source)?;
         if source.len() as u64 != length || hash(&source) != self.object.content_hash {

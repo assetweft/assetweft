@@ -6242,3 +6242,93 @@ fn motion_idle_checks_chain_structure_before_source_admission() {
         assert!(!output.exists());
     }
 }
+
+#[test]
+fn motion_stance_uses_declared_role_and_sampled_world_contact() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("motion.json");
+    let run = |samples: &Value, role: &str, code, status| {
+        let bytes = serde_json::to_vec(samples).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let (process, reply) = invoke(&[
+            OsStr::new("motion-stance"),
+            path.as_os_str(),
+            OsStr::new("--role"),
+            OsStr::new(role),
+        ]);
+        assert_eq!(process.status.code(), Some(code), "{reply}");
+        assert_eq!(reply["status"], status, "{reply}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        reply["results"].clone()
+    };
+
+    // Analytic translation animation. Root moves out and back during stance.
+    // The planted foot counter-translates locally; the slipping foot follows the root.
+    let animation = |planted| {
+        let root = [0.5, 0.0, 0.125, 0.0, 0.5];
+        let foot: Vec<_> = root
+            .iter()
+            .enumerate()
+            .map(|(frame, x)| {
+                let local_x = if planted && (1..=3).contains(&frame) {
+                    -x
+                } else {
+                    0.0
+                };
+                [x + local_x, 0.0, 0.0]
+            })
+            .collect();
+        json!({"stance":{"contact":"left_sole","frames":[1,3]},
+            "tracks":[{"marker":"hips","world_y_up_m":root.map(|x| [x,1.0,0.0])},
+                      {"marker":"left_sole","world_y_up_m":foot}]})
+    };
+    let slip = animation(false);
+    let grounded = run(&slip, "grounded-humanoid", 1, "FAIL");
+    assert_eq!(grounded["max_slip_m"], 0.125);
+    assert_eq!(grounded["samples_evaluated"], 3);
+    let hover = run(&slip, "hovering", 5, "INAPPLICABLE");
+    assert_eq!(hover["input_sha256"], grounded["input_sha256"]);
+    assert!(
+        hover["input_sha256"]
+            .as_str()
+            .is_some_and(|s| s.len() == 64)
+    );
+    assert_eq!(hover["samples_evaluated"], 0);
+    assert!(hover["reason"].as_str().unwrap().contains("hover"));
+    let planted = animation(true);
+    assert_eq!(
+        run(&planted, "grounded-humanoid", 0, "PASS")["max_slip_m"],
+        0.0
+    );
+
+    let mut z_axis = planted.clone();
+    z_axis["tracks"][1]["world_y_up_m"][2] = json!([0, 1, 0.01]);
+    run(&z_axis, "grounded-humanoid", 0, "PASS");
+    z_axis["tracks"][1]["world_y_up_m"][2] = json!([0, 1, 0.011]);
+    run(&z_axis, "grounded-humanoid", 1, "FAIL");
+
+    let mut undeclared = planted.clone();
+    undeclared.as_object_mut().unwrap().remove("stance");
+    run(&undeclared, "grounded-humanoid", 3, "NOT_RUN");
+    run(&undeclared, "hovering", 5, "INAPPLICABLE");
+    let mut ambiguous = planted.clone();
+    ambiguous["tracks"][0]["marker"] = "left_sole".into();
+    run(&ambiguous, "grounded-humanoid", 3, "NOT_RUN");
+    let mut wrong_space = planted.clone();
+    wrong_space["tracks"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("world_y_up_m");
+    wrong_space["tracks"][1]["local_m"] = json!([[0, 0, 0]]);
+    run(&wrong_space, "grounded-humanoid", 2, "INVALID_INPUT");
+
+    let mut missing = planted.clone();
+    missing["stance"]["contact"] = "missing_foot".into();
+    run(&missing, "grounded-humanoid", 3, "NOT_RUN");
+    let mut gap = planted.clone();
+    gap["tracks"][1]["world_y_up_m"][2] = Value::Null;
+    run(&gap, "grounded-humanoid", 3, "NOT_RUN");
+    let mut out_of_range = planted;
+    out_of_range["stance"]["frames"] = json!([0, 8]);
+    run(&out_of_range, "grounded-humanoid", 3, "NOT_RUN");
+}

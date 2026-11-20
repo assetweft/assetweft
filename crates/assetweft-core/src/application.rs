@@ -159,9 +159,11 @@ impl Application {
             PreviewFormat::Png
         } else if version.source_format.eq_ignore_ascii_case("wav") {
             PreviewFormat::Wav
+        } else if version.source_format.eq_ignore_ascii_case("glb") {
+            PreviewFormat::Glb
         } else {
             return Err(StorageError::Invalid(
-                "unsupported source format; PNG or WAV required",
+                "unsupported source format; PNG, WAV or GLB required",
             ));
         };
         crate::catalog::exports::Export::open_bound(

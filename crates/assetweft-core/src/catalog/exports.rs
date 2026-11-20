@@ -16,6 +16,7 @@ use std::{
 
 pub(crate) enum PreviewFormat {
     Png,
+    Glb,
     Wav,
 }
 
@@ -198,11 +199,13 @@ impl Export {
         let meta = fs::symlink_metadata(&self.source).map_err(preview_source_error)?;
         check_local_entry(&self.root, &self.source, fs::Metadata::is_file, &meta)?;
         let length = self.object.byte_length;
-        if length > 16 * 1024 * 1024 {
-            return Err(StorageError::Invalid(match format {
-                PreviewFormat::Png => "PNG input exceeds 16 MiB",
-                PreviewFormat::Wav => "WAV input exceeds 16 MiB",
-            }));
+        let (limit, limit_error) = match format {
+            PreviewFormat::Glb => (64 * 1024, "GLB input exceeds 64 KiB"),
+            PreviewFormat::Png => (16 * 1024 * 1024, "PNG input exceeds 16 MiB"),
+            PreviewFormat::Wav => (16 * 1024 * 1024, "WAV input exceeds 16 MiB"),
+        };
+        if length > limit {
+            return Err(StorageError::Invalid(limit_error));
         }
         let mut source = Vec::new();
         File::open(&self.source)
@@ -213,6 +216,7 @@ impl Export {
             return Err(StorageError::Corrupt);
         }
         let (suffix, encoded) = match format {
+            PreviewFormat::Glb => ("glb-v1.png", super::glb_preview::thumbnail(&source)?),
             PreviewFormat::Png => ("v2.png", super::preview::thumbnail(&source)?),
             PreviewFormat::Wav => ("v1.wav", super::wave::audition(&source)?),
         };

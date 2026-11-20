@@ -719,7 +719,7 @@ A stdout failure (exit 6) can follow a committed claim or finish: never retry an
 ambiguous mutation automatically. Use status to reconcile it.
 
 `assetweft catalog preview --db EXISTING_DB --version-id ID` generates a
-thumbnail or audition clip for one managed PNG or WAV version and returns its library-relative
+thumbnail or audition clip for one managed PNG, GLB or WAV version and returns its library-relative
 path under `previews/`. It verifies the exact source length and SHA-256 on every
 call. Static 8-bit RGBA input is limited to 16 MiB, 4096 pixels per axis and
 4,194,304 pixels total. Nearest-neighbour sampling preserves RGBA channels and
@@ -736,3 +736,10 @@ frames and at most 16 MiB. The result has scope `local_version_wav_preview`
 and a `.v1.wav` path. The clip contains the first half of the frames, rounded
 down and capped at one second, at the original sample rate. The CLI writes
 the playable file without opening an audio device.
+
+For GLB, a single static indexed TRIANGLES primitive with an opaque double-sided
+base color can produce a 128 × 128 front-view PNG. It applies node rotation and
+scale, fits the transformed geometry with equal margins on the longest axis,
+and returns `.glb-v1.png` under the PNG output scope. Inputs are capped at
+64 KiB and 256 triangles. See the [Catalog contract](../assetweft-core/src/catalog/CONTRACT.md#exact-version-png-wav-and-glb-previews)
+for the supported attributes, material and scene layout.

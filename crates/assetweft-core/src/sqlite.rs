@@ -129,7 +129,17 @@ fn read_config(conn: &Connection) -> Result<ConnectionConfig, ProtoError> {
 /// # Errors
 /// 打开/配置失败，或 `foreign_keys` 读回不为 1 时返回对应分类错误。
 pub fn open_and_configure(path: &Path) -> Result<(Connection, ConnectionConfig), ProtoError> {
-    let conn = Connection::open(path).map_err(classify)?;
+    configure(Connection::open(path).map_err(classify)?)
+}
+
+pub(crate) fn open_read_only(path: &Path) -> Result<(Connection, ConnectionConfig), ProtoError> {
+    configure(
+        Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(classify)?,
+    )
+}
+
+fn configure(conn: Connection) -> Result<(Connection, ConnectionConfig), ProtoError> {
     conn.busy_timeout(BUSY_TIMEOUT).map_err(classify)?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(classify)?;

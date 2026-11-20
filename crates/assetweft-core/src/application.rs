@@ -65,13 +65,27 @@ impl Application {
     /// # Errors
     /// Rejects SQLite memory/URI paths and returns configuration or filesystem errors.
     pub fn open(path: &Path) -> Result<Self, ProtoError> {
+        Self::open_with(path, sqlite::open_and_configure)
+    }
+
+    /// Opens an existing local library with a read-only SQLite connection.
+    /// # Errors
+    /// Rejects absent databases, nonlocal paths, or invalid connection configuration.
+    pub fn open_read_only(path: &Path) -> Result<Self, ProtoError> {
+        Self::open_with(path, sqlite::open_read_only)
+    }
+
+    fn open_with(
+        path: &Path,
+        connect: fn(&Path) -> Result<(Connection, ConnectionConfig), ProtoError>,
+    ) -> Result<Self, ProtoError> {
         let raw = path.as_os_str();
         if raw.is_empty() || raw == ":memory:" || raw.to_string_lossy().starts_with("file:") {
             return Err(ProtoError::Other(
                 "a local SQLite file path is required".to_owned(),
             ));
         }
-        let (connection, config) = sqlite::open_and_configure(path)?;
+        let (connection, config) = connect(path)?;
         library::check_open(&connection).map_err(LibraryError::into_open_error)?;
         let library_root = path
             .canonicalize()
@@ -118,6 +132,19 @@ impl Application {
             std::io::empty(),
         );
         crate::catalog::objects_application::managed(&mut adapter, id)
+    }
+    /// Observes the managed bytes for one exact version in the private local library.
+    /// # Errors
+    /// Reports invalid identities, corrupt bindings or bytes, and database or filesystem failures.
+    pub fn file_availability(
+        &mut self,
+        version_id: &str,
+    ) -> Result<crate::storage::FileAvailability, crate::storage::StorageError> {
+        crate::catalog::objects_sqlite::file_availability(
+            &mut self.connection,
+            &self.library_root,
+            version_id,
+        )
     }
     /// Materializes one independently writable copy; returns its library-relative path.
     /// # Errors

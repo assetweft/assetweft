@@ -29,6 +29,7 @@ assetweft [--call-id ID] candidate propose --db EXISTING_DB --proposal FILE
 assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
+assetweft [--call-id ID] catalog file-availability --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog references --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog current --db EXISTING_DB --asset-id ID
 assetweft [--call-id ID] catalog feedback-add --db EXISTING_DB --feedback-id ID --asset-id ID --version-id ID --decision ACCEPT|REJECT [--reason TEXT]
@@ -49,7 +50,7 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
-`catalog version`, `catalog references`, `catalog current`, `catalog feedback-add`,
+`catalog version`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
 `catalog feedback-latest`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
@@ -435,6 +436,29 @@ The stored object preserves every AssetVersion field: `asset_id`, `version_id`,
 Presence is exactly `UNKNOWN` or `MISSING`; there is no READY state. Authorization,
 authorized and license fields are stored declarations, never a new authentication,
 rights or availability guarantee. A valid absent identity returns `version:null`.
+
+`catalog file-availability --db EXISTING_DB --version-id ID` opens SQLite in
+read-only mode. A successful query exits 0 with outer status `PASS` and returns
+`{"scope":"local_managed_version_bytes","version_id":"ID","availability":"STATE"}`.
+
+| State | Meaning |
+|---|---|
+| `UNKNOWN_VERSION` | The exact version ID has no local Catalog record. |
+| `METADATA_ONLY` | The version has a record without a managed-object binding, even if another version shares its content hash. |
+| `MISSING` | The version has a managed-object binding and valid store ownership, but the object file or directory is absent. |
+| `AVAILABLE` | The local managed file was readable and matched the bound byte length and SHA-256 during this call. |
+
+Missing or unreadable databases fail at `db` with `INVALID_INPUT`/2. An
+uninitialized database returns `INPUT_INCOMPLETE`/3. Corrupt bytes fail with
+`FAIL`/1, invalid storage entries or ownership with the existing typed error,
+and storage I/O errors such as denied access or a missing owner file with
+`INTERNAL`/6. Errors retain a diagnostic and return `results:null`. The query
+does not create a library, claim store ownership, or repair missing files.
+
+The observation applies to one version in a private, cooperating local library.
+It streams the managed file and is independent of the stored `presence` and
+`--max-bytes`. It provides no guarantee about later reads, external references,
+preview rendering, format validity, search, or usage rights.
 
 `catalog references` returns
 `{"scope":"stored_local_exact_component_references","references":[...]}`.

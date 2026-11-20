@@ -11,7 +11,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub use crate::catalog::objects_domain::{Collection, StoredObject};
+pub(crate) fn redirected(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Includes junctions and other reparse points.
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.is_symlink()
+    }
+}
+
+pub use crate::catalog::objects_domain::{Collection, FileAvailability, StoredObject};
 /// Preserve the original IO/database diagnostic; rejected input never registers a version.
 #[derive(Debug)]
 pub enum StorageError {
@@ -82,6 +95,14 @@ pub(crate) fn reference_guard(root: &Path) -> Result<Guard, LibraryError> {
 // A directory may hold multiple SQLite files, but its objects belong to exactly one.
 // Relative database filename keeps a closed whole-library move possible.
 pub(crate) fn bind(conn: &Connection, root: &Path) -> Result<(), StorageError> {
+    object_binding(conn, root, true)
+}
+
+pub(crate) fn check_binding(conn: &Connection, root: &Path) -> Result<(), StorageError> {
+    object_binding(conn, root, false)
+}
+
+fn object_binding(conn: &Connection, root: &Path, create: bool) -> Result<(), StorageError> {
     let db =
         Path::new(conn.path().ok_or(StorageError::Invalid("file database"))?).canonicalize()?;
     let name = db
@@ -89,24 +110,27 @@ pub(crate) fn bind(conn: &Connection, root: &Path) -> Result<(), StorageError> {
         .and_then(|s| s.to_str())
         .ok_or(StorageError::Invalid("UTF-8 database filename"))?;
     let owner = root.join(".aw-object-owner");
-    match OpenOptions::new().write(true).create_new(true).open(&owner) {
-        Ok(mut file) => {
-            file.write_all(name.as_bytes())?;
-            file.sync_all()?;
-        }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            if !fs::symlink_metadata(&owner)?.file_type().is_file() {
-                return Err(StorageError::Invalid("store owner file"));
+    if create {
+        match OpenOptions::new().write(true).create_new(true).open(&owner) {
+            Ok(mut file) => {
+                file.write_all(name.as_bytes())?;
+                file.sync_all()?;
+                return Ok(());
             }
-            let mut bytes = Vec::new();
-            File::open(&owner)?.take(4096).read_to_end(&mut bytes)?;
-            if bytes != name.as_bytes() {
-                return Err(StorageError::Invalid(
-                    "object directory belongs to another database",
-                ));
-            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
         }
-        Err(e) => return Err(e.into()),
+    }
+    let metadata = fs::symlink_metadata(&owner)?;
+    if !metadata.is_file() || redirected(&metadata) {
+        return Err(StorageError::Invalid("store owner file"));
+    }
+    let mut bytes = Vec::new();
+    File::open(&owner)?.take(4096).read_to_end(&mut bytes)?;
+    if bytes != name.as_bytes() {
+        return Err(StorageError::Invalid(
+            "object directory belongs to another database",
+        ));
     }
     Ok(())
 }

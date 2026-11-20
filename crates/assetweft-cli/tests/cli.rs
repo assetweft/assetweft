@@ -5367,3 +5367,145 @@ fn catalog_export_partial_publication_never_adopts_or_sweeps() {
         assert_eq!(fs::read(keep).unwrap(), b"abc");
     }
 }
+
+#[test]
+fn catalog_file_availability_observes_exact_local_bytes_without_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let query = |id: &str| {
+        invoke(&catalog_args(
+            "file-availability",
+            db.as_os_str(),
+            OsStr::new(id),
+        ))
+    };
+    let observe = |id: &str, expected: &str| {
+        catalog_query(
+            &db,
+            "file-availability",
+            id,
+            json!({"scope":"local_managed_version_bytes","version_id":id,"availability":expected}),
+        );
+    };
+    let (out, value) = query("absent");
+    assert_eq!(out.status.code(), Some(2), "{value}");
+    assert_eq!(value["command"], "catalog file-availability");
+    assert_eq!(value["errors"][0]["field_path"], "db");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+
+    fs::write(&db, []).unwrap();
+    let (out, value) = query("absent");
+    assert_eq!(out.status.code(), Some(3), "{value}");
+    assert!(fs::read(&db).unwrap().is_empty());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+
+    let (out, value) = invoke(&[
+        OsStr::new("library"),
+        OsStr::new("init"),
+        OsStr::new("--db"),
+        db.as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    let source_fixture = fixture("mesh_only.glb");
+    let bytes = fs::read(&source_fixture).unwrap();
+    let original = dir.path().join("original.glb");
+    fs::write(&original, &bytes).unwrap();
+    let version = dir.path().join("version.json");
+    let mut wire = catalog_write_wire("metadata", "MISSING", false);
+    let hash = "4658deaae78fb1ae6050baca75a8c098db6ccad311c74ba02097fceac01e45a5";
+    wire["content_hash"] = json!(hash);
+    wire["source_format"] = json!("GLB");
+    fs::write(&version, wire.to_string()).unwrap();
+    let (out, value) = invoke(&catalog_write_args("register-version", &db, &version));
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    let owner = dir.path().join(".aw-object-owner");
+    let objects = dir.path().join("objects");
+    observe("metadata", "METADATA_ONLY");
+    observe("absent", "UNKNOWN_VERSION");
+    assert!(!owner.exists());
+    assert!(!objects.exists());
+
+    wire["version_id"] = json!("managed");
+    wire["presence"] = json!("UNKNOWN");
+    fs::write(&version, wire.to_string()).unwrap();
+    let (out, value) = invoke(&object_args(
+        &db,
+        &version,
+        &original,
+        &bytes.len().to_string(),
+    ));
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    let db_bytes = fs::read(&db).unwrap();
+    let owner_bytes = fs::read(&owner).unwrap();
+    let cas = objects.join(hash);
+    observe("managed", "AVAILABLE");
+    observe("metadata", "METADATA_ONLY");
+    assert_eq!(fs::read(&cas).unwrap(), bytes);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = fs::metadata(&cas).unwrap().permissions();
+        fs::set_permissions(&cas, fs::Permissions::from_mode(0o000)).unwrap();
+        let read_probe = fs::File::open(&cas);
+        let (out, value) = query("managed");
+        fs::set_permissions(&cas, permissions).unwrap();
+        if let Err(error) = read_probe {
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(out.status.code(), Some(6), "{value}");
+            assert!(value["results"].is_null());
+            assert!(
+                value["errors"][0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("PermissionDenied")
+            );
+        }
+    }
+
+    let mut corrupted = bytes.clone();
+    corrupted[0] ^= 1;
+    fs::write(&cas, &corrupted).unwrap();
+    let (out, value) = query("managed");
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert_eq!(value["errors"][0]["message"], "Corrupt");
+    assert!(value["results"].is_null());
+    assert_eq!(fs::read(&cas).unwrap(), corrupted);
+
+    fs::remove_file(&cas).unwrap();
+    observe("managed", "MISSING");
+    fs::create_dir(&cas).unwrap();
+    let (out, value) = query("managed");
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert!(value["results"].is_null());
+    fs::remove_dir(&cas).unwrap();
+    fs::remove_dir(&objects).unwrap();
+    observe("managed", "MISSING");
+    assert!(!objects.exists());
+
+    fs::remove_file(&owner).unwrap();
+    let (out, value) = query("managed");
+    assert_eq!(out.status.code(), Some(6), "{value}");
+    assert!(value["results"].is_null());
+    assert!(
+        value["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("NotFound")
+    );
+    assert!(!owner.exists());
+    fs::write(&owner, &owner_bytes).unwrap();
+
+    catalog_query(
+        &db,
+        "version",
+        "managed",
+        json!({"scope":"stored_local_asset_version_metadata","version":wire}),
+    );
+    assert_eq!(fs::read(&db).unwrap(), db_bytes);
+    assert_eq!(fs::read(&owner).unwrap(), owner_bytes);
+    assert_eq!(fs::read(&original).unwrap(), bytes);
+    assert_eq!(fs::read(&source_fixture).unwrap(), bytes);
+    assert!(!dir.path().join(".aw-storage.lock").exists());
+}

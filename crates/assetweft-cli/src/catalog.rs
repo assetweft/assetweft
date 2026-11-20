@@ -9,6 +9,7 @@ use assetweft_core::{
     assurance as val,
     catalog::domain::{Decision, Feedback, FeedbackRecord},
     library::{AssetVersion, ComponentReference, ComponentRole, Presence},
+    storage::{FileAvailability, StorageError},
 };
 use clap::ArgMatches;
 use serde_json::{Value, json};
@@ -79,7 +80,12 @@ pub(super) fn query_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let opened = if action == "file-availability" {
+        Application::open_read_only(db)
+    } else {
+        Application::open(db)
+    };
+    let mut app = match opened {
         Ok(app) => app,
         Err(e) => {
             return finish(
@@ -90,6 +96,34 @@ pub(super) fn query_response(
             );
         }
     };
+    if action == "file-availability" {
+        let version_id = id("version-id");
+        return match app.file_availability(version_id) {
+            Ok(observed) => {
+                let availability = match observed {
+                    FileAvailability::UnknownVersion => "UNKNOWN_VERSION",
+                    FileAvailability::MetadataOnly => "METADATA_ONLY",
+                    FileAvailability::Missing => "MISSING",
+                    FileAvailability::Available => "AVAILABLE",
+                };
+                finish(
+                    0,
+                    "PASS",
+                    json!([]),
+                    json!({"scope":"local_managed_version_bytes","version_id":version_id,"availability":availability}),
+                )
+            }
+            Err(e) => {
+                let (code, status) = storage_outcome(&e);
+                finish(
+                    code,
+                    status,
+                    json!([error("catalog", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
     let result = match action {
         "version" => app.asset_version(id("version-id")).map(|version| {
             json!({"scope":"stored_local_asset_version_metadata","version":version.map(version_value)})
@@ -121,6 +155,15 @@ pub(super) fn query_response(
                 Value::Null,
             )
         }
+    }
+}
+
+fn storage_outcome(failure: &StorageError) -> (i32, &'static str) {
+    match failure {
+        StorageError::Library(e) => library_outcome(e),
+        StorageError::Invalid(_) => (2, "INVALID_INPUT"),
+        StorageError::Corrupt => (1, "FAIL"),
+        StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
     }
 }
 
@@ -278,14 +321,8 @@ pub(super) fn write_response(
             );
         }
     };
-    let storage_error = |e: assetweft_core::storage::StorageError| {
-        use assetweft_core::storage::StorageError;
-        let (code, status) = match &e {
-            StorageError::Library(e) => library_outcome(e),
-            StorageError::Invalid(_) => (2, "INVALID_INPUT"),
-            StorageError::Corrupt => (1, "FAIL"),
-            StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
-        };
+    let storage_error = |e: StorageError| {
+        let (code, status) = storage_outcome(&e);
         finish(
             code,
             status,

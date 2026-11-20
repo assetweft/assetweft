@@ -3,12 +3,14 @@
 //! Callers: storage compatibility composition; invariants: lease before IMMEDIATE, publish before registration.
 use super::{
     domain::AssetVersion,
-    objects_domain::{self as policy, Collection, ObjectPolicyError, StoredObject, hash_ok},
+    objects_domain::{
+        self as policy, Collection, FileAvailability, ObjectPolicyError, StoredObject, hash_ok,
+    },
     objects_ports::ManagedObjects,
 };
 use crate::{
     library,
-    storage::{StorageError, bind, lock},
+    storage::{StorageError, bind, check_binding, lock, redirected},
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -75,7 +77,8 @@ fn digest(reader: &mut impl Read) -> Result<(String, u64), StorageError> {
     ))
 }
 pub(super) fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageError> {
-    if !fs::symlink_metadata(path)?.file_type().is_file() {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || redirected(&metadata) {
         return Err(StorageError::Corrupt);
     }
     let mut file = File::open(path)?;
@@ -85,7 +88,7 @@ pub(super) fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageEr
     Ok(())
 }
 
-// Caller holds the store lease. The managed binding must agree with the immutable version.
+// Resolves the immutable version binding without inspecting or modifying the filesystem.
 pub(super) fn managed_record(
     conn: &Connection,
     id: &str,
@@ -95,8 +98,8 @@ pub(super) fn managed_record(
     let found = conn
         .query_row(
             "SELECT o.content_hash, o.byte_length, a.content_hash
-         FROM aw_managed_versions v JOIN aw_objects o USING(content_hash)
-         JOIN aw_asset_versions a USING(version_id) WHERE v.version_id=?1",
+         FROM aw_managed_versions v LEFT JOIN aw_objects o ON o.content_hash=v.content_hash
+         LEFT JOIN aw_asset_versions a ON a.version_id=v.version_id WHERE v.version_id=?1",
             [id],
             |row| {
                 Ok((
@@ -116,6 +119,40 @@ pub(super) fn managed_record(
         }
         Some(_) => Err(StorageError::Corrupt),
         None => Ok(None),
+    }
+}
+
+pub(crate) fn file_availability(
+    conn: &mut Connection,
+    root: &Path,
+    id: &str,
+) -> Result<FileAvailability, StorageError> {
+    if super::sqlite_metadata::asset_version(conn, id)?.is_none() {
+        return Ok(FileAvailability::UnknownVersion);
+    }
+    let Some(object) = managed_record(conn, id)? else {
+        return Ok(FileAvailability::MetadataOnly);
+    };
+    // The immutable version already retains the object against cooperative GC.
+    check_binding(conn, root)?;
+    let directory = root.join("objects");
+    let verify_managed = || {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir() || redirected(&metadata) {
+            return Err(StorageError::Invalid("objects must be a real directory"));
+        }
+        verify(
+            &directory.join(&object.content_hash),
+            &object.content_hash,
+            object.byte_length,
+        )
+    };
+    match verify_managed() {
+        Ok(()) => Ok(FileAvailability::Available),
+        Err(StorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(FileAvailability::Missing)
+        }
+        Err(error) => Err(error),
     }
 }
 

@@ -132,8 +132,21 @@ fn stages_only_the_bound_motion_and_reopens_the_explicit_nonacceptance() {
         .iter()
         .zip(c["proposed"].as_array().unwrap())
     {
+        // Independent walk from each mesh attribute, skin and animation sampler
+        // through its accessor and complete BIN view on the licensed pair.
+        let expected = match after["role"].as_str().unwrap() {
+            "materials" => "b1729ff12b1f4610af0ad3598abc9fd08fc5af21b0f55de79d276269fc14cfb1",
+            "mesh" => "4c696f162fb41079ccf4bef4c6bec474871fd34a043e63c37da8cf09f95902a4",
+            "rig" => "c820d21a30ee90209881bcc9e299d1523fc765acf18f55f07b11ae358076caac",
+            "motion" => "340ecfb15607f8abfc13610a40c9538426b7d3dfec9b41e6f806d81a0e8cc88e",
+            _ => panic!("unexpected staged role"),
+        };
+        assert_eq!(after["measured_sha256"], expected);
         if before["role"] == "motion" {
-            assert_ne!(before["measured_sha256"], after["measured_sha256"]);
+            assert_eq!(
+                before["measured_sha256"],
+                "95dd514c688c7b48c02f43ae90b8a87d86971e6984616eb1e2ef473b540bf6ac"
+            );
             assert_eq!(after["version"], "edited-motion");
         } else {
             assert_eq!(before, after);

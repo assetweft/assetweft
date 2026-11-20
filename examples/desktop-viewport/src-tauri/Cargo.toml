@@ -1,0 +1,12 @@
+# Isolated M6 incoming adapter; Core is the sole business implementation.
+[package]
+name = "aw-viewport-static"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+[workspace]
+[dependencies]
+assetweft-core = { path = "../../../crates/assetweft-core" }
+tauri = { version = "=2.9.3", features = ["custom-protocol"] }
+[build-dependencies]
+tauri-build = "=2.5.2"

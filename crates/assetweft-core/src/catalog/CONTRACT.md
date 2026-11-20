@@ -223,3 +223,29 @@ IDs. Storage parents must be real local directories on the library mount. Linux
 requires the kernel to report mount roots through statx and Windows rejects reparse points. Replacing
 paths concurrently outside the lease or forging private receipt state is outside
 that storage contract. Backup and sync do not consume export receipts.
+
+## Exact-version PNG previews
+
+`Application::preview(version_id)` and `catalog preview --db DB --version-id ID`
+resolve the immutable version and require its declared source format to be PNG
+(case-insensitive). Under the common storage lease, the adapter checks database
+identity, store ownership and the managed binding, then verifies the source file
+against the registered length and SHA-256 on every call. Unknown versions return
+CLI `INVALID_INPUT` (2). A registered managed PNG whose file is absent from its
+validated object directory returns `INPUT_INCOMPLETE` (3). Both return null results.
+
+Input must be a single static RGBA8 PNG, at most 16 MiB, 4096 pixels on either
+axis and 4,194,304 pixels total. Nearest-neighbour sampling fits it into 128 × 128
+without enlargement and copies all four channels, including straight alpha.
+Untagged samples stay untagged. The encoder preserves explicit gAMA and cHRM
+values and sRGB rendering intent. With sRGB, supplied fallback values must agree
+with the PNG sRGB values. ICC profiles (iCCP), video/HDR metadata (cICP, mDCV,
+cLLI), significant bits (sBIT), suggested backgrounds (bKGD) and Exif (eXIf)
+are rejected. The preview performs no profile conversion.
+
+The returned `relative_path` is `previews/<sha256 of UTF-8 version ID>.v2.png`.
+The rendition suffix gives color-aware previews their own destination. Legacy
+`<hash>.png` files remain in place. The adapter regenerates from verified CAS
+bytes, reuses a regular local target only on matching length and SHA-256, and
+publishes a new file without replacement. Conflicting entries cause an error.
+Preview writes no source, CAS or database bytes and performs no cache cleanup.

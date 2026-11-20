@@ -4,6 +4,7 @@
 //! Invariants: no new support or authority claims.
 
 pub mod checks;
+pub mod rig_blender;
 
 pub(crate) mod application;
 mod domain;

@@ -76,3 +76,11 @@ come from Production; Application executor composition uses Execution and
 Consumption owners. Legacy public compatibility exports remain identical items,
 and this entry move does not complete whole-DDD migration or improve F0, rights,
 numerical scope, engine, provider, production or authorization evidence.
+
+
+`rig_blender::measure_rigged_simple` is a separate optional measurement on one pinned GLB.
+It requires the existing numeric rig checks to pass, then uses a caller-selected local Blender
+and checks its evaluated coordinates against the preset and disabled-driver reference.
+The [CLI profile](../../../assetweft-cli/README.md#rigged-simple-bend-measurement) documents
+the asset identity, license, pose, units and tolerance. Generic rig inspection still reports
+pose deformation as NOT_RUN.

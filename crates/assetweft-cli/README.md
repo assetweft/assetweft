@@ -1,7 +1,7 @@
 # assetweft CLI v1 (AW-033:A/B)
 
 Build with `cargo build -p assetweft-cli --locked`; run `target/debug/assetweft`.
-No daemon, Python, model, shell, external resource resolution, network or remote execution.
+The optional `rig-bend` command runs a local Blender executable. Other commands run without Blender.
 `inspect`/`validate`/`plan` never touch a database. Explicit `library init` initializes
 a named local library; `workflow create` persists a graph, `workflow status` reads state,
 and `workflow cancel` persists a cancellation request. `budget approve` stores an immutable local allowance declaration and `budget balance`
@@ -13,6 +13,7 @@ query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
+assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
 assetweft [--call-id ID] validate FILE.glb [--role static-mesh|rigged-character|animated-character]
 assetweft [--call-id ID] plan --request request.json --trusted-context context.json
 assetweft [--call-id ID] library init --db PATH
@@ -43,12 +44,12 @@ and `budget reserve --request`, `candidate initialize --contract` and `candidate
 has no effect on library init/status/cancel/balance/intent/candidate/catalog queries or feedback-add.
 Its existing numeric parser validation still applies to every command.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-`library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
+`rig-bend`, `library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
+`command` is `inspect`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -743,3 +744,18 @@ scale, fits the transformed geometry with equal margins on the longest axis,
 and returns `.glb-v1.png` under the PNG output scope. Inputs are capped at
 64 KiB and 256 triangles. See the [Catalog contract](../assetweft-core/src/catalog/CONTRACT.md#exact-version-png-wav-and-glb-previews)
 for the supported attributes, material and scene layout.
+
+
+### Rigged Simple bend measurement
+
+Use the unchanged **Rigged Simple** GLB (© 2017 Cesium) from the [pinned Khronos sample directory](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/f0920f5b32d172a30efe3f9257e965918831e6ea/Models/RiggedSimple).
+The [per-model license](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/f0920f5b32d172a30efe3f9257e965918831e6ea/Models/RiggedSimple/LICENSE.md) is [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The GLB SHA-256 is `3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401`.
+The executable must be a trusted local Blender 5.1.2 build `ec6e62d40fa9`.
+The output directory must be new. It holds a staged copy of the input, native logs,
+and the coordinates measured at rest, after a 90° world +Z rotation of Bone.001, and
+with the armature modifier disabled during that rotation. Coordinates are glTF world metres.
+The numeric rig check runs before import. The measurement checks all 160 no-op positions
+against rest and three reference landmarks against the expected bend, with a
+maximum error of 0.00001 m per coordinate. These measurements describe the preset
+pose on this sample. The source file and its animation are preserved.

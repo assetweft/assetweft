@@ -51,6 +51,11 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
+        .subcommand(Command::new("rig-bend")
+            .about("Measure the pinned Cesium Rigged Simple bend using optional Blender 5.1.2")
+            .arg(file())
+            .arg(Arg::new("blender").long("blender").required(true).value_parser(value_parser!(PathBuf)))
+            .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf))))
         .subcommand(
             Command::new("library")
                 .about("Explicit local library initialization; may apply existing product migrations")
@@ -476,6 +481,7 @@ fn run() -> (i32, Value) {
         return production::workflow_response(wire, call_id, action, workflow_args, limits);
     }
     match command {
+        "rig-bend" => assurance::rig_bend_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),
         "plan" => production::plan_response(call_id, args, limits),

@@ -51,6 +51,10 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
+        .subcommand(Command::new("motion-stance")
+            .about("Check a declared support foot using sampled world-space motion")
+            .arg(file())
+            .arg(Arg::new("role").long("role").required(true).value_parser(["grounded-humanoid", "hovering"])))
         .subcommand(Command::new("motion-strike")
             .about("Append the in-place strike clip to Cesium Rigged Simple")
             .arg(Arg::new("with-idle").long("with-idle").help("Include a looping fixed-root distal sway").action(clap::ArgAction::SetTrue))
@@ -489,6 +493,7 @@ fn run() -> (i32, Value) {
         "motion-strike" | "rig-bend" => {
             assurance::rig_profile_response(command, call_id, args, limits)
         }
+        "motion-stance" => assurance::stance_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),
         "plan" => production::plan_response(call_id, args, limits),

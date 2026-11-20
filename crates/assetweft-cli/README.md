@@ -13,6 +13,7 @@ query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
+assetweft [--call-id ID] motion-stance SAMPLES.json --role grounded-humanoid|hovering
 assetweft [--call-id ID] motion-strike RiggedSimple.glb [--with-idle] --out NEW_FILE.glb
 assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
 assetweft [--call-id ID] validate FILE.glb [--role static-mesh|rigged-character|animated-character]
@@ -51,7 +52,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
+`command` is `inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -70,6 +71,28 @@ cross-platform canonical digest.
 `inspect` delegates static GLB structure inspection to core geometry. PASS means
 only that inspection returned a report; unknown units stay UNKNOWN and the
 report lists unexecuted checks. It does not render or read linked URIs.
+
+### Sampled foot slip
+
+`motion-stance` reads one clip's sampled marker tracks. The caller declares the motion
+role, support-foot marker and inclusive stance interval. Supply consecutive frames
+starting at index 0, in world metres with Y up. A null position means missing evidence.
+For example, this programmatic left-sole track slides out 0.125 m and returns:
+
+```json
+{"stance":{"contact":"left_sole","frames":[0,2]},"tracks":[{"marker":"left_sole","world_y_up_m":[[0,0,0],[0.125,0,0],[0,0,0]]}]}
+```
+
+For `grounded-humanoid`, the check measures the largest horizontal (XZ) distance
+from the first stance sample. Up to and including 0.01 m is PASS/0; the example
+returns FAIL/1. The same bytes with `--role hovering` return INAPPLICABLE/5
+with a reason and zero evaluated samples. Only PASS returns zero for this command.
+Missing, ambiguous or incomplete stance evidence returns NOT_RUN/3. Malformed
+track data returns INVALID_INPUT/2. Reports include the sample file SHA-256.
+
+Contact identity, units and role come from the author. The result covers one declared
+contact at the supplied frames. Floor height, motion between frames, clip extraction
+and character classification are outside this check.
 
 `validate` delegates core bounded file and role checks (default static mesh).
 PASS/0 covers these implemented checks only. Full semantics, provenance,

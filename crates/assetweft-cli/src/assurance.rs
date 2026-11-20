@@ -131,3 +131,44 @@ pub(super) fn rig_profile_response(
         }
     }
 }
+
+pub(super) fn stance_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    use assetweft_core::motion::stance::{MotionRole, Status, assess};
+    let role = match args.get_one::<String>("role").expect("required").as_str() {
+        "grounded-humanoid" => MotionRole::GroundedHumanoid,
+        "hovering" => MotionRole::Hovering,
+        _ => unreachable!("clap grammar"),
+    };
+    match assess(
+        args.get_one::<PathBuf>("file").expect("required"),
+        role,
+        limits,
+    ) {
+        Ok(report) => {
+            let (code, status) = match report.status {
+                Status::Pass => (0, "PASS"),
+                Status::Fail => (1, "FAIL"),
+                Status::Inapplicable => (5, "INAPPLICABLE"),
+                Status::NotRun => (3, "NOT_RUN"),
+            };
+            (
+                code,
+                envelope("motion-stance", call_id, status, json!([]), json!(report)),
+            )
+        }
+        Err(e) => (
+            2,
+            envelope(
+                "motion-stance",
+                call_id,
+                "INVALID_INPUT",
+                json!([error("file", "INVALID_INPUT", e)]),
+                Value::Null,
+            ),
+        ),
+    }
+}

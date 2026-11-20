@@ -6,7 +6,7 @@ The optional `rig-bend` command runs a local Blender executable. Other commands 
 a named local library; `workflow create` persists a graph, `workflow status` reads state,
 and `workflow cancel` persists a cancellation request. `budget approve` stores an immutable local allowance declaration and `budget balance`
 reads its local ledger. `budget reserve` stores a local call intent, `budget intent`
-reads it and `budget cancel` requests local cancellation. These commands never execute
+reads it, `budget receipts` reads its stored usage receipts, and `budget cancel` requests local cancellation. These commands never execute
 steps or call providers. `candidate show/receipt` query stored local descriptors and
 historical acceptance receipts through Production. `candidate initialize` explicitly creates a local fixture head and `candidate propose` stages a managed byte fixture descriptor. `catalog version/references/current`
 query stored exact metadata and the local fixture head through Catalog.
@@ -26,6 +26,7 @@ assetweft [--call-id ID] budget approve --db EXISTING_DB --allowance FILE
 assetweft [--call-id ID] budget balance --db EXISTING_DB --budget-id ID
 assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
 assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] budget receipts --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] candidate initialize --db EXISTING_DB --version-id ID --contract FILE
 assetweft [--call-id ID] candidate propose --db EXISTING_DB --proposal FILE
@@ -44,7 +45,7 @@ assetweft [--call-id ID] catalog feedback-latest --db EXISTING_DB --asset-id ID 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
 16777216, minimum 1), including `workflow create --steps`, `budget approve --allowance`
 and `budget reserve --request`, `candidate initialize --contract` and `candidate propose --proposal`; it never bounds database size or query result sizes and
-has no effect on library init/status/cancel/balance/intent/candidate/catalog queries or feedback-add.
+has no effect on library init/status/cancel/balance/intent/receipts/candidate/catalog queries or feedback-add.
 Its existing numeric parser validation still applies to every command.
 The optional [Rigged Simple motion profile](../../examples/rigged-simple/README.md) appends a reproducible, in-place strike to a new GLB. It uses the same bounded input reader.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
@@ -55,7 +56,7 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
 `command` is `inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
-`budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
+`budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
 `catalog feedback-latest`, `arguments`,
 `help` or `version`; nested values
@@ -266,12 +267,13 @@ not complete full AW-033:B, real provider or product acceptance.
 ```text
 assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
 assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] budget receipts --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
 ```
 
-These commands use the same existing-file guard and `Application::open` described above.
-They never initialize/create a database implicitly; the inherited check/open race and
-connection pragmas still apply. `--call-id` is envelope correlation only, separate from
+These commands use the existing-file guard. `reserve`, `intent`, and `cancel` use
+`Application::open` with the inherited check/open race and connection pragmas.
+`receipts` uses `Application::open_read_only`. `--call-id` is envelope correlation only, separate from
 `request.id` and the verbatim `--intent-id`.
 
 `reserve` reads one bounded, strict JSON **object** through the existing `--max-bytes` reader:
@@ -305,6 +307,16 @@ uses the same result shape, including `intent:null` when the API returns None (a
 absent/empty ID). State is explicitly one of `PREPARING`, `ATTEMPTING`, `UNKNOWN`,
 `CONFIRMED`, `RELEASED`; charge is the returned integer or null, never an inferred fee zero.
 
+`receipts` passes the exact `--intent-id` to `Application::call_receipts` once.
+PASS/0 returns `results.scope` = `local_call_receipts` and `results.receipts`, an array of
+persisted receipts in receipt-ID order. An unknown or empty ID, or an intent with no
+receipts, returns an empty array. Each receipt includes `id`, `source`, `resolution`,
+and `usage`. Each usage entry preserves its `source`, `unit`, and `amount`.
+Units are `"Token"`, `"Task"`, `"Second"`, or
+`{"CurrencyMinor":{"currency":"USD","decimals":2}}` (example currency and scale).
+`amount: null` is unknown and `amount: 0` is a recorded zero. This command reads
+local evidence through SQLite and makes no provider request.
+
 `cancel` calls `Application::cancel_call` once. Its success result is only
 `{"scope":"stored_local_call_cancellation_request","intent_id":"intent-1"}`.
 There is no extra read after the write, claimed release/refund/stop, or synthesized receipt.
@@ -323,7 +335,7 @@ intent/balance separately. This slice is not full AW-033:B or product acceptance
 
 Exit mapping (CONTRACTS §10.5): 0 scoped checks pass / declaration consistent /
 library initialized / workflow created / status read / cancellation request persisted /
-local allowance stored, balance/intent or Catalog metadata/head read, or local intent reserved/cancellation requested /
+local allowance stored, balance/intent/receipts or Catalog metadata/head read, or local intent reserved/cancellation requested /
 help/version; 1 core validation
 or other contract FAIL (including persisted workflow Database diagnostics); 2 malformed
 arguments, unreadable/oversized files, malformed JSON/GLB inspection, invalid or non-regular

@@ -1789,6 +1789,128 @@ fn local_intent(db: &Path, id: &str) -> Value {
     v["results"]["intent"].clone()
 }
 #[test]
+fn budget_receipts_preserve_persisted_usage_without_writing() {
+    use assetweft_core::budget::{Receipt, Request, Resolution, Unit, Usage};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _, request) = intent_fixture(dir.path());
+    let mut request: Request = serde_json::from_value(request).unwrap();
+    let id = request.id.clone();
+    let other_id = "intent α";
+    let empty_id = "no receipts yet";
+    let early = Receipt {
+        id: " a α ".into(),
+        source: " TEST_FIXTURE unresolved ".into(),
+        resolution: Resolution::Unresolved,
+        usage: vec![Usage {
+            unit: Unit::Second,
+            amount: None,
+            source: " TEST_FIXTURE unknown seconds ".into(),
+        }],
+    };
+    let late = Receipt {
+        id: " z α ".into(),
+        source: " TEST_FIXTURE confirmed ".into(),
+        resolution: Resolution::Confirmed { charge: 3 },
+        usage: vec![
+            Usage {
+                unit: Unit::Token,
+                amount: Some(3),
+                source: " tokens ".into(),
+            },
+            Usage {
+                unit: Unit::Task,
+                amount: Some(0),
+                source: " tasks ".into(),
+            },
+            Usage {
+                unit: Unit::Second,
+                amount: Some(8),
+                source: " seconds ".into(),
+            },
+            Usage {
+                unit: Unit::CurrencyMinor {
+                    currency: "USD".into(),
+                    decimals: 2,
+                },
+                amount: Some(17),
+                source: " currency ".into(),
+            },
+        ],
+    };
+    let other = Receipt {
+        id: early.id.clone(),
+        source: " TEST_FIXTURE other intent ".into(),
+        resolution: Resolution::AuthoritativeNoCharge,
+        usage: vec![],
+    };
+
+    let mut app = Application::open(&db).unwrap();
+    for call in [&id[..], other_id, empty_id] {
+        request.id = call.into();
+        app.reserve_call(&request).unwrap();
+    }
+    assert!(app.submit_test_fixture(&id, || {}).unwrap());
+    app.reconcile_call(&id, &early).unwrap();
+    app.reconcile_call(&id, &late).unwrap();
+    assert!(app.submit_test_fixture(other_id, || {}).unwrap());
+    app.reconcile_call(other_id, &other).unwrap();
+    app.close().unwrap();
+
+    let bytes = fs::read(&db).unwrap();
+    let expected = json!([
+        {"id":" a α ","source":" TEST_FIXTURE unresolved ","resolution":"Unresolved",
+         "usage":[{"unit":"Second","amount":null,"source":" TEST_FIXTURE unknown seconds "}]},
+        {"id":" z α ","source":" TEST_FIXTURE confirmed ","resolution":{"Confirmed":{"charge":3}},
+         "usage":[{"unit":"Token","amount":3,"source":" tokens "},
+                  {"unit":"Task","amount":0,"source":" tasks "},
+                  {"unit":"Second","amount":8,"source":" seconds "},
+                  {"unit":{"CurrencyMinor":{"currency":"USD","decimals":2}},
+                   "amount":17,"source":" currency "}]}
+    ]);
+    for (call, receipts) in [
+        (&id[..], expected),
+        (other_id, json!([other])),
+        (empty_id, json!([])),
+        ("absent", json!([])),
+        ("", json!([])),
+    ] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new(other_id)];
+        args.extend(budget_args("receipts", db.as_os_str(), OsStr::new(call)));
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert!(out.stderr.is_empty());
+        assert_eq!(
+            v,
+            json!({"schema_version":1,"command":"budget receipts","call_id":other_id,
+                   "status":"PASS","errors":[],
+                   "results":{"scope":"local_call_receipts","receipts":receipts}})
+        );
+    }
+    assert!(
+        fs::read(&db).unwrap() == bytes,
+        "receipt queries changed the database bytes"
+    );
+    let app = Application::open_read_only(&db).unwrap();
+    assert_eq!(app.call_receipts(&id).unwrap(), vec![early, late]);
+    assert_eq!(app.call_receipts(other_id).unwrap(), vec![other]);
+
+    let missing = dir.path().join("missing.sqlite");
+    let invalid = dir.path().join("invalid.sqlite");
+    fs::write(&invalid, b"invalid database").unwrap();
+    for path in [&missing, &invalid, dir.path()] {
+        let (out, v) = invoke(&budget_args("receipts", path.as_os_str(), OsStr::new(&id)));
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["command"], "budget receipts");
+        assert_eq!(v["status"], "INVALID_INPUT");
+        assert_eq!(v["errors"][0]["field_path"], "db");
+        assert_eq!(v["results"], Value::Null);
+    }
+    assert!(!missing.exists());
+    assert_eq!(fs::read(&invalid).unwrap(), b"invalid database");
+}
+
+#[test]
 fn intent_reserve_reopen_exact_identity_and_quote_semantics() {
     use assetweft_core::budget::{Allowance, Approval, Unit};
     let dir = tempfile::tempdir().unwrap();

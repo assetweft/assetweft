@@ -24,6 +24,40 @@ pub(crate) fn check_contract(c: &FixtureContract) -> Result<(), AcceptanceError>
     Ok(())
 }
 
+/// For the pinned profile the clip writer consumes the original tracks and
+/// bound mesh/skin topology. None of the other indexed component outputs reads clips.
+pub(crate) fn affected_steps(
+    base: &[ComponentSnapshot],
+    editable: &[String],
+) -> Result<Vec<super::workflow_domain::Step>, AcceptanceError> {
+    let mut steps = Vec::new();
+    for part in base {
+        let inputs: &[&str] = match part.role.as_str() {
+            "motion" => &["mesh", "rig", "motion"],
+            "mesh" => &["mesh"],
+            "materials" => &["materials"],
+            "rig" => &["rig"],
+            _ => return Err(AcceptanceError::InvalidInput("unknown profile role")),
+        };
+        if inputs
+            .iter()
+            .any(|input| editable.iter().any(|role| role == input))
+        {
+            if !editable.contains(&part.role) {
+                return Err(AcceptanceError::InvalidInput(
+                    "affected result is BYTE locked",
+                ));
+            }
+            steps.push(super::workflow_domain::Step {
+                id: part.role.clone(),
+                // Every prerequisite outside this edit is a measured Catalog input.
+                dependencies: Vec::new(),
+            });
+        }
+    }
+    Ok(steps)
+}
+
 pub(crate) struct CheckedOwner {
     pub asset_id: String,
     pub parts: Vec<ComponentSnapshot>,

@@ -180,6 +180,12 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(PathBuf))),
                 )
                 .subcommand(
+                    Command::new("schedule-rigged-simple-motion")
+                        .about("Schedule affected steps for a pinned motion edit on an initialized head")
+                        .arg(db())
+                        .arg(Arg::new("proposal").long("proposal").required(true).value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
                     Command::new("propose-rigged-simple-motion")
                         .about("Freeze an exact Cesium Rigged Simple motion-only byte candidate")
                         .arg(db())
@@ -473,6 +479,7 @@ fn run() -> (i32, Value) {
         let wire = match action {
             "initialize" => "candidate initialize",
             "propose" => "candidate propose",
+            "schedule-rigged-simple-motion" => "candidate schedule-rigged-simple-motion",
             "propose-rigged-simple-motion" => "candidate propose-rigged-simple-motion",
             "attempt" => "candidate attempt",
             "show" => "candidate show",
@@ -481,7 +488,10 @@ fn run() -> (i32, Value) {
         };
         if matches!(
             action,
-            "initialize" | "propose" | "propose-rigged-simple-motion"
+            "initialize"
+                | "propose"
+                | "propose-rigged-simple-motion"
+                | "schedule-rigged-simple-motion"
         ) {
             return production::candidate_write_response(wire, call_id, action, query_args, limits);
         }

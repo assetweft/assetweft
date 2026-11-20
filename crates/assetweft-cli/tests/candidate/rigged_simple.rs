@@ -1,5 +1,5 @@
 //! Actual-binary staging, locked reference selection and fresh receipt reads on Cesium's licensed sample.
-//! Application seeds managed immutable versions; no fixture head or executor participates.
+//! Application and CLI tests cover frozen managed versions, conditional acceptance and the scoped motion workflow.
 use super::*;
 use assetweft_core::{
     library::{AssetVersion, ComponentReference, ComponentRole, Presence},
@@ -31,6 +31,16 @@ fn commit(
     };
     app.commit_object(&metadata, &mut &bytes[..], bytes.len() as u64, 128 * 1024)
         .unwrap();
+}
+
+fn role_name(role: ComponentRole) -> &'static str {
+    match role {
+        ComponentRole::Mesh => "mesh",
+        ComponentRole::Materials => "materials",
+        ComponentRole::Rig => "rig",
+        ComponentRole::Motion => "motion",
+        _ => panic!("unmapped licensed component"),
+    }
 }
 
 fn seed(dir: &Path) -> PathBuf {
@@ -65,13 +75,7 @@ fn seed(dir: &Path) -> PathBuf {
             &bytes,
         );
         for (role, mut payload) in rigged_simple_components(&bytes).unwrap() {
-            let role_id = match role {
-                ComponentRole::Mesh => "mesh",
-                ComponentRole::Materials => "materials",
-                ComponentRole::Rig => "rig",
-                ComponentRole::Motion => "motion",
-                _ => panic!("unexpected role"),
-            };
+            let role_id = role_name(role);
             let part = match (owner, role) {
                 ("changed-material", ComponentRole::Materials) => {
                     let mut changed: Value = serde_json::from_slice(&payload).unwrap();
@@ -306,4 +310,206 @@ fn declared_structure_advances_once_and_retains_a_distinct_stale_version() {
         "rigged-simple",
         json!({"scope":"stored_local_candidate_current","current":current}),
     );
+}
+
+#[test]
+fn measured_motion_edit_runs_only_its_affected_stage() {
+    use std::collections::BTreeMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("edit.sqlite");
+    let file = dir.path().join("request.json");
+    let output = dir.path().join("generated.glb");
+    let original = include_bytes!("../../../../examples/rigged-simple/RiggedSimple.glb");
+    let parts = rigged_simple_components(original).unwrap();
+    let pass = |args: &[&OsStr]| {
+        let (out, value) = candidate_invoke(args);
+        assert!(out.status.success(), "{args:?} {value}");
+        value["results"].clone()
+    };
+    let workflow = |action: &str, run: &OsStr| pass(&workflow_args(action, db.as_os_str(), run));
+    let record = |run: &OsStr, id: &str, raw: &Value| {
+        let outcome = dir.path().join("outcome.json");
+        fs::write(
+            &outcome,
+            json!({"state":"succeeded","raw":raw.to_string()}).to_string(),
+        )
+        .unwrap();
+        let mut args = workflow_args("finish", db.as_os_str(), run);
+        args.extend([
+            "--step-id".as_ref(),
+            id.as_ref(),
+            "--outcome".as_ref(),
+            outcome.as_os_str(),
+        ]);
+        pass(&args);
+    };
+
+    // Positive control: use the entire original's projected role inventory to
+    // build its Catalog inputs. Observe actual claims and actual per-role writes.
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    commit(
+        &mut app, "original", "sample", "UNKNOWN", "cesium", "GLB", original,
+    );
+    app.create_workflow(
+        "baseline",
+        &parts
+            .iter()
+            .map(|(r, _)| step(role_name(*r), &[]))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let mut seen = BTreeMap::new();
+    let mut drive = |run: &str, execute: &mut dyn FnMut(&str) -> Value| {
+        loop {
+            let claim = workflow("claim", run.as_ref());
+            let Some(id) = claim["step_id"].as_str() else {
+                break;
+            };
+            let entry = seen
+                .entry((run.to_owned(), id.to_owned()))
+                .or_insert((0, 0));
+            entry.0 += 1;
+            let result = execute(id);
+            entry.1 += 1;
+            record(run.as_ref(), id, &result);
+        }
+    };
+    drive("baseline", &mut |id| {
+        let (role, bytes) = parts.iter().find(|(r, _)| role_name(*r) == id).unwrap();
+        commit(&mut app, id, id, "UNKNOWN", "original", "JSON", bytes);
+        app.add_component_reference(&ComponentReference {
+            owner_version_id: "original".into(),
+            role: *role,
+            component_version_id: id.into(),
+        })
+        .unwrap();
+        json!({"component":id,"sha256":sha256(bytes)})
+    });
+    let contract = json!({"contract_id":"RIGGED_SIMPLE_MOTION_STRUCTURE_V1","max_component_bytes":16777216,"required_quality":[]});
+    fs::write(&file, contract.to_string()).unwrap();
+    let mut init = candidate_write_args("initialize", &db, &file);
+    init[5] = "original".as_ref();
+    pass(&init);
+    let proposal = json!({"id":"edit","base_version":"original","candidate_version":"edited","expected_revision":0,"editable":["motion"],"lock_mode":"BYTE","contract":contract});
+    fs::write(&file, proposal.to_string()).unwrap();
+    let schedule = candidate_write_args("schedule-rigged-simple-motion", &db, &file);
+    for (field, value) in [
+        ("editable", json!(["mesh"])),
+        ("lock_mode", json!("SEMANTIC")),
+        ("expected_revision", json!(1)),
+        ("contract", Value::Null),
+    ] {
+        let mut invalid = proposal.clone();
+        invalid[field] = value;
+        fs::write(&file, invalid.to_string()).unwrap();
+        assert_eq!(candidate_invoke(&schedule).0.status.code(), Some(2));
+    }
+    fs::write(&file, proposal.to_string()).unwrap();
+    assert!(app.asset_version("edited").unwrap().is_none());
+    let plan = pass(&schedule);
+    assert_eq!(plan["run_id"], proposal["id"]);
+    assert_eq!(plan["candidate_version"], proposal["candidate_version"]);
+    let run = plan["run_id"].as_str().unwrap();
+    let scheduled = workflow("status", run.as_ref());
+    assert_eq!(
+        scheduled["steps"],
+        json!([{"id":"motion","state":"pending","raw":null,"evidence":null}])
+    );
+    let export = pass(&catalog_args(
+        "materialize-export",
+        db.as_os_str(),
+        plan["base_version"].as_str().unwrap().as_ref(),
+    ));
+    let source = dir.path().join(export["relative_path"].as_str().unwrap());
+    assert!(!output.exists());
+    drive(run, &mut |id| {
+        assert_eq!(id, "motion", "locked component dispatched");
+        // A restarted worker sees the durable unresolved claim and cannot replay it.
+        assert_eq!(
+            workflow("status", run.as_ref())["steps"][0]["state"],
+            "running"
+        );
+        assert!(workflow("claim", run.as_ref())["step_id"].is_null());
+        pass(&[
+            "motion-strike".as_ref(),
+            source.as_os_str(),
+            "--with-idle".as_ref(),
+            "--out".as_ref(),
+            output.as_os_str(),
+        ])
+    });
+    for (role, _) in &parts {
+        let name = role_name(*role).to_owned();
+        assert_eq!(seen.get(&("baseline".into(), name.clone())), Some(&(1, 1)));
+        assert_eq!(
+            seen.get(&("edit".into(), name.clone())),
+            (name == "motion").then_some(&(1, 1))
+        );
+    }
+
+    let rows = workflow("status", "edit".as_ref());
+    let row = &rows["steps"][0];
+    assert_eq!(row["state"], "succeeded");
+    let driver: Value = serde_json::from_str(row["raw"].as_str().unwrap()).unwrap();
+    let generated = fs::read(&output).unwrap();
+    assert_eq!(driver["source_sha256"], sha256(original));
+    assert_eq!(driver["output_sha256"], sha256(&generated));
+    assert_eq!(
+        driver["output_sha256"],
+        "667d8bfccdeb68d64c9668ff54ab0af907aa240988a3d488f49ff7b43152b09d"
+    );
+    commit(
+        &mut app,
+        "edited",
+        "sample",
+        "PROCEDURAL",
+        "original",
+        "GLB",
+        &generated,
+    );
+    for (role, payload) in rigged_simple_components(&generated).unwrap() {
+        let id = if role == ComponentRole::Motion {
+            commit(
+                &mut app,
+                "edited-motion",
+                "motion",
+                "PROCEDURAL",
+                "original",
+                "JSON",
+                &payload,
+            );
+            "edited-motion"
+        } else {
+            role_name(role)
+        };
+        app.add_component_reference(&ComponentReference {
+            owner_version_id: "edited".into(),
+            role,
+            component_version_id: id.into(),
+        })
+        .unwrap();
+    }
+    let staged = pass(&candidate_write_args(
+        "propose-rigged-simple-motion",
+        &db,
+        &file,
+    ));
+    let candidate = &staged["candidate"];
+    assert_eq!(candidate["base"], plan["base"]);
+    for (base, proposed) in candidate["base"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(candidate["proposed"].as_array().unwrap())
+    {
+        assert_eq!(base == proposed, base["role"] != "motion");
+    }
+    let attempt = pass(&candidate_args("attempt", db.as_os_str(), "edit".as_ref()));
+    assert_eq!(
+        attempt["receipt"]["Accepted"]["current"]["version_id"],
+        "edited"
+    );
+    candidate_query(&db, "receipt", "edit", &attempt["receipt"]);
 }

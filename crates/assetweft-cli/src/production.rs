@@ -176,13 +176,19 @@ pub(super) fn candidate_write_response(
             app.initialize_candidate_current(version, &contract)
                 .map(|current| json!({"scope":scope,"current":current}))
         }
-        "propose" | "propose-rigged-simple-motion" => {
+        "propose" | "propose-rigged-simple-motion" | "schedule-rigged-simple-motion" => {
             let path = args.get_one::<PathBuf>("proposal").expect("required");
             let ProposalObject(proposal) = match read_json(path, limits, "proposal") {
                 Ok(input) => input,
                 Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
             };
-            if action == "propose-rigged-simple-motion" {
+            if action == "schedule-rigged-simple-motion" {
+                app.schedule_rigged_simple_motion(&proposal).map(|base| json!({
+                    "scope": "scheduled_rigged_simple_motion", "run_id": proposal.id,
+                    "base_version": proposal.base_version, "expected_revision": proposal.expected_revision,
+                    "candidate_version": proposal.candidate_version, "base": base
+                }))
+            } else if action == "propose-rigged-simple-motion" {
                 app.propose_rigged_simple_motion(&proposal).map(|candidate| json!({"scope":"staged_rigged_simple_motion_candidate","candidate":candidate}))
             } else {
                 app.propose_candidate(&proposal).map(|candidate| json!({"scope":"staged_local_byte_fixture_candidate","candidate":candidate}))

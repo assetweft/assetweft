@@ -536,6 +536,51 @@ impl Application {
         )
         .map_err(Into::into)
     }
+    /// Schedule the pinned idle/strike edit against its initialized BYTE-locked base.
+    /// Returns the measured input versions; the proposal ID names the new workflow.
+    /// # Errors
+    /// Rejects unsupported edits, stale planning inputs, drifted bytes and duplicate runs.
+    pub fn schedule_rigged_simple_motion(
+        &mut self,
+        proposal: &crate::candidate::Proposal,
+    ) -> Result<Vec<crate::candidate::ComponentSnapshot>, LibraryError> {
+        use crate::production::{
+            rigged_simple, staging_domain, staging_ports::RiggedSimpleStaging,
+        };
+        let editable = staging_domain::editable(proposal, rigged_simple::check_contract)?;
+        if editable != ["motion"] || proposal.contract.is_none() {
+            return Err(LibraryError::InvalidInput(
+                "expected structural motion-only BYTE edit",
+            ));
+        }
+        let owner = self
+            .asset_version(&proposal.base_version)?
+            .ok_or(LibraryError::InvalidInput("base version"))?;
+        let head = self
+            .candidate_current(&owner.asset_id)?
+            .ok_or(LibraryError::InvalidInput("missing initialized head"))?;
+        if head.version_id != proposal.base_version
+            || head.revision != proposal.expected_revision
+            || Some(&head.contract) != proposal.contract.as_ref()
+        {
+            return Err(LibraryError::InvalidInput(
+                "base revision or contract mismatch",
+            ));
+        }
+        // Current references are frozen. A later advance also freezes the old
+        // base in the winning descriptor; acceptance still owns the final CAS.
+        let base = crate::production::staging_sqlite::SqliteStaging {
+            conn: &mut self.connection,
+            root: &self.library_root,
+        }
+        .rigged_simple_snapshot(
+            &head.version_id,
+            crate::assurance::rig_blender::RIGGED_SIMPLE,
+        )?;
+        let steps = rigged_simple::affected_steps(&base, &editable)?;
+        self.create_workflow(&proposal.id, &steps)?;
+        Ok(base)
+    }
     /// Freeze the motion-only BYTE proposal for the pinned Cesium original and its idle/strike derivative.
     /// # Errors
     /// Returns a policy or storage error if owners, managed component bytes or locked versions differ.

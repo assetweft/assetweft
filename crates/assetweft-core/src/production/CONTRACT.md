@@ -138,4 +138,17 @@ The report's two evidence rows identify the whole owners. The candidate
 snapshots identify each of the eight component selections. The existing
 Catalog conditional update and Production receipt share one transaction.
 Visual quality, playback, engine behavior, scheduling and rights verification
-remain unmeasured. Schema 6 and the fixture wire contract are preserved.
+remain unmeasured by this receipt. Schema 6 and the fixture wire contract are preserved.
+
+## Scheduling the pinned motion edit
+
+`Application::schedule_rigged_simple_motion` reads the declared structural head
+and revision, then measures the original and its frozen Catalog references.
+The idle/strike writer reads the existing tracks and bound mesh/skin topology.
+The original's mesh, materials and rig projections have no motion input.
+Production intersects those component inputs with the declared edit and creates
+the affected steps in the existing workflow. The proposal ID names the run.
+The returned base snapshot identifies the inputs used for planning. A concurrent
+head advance after planning is adjudicated by the existing acceptance CAS.
+Scheduling, claim, driver invocation, outcome recording and structural acceptance
+each have separate evidence. The structural receipt retains its historical scope.

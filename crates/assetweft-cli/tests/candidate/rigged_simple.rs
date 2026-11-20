@@ -33,14 +33,12 @@ fn commit(
         .unwrap();
 }
 
-#[test]
-fn stages_only_the_bound_motion_and_reopens_the_explicit_nonacceptance() {
-    let dir = tempfile::tempdir().unwrap();
+fn seed(dir: &Path) -> PathBuf {
     let original =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/rigged-simple/RiggedSimple.glb");
-    let derivative = dir.path().join("idle.glb");
+    let derivative = dir.join("idle.glb");
     add_strike_with_idle(&original, &derivative, val::ValidationLimits::default()).unwrap();
-    let db = dir.path().join("local.sqlite");
+    let db = dir.join("local.sqlite");
     let mut app = Application::open(&db).unwrap();
     app.initialize_library().unwrap();
     for (owner, path, source, input) in [
@@ -51,6 +49,7 @@ fn stages_only_the_bound_motion_and_reopens_the_explicit_nonacceptance() {
             "Cesium-RiggedSimple-f0920f5",
         ),
         ("edited", &derivative, "PROCEDURAL", "original"),
+        ("contender", &derivative, "PROCEDURAL", "original"),
         ("changed-lock", &derivative, "PROCEDURAL", "original"),
         ("whole-as-motion", &derivative, "PROCEDURAL", "original"),
         ("changed-material", &derivative, "PROCEDURAL", "original"),
@@ -99,6 +98,13 @@ fn stages_only_the_bound_motion_and_reopens_the_explicit_nonacceptance() {
         }
     }
     app.close().unwrap();
+    db
+}
+
+#[test]
+fn stages_only_the_bound_motion_and_reopens_the_explicit_nonacceptance() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seed(dir.path());
     let path = dir.path().join("proposal.json");
     let write = |id: &str, version: &str| {
         fs::write(
@@ -199,5 +205,105 @@ fn stages_only_the_bound_motion_and_reopens_the_explicit_nonacceptance() {
         "current",
         "rigged-simple",
         json!({"scope":"stored_local_candidate_current","current":null}),
+    );
+}
+
+#[test]
+fn declared_structure_advances_once_and_retains_a_distinct_stale_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seed(dir.path());
+    let file = dir.path().join("input.json");
+    let contract = json!({"contract_id":"RIGGED_SIMPLE_MOTION_STRUCTURE_V1",
+        "max_component_bytes":16777216,"required_quality":[]});
+    fs::write(&file, contract.to_string()).unwrap();
+    let mut init = candidate_write_args("initialize", &db, &file);
+    init[5] = "edited".as_ref();
+    assert_eq!(candidate_invoke(&init).0.status.code(), Some(2));
+    init[5] = "original".as_ref();
+    let (out, original) = candidate_invoke(&init);
+    assert!(out.status.success(), "{original}");
+    let head0 = &original["results"]["current"];
+    assert_eq!(head0["revision"], 0);
+    assert_eq!(head0["contract"], contract);
+
+    let propose = |id: &str, version: &str| {
+        fs::write(
+            &file,
+            json!({"id":id,"base_version":"original","candidate_version":version,
+            "expected_revision":0,"editable":["motion"],"lock_mode":"BYTE","contract":contract})
+            .to_string(),
+        )
+        .unwrap();
+        candidate_invoke(&candidate_write_args(
+            "propose-rigged-simple-motion",
+            &db,
+            &file,
+        ))
+    };
+    let (out, bad) = propose("bad", "changed-lock");
+    assert_eq!(out.status.code(), Some(2), "{bad}");
+    candidate_query(&db, "show", "bad", &Value::Null);
+    for (id, version) in [("winner", "edited"), ("stale", "contender")] {
+        let (out, staged) = propose(id, version);
+        assert!(out.status.success(), "{staged}");
+        assert_eq!(staged["results"]["candidate"]["contract"], contract);
+    }
+    let attempt =
+        |id: &str| candidate_invoke(&candidate_args("attempt", db.as_os_str(), id.as_ref()));
+    let edited_object = dir
+        .path()
+        .join("objects/667d8bfccdeb68d64c9668ff54ab0af907aa240988a3d488f49ff7b43152b09d");
+    let moved = dir.path().join("detached");
+    fs::rename(&edited_object, &moved).unwrap();
+    assert!(!attempt("winner").0.status.success());
+    candidate_query(&db, "receipt", "winner", &Value::Null);
+    catalog_query(
+        &db,
+        "current",
+        "rigged-simple",
+        json!({"scope":"stored_local_candidate_current","current":head0}),
+    );
+    fs::rename(&moved, &edited_object).unwrap();
+
+    let (out, won) = attempt("winner");
+    assert!(out.status.success(), "{won}");
+    assert_eq!(
+        won["results"]["scope"],
+        "local_rigged_simple_structure_attempt"
+    );
+    let receipt = &won["results"]["receipt"];
+    let current = &receipt["Accepted"]["current"];
+    assert_eq!(current["revision"], 1);
+    assert_eq!(current["version_id"], "edited");
+    let report = &receipt["Accepted"]["report"];
+    assert_eq!(report["scope"], contract["contract_id"]);
+    assert_eq!(report["components"].as_array().unwrap().len(), 2);
+    for (i, hash) in [
+        "3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401",
+        "667d8bfccdeb68d64c9668ff54ab0af907aa240988a3d488f49ff7b43152b09d",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let row = &report["components"][i];
+        assert_eq!(row["sha256"], *hash);
+        assert_eq!(row["format_status"], "PASS");
+        assert_eq!(row["role_status"], "PASS");
+        assert_eq!(row["requirement"], "ANIMATED_CHARACTER");
+    }
+    let (out, lost) = attempt("stale");
+    assert_eq!(out.status.code(), Some(1), "{lost}");
+    let conflict = &lost["results"]["receipt"]["Conflict"];
+    assert_eq!(conflict["current"], *current);
+    assert_eq!(conflict["candidate"]["candidate_version"], "contender");
+    candidate_query(&db, "show", "stale", &conflict["candidate"]);
+    assert_eq!(attempt("stale").1["results"], lost["results"]);
+    assert_eq!(attempt("winner").1["results"], won["results"]);
+    candidate_query(&db, "receipt", "winner", receipt);
+    catalog_query(
+        &db,
+        "current",
+        "rigged-simple",
+        json!({"scope":"stored_local_candidate_current","current":current}),
     );
 }

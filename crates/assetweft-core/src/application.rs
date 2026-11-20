@@ -564,7 +564,7 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Runs the predeclared fixture structure contract and conditionally advances current.
+    /// Runs the predeclared local structure contract and conditionally advances current.
     /// Returns an immutable historic receipt on replay, not a fresh validation claim.
     /// # Errors
     /// Returns missing/corrupt bytes, schema, lease or transaction errors.
@@ -596,7 +596,7 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Initializes an absent fixture-only current head at revision zero after GLB checks.
+    /// Initializes an absent local current head at revision zero after GLB checks.
     /// # Errors
     /// Rejects required unimplemented quality, unsupported roles, existing head and IO/DB errors.
     pub fn initialize_candidate_current(

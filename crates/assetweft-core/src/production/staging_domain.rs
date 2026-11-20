@@ -43,7 +43,10 @@ pub(crate) fn check_contract(c: &FixtureContract) -> Result<(), StagingError> {
     }
     Ok(())
 }
-pub(crate) fn editable(p: &Proposal) -> Result<Vec<String>, StagingError> {
+pub(crate) fn editable(
+    p: &Proposal,
+    validate_contract: fn(&FixtureContract) -> Result<(), StagingError>,
+) -> Result<Vec<String>, StagingError> {
     if ![&p.id, &p.base_version, &p.candidate_version]
         .iter()
         .all(|v| id_ok(v))
@@ -61,7 +64,7 @@ pub(crate) fn editable(p: &Proposal) -> Result<Vec<String>, StagingError> {
         return Err(invalid("editable roles"));
     }
     if let Some(contract) = &p.contract {
-        check_contract(contract)?;
+        validate_contract(contract)?;
     }
     let mut editable = Vec::new();
     for role in &p.editable {

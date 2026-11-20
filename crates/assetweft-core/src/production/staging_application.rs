@@ -16,7 +16,7 @@ impl FrozenProposal {
     }
 }
 pub(crate) fn propose(port: &mut impl Staging, p: &Proposal) -> Result<Candidate, StagingError> {
-    let editable = staging_domain::editable(p)?;
+    let editable = staging_domain::editable(p, staging_domain::check_contract)?;
     let max_component_bytes = p.contract.as_ref().map(|c| c.max_component_bytes);
     let owners = port.owners(&p.base_version, &p.candidate_version)?;
     if owners.base_source != "TEST_FIXTURE" || owners.proposed_source != "TEST_FIXTURE" {
@@ -44,8 +44,19 @@ pub(crate) fn propose_rigged_simple(
     port: &mut impl super::staging_ports::RiggedSimpleStaging,
     p: &Proposal,
 ) -> Result<Candidate, StagingError> {
-    let editable = staging_domain::editable(p)?;
-    if p.contract.is_some() || editable != ["motion"] {
+    let structural = p
+        .contract
+        .as_ref()
+        .is_some_and(|c| c.contract_id == super::rigged_simple::STRUCTURE);
+    let editable = staging_domain::editable(
+        p,
+        if structural {
+            super::rigged_simple::check_contract
+        } else {
+            staging_domain::check_contract
+        },
+    )?;
+    if (!structural && p.contract.is_some()) || editable != ["motion"] {
         return Err(StagingError::InvalidInput(
             "Rigged Simple motion-only byte proposal without fixture contract",
         ));
@@ -71,7 +82,11 @@ pub(crate) fn propose_rigged_simple(
         base,
         proposed,
         &owners.proposed_source,
-        "RIGGED_SIMPLE_MOTION_BYTE_STAGING_V1",
+        if structural {
+            super::rigged_simple::STRUCTURE
+        } else {
+            "RIGGED_SIMPLE_MOTION_BYTE_STAGING_V1"
+        },
     )?;
     port.freeze(FrozenProposal { candidate })
 }

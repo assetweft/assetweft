@@ -19,7 +19,7 @@ pub(crate) enum AcceptanceError {
     InvalidInput(&'static str),
     UnknownValue(String),
 }
-pub(crate) trait AcceptanceInputs {
+pub(crate) trait AcceptanceInputs: super::rigged_simple::InspectOwner {
     fn existing_receipt(&mut self, id: &str) -> Result<Option<Acceptance>, AcceptanceError>;
     fn candidate(&mut self, id: &str) -> Result<Option<Candidate>, AcceptanceError>;
     fn validate_proposed(

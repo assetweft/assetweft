@@ -8,7 +8,7 @@ use assetweft_core::{
     LockMode,
     application::Application,
     assurance as val,
-    candidate::{Acceptance, FixtureContract, Proposal},
+    candidate::{Acceptance, FixtureContract, Proposal, RIGGED_SIMPLE_MOTION_STRUCTURE_V1},
     library::ComponentRole,
     production::specification as spec,
     workflow::{Outcome, State, Step, StepRecord},
@@ -168,9 +168,13 @@ pub(super) fn candidate_write_response(
                 Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
             };
             let version = args.get_one::<String>("version-id").expect("required");
-            app.initialize_candidate_current(version, &contract).map(
-                |current| json!({"scope":"initialized_local_fixture_current","current":current}),
-            )
+            let scope = if contract.contract_id == RIGGED_SIMPLE_MOTION_STRUCTURE_V1 {
+                "initialized_local_rigged_simple_current"
+            } else {
+                "initialized_local_fixture_current"
+            };
+            app.initialize_candidate_current(version, &contract)
+                .map(|current| json!({"scope":scope,"current":current}))
         }
         "propose" | "propose-rigged-simple-motion" => {
             let path = args.get_one::<PathBuf>("proposal").expect("required");
@@ -244,6 +248,18 @@ pub(super) fn candidate_response(
         }),
         "attempt" => app.attempt_accept_candidate(id).map(|receipt| {
             // Exhaustive transport projection only: receipt/report/reason stay core-owned.
+            let candidate = match &receipt {
+                Acceptance::Accepted { candidate, .. }
+                | Acceptance::Conflict { candidate, .. }
+                | Acceptance::NotRun { candidate, .. }
+                | Acceptance::Rejected { candidate, .. } => candidate,
+            };
+            let scoped = candidate.scope == RIGGED_SIMPLE_MOTION_STRUCTURE_V1;
+            let scope = if scoped {
+                "local_rigged_simple_structure_attempt"
+            } else {
+                "local_fixture_candidate_acceptance_attempt"
+            };
             let (code, status, errors) = match &receipt {
                 Acceptance::Accepted { .. } => (0, "PASS", json!([])),
                 Acceptance::Rejected { .. } => (
@@ -252,7 +268,11 @@ pub(super) fn candidate_response(
                     json!([error(
                         "candidate",
                         "REJECTED",
-                        "Local fixture candidate acceptance rejected"
+                        if scoped {
+                            "Rigged Simple structure rejected"
+                        } else {
+                            "Local fixture candidate acceptance rejected"
+                        }
                     )]),
                 ),
                 Acceptance::Conflict { .. } => (
@@ -270,7 +290,11 @@ pub(super) fn candidate_response(
                     json!([error(
                         "candidate",
                         "NOT_RUN",
-                        "Local fixture candidate acceptance NOT_RUN; see exact core receipt"
+                        if scoped {
+                            "Rigged Simple structure NOT_RUN; see exact core receipt"
+                        } else {
+                            "Local fixture candidate acceptance NOT_RUN; see exact core receipt"
+                        }
                     )]),
                 ),
             };
@@ -278,7 +302,7 @@ pub(super) fn candidate_response(
                 code,
                 status,
                 errors,
-                json!({"scope":"local_fixture_candidate_acceptance_attempt","receipt":receipt}),
+                json!({"scope":scope,"receipt":receipt}),
             )
         }),
         _ => unreachable!("clap grammar"),

@@ -34,6 +34,9 @@ pub mod generation_spec;
 /// AW-022:B partial bound-skin numeric inspection; no pose evaluation.
 pub mod rig;
 
+/// Deterministic motion processing for a verified rig profile.
+pub mod motion;
+
 /// AW-004:A SQLite 文件持久化原型；不依赖验证模块或模型执行。
 pub mod sqlite;
 

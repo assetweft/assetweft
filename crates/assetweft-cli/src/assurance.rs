@@ -1,5 +1,5 @@
-//! Responsibility: Assurance CLI incoming adapter for bounded inspect/validate reports.
-//! Dependencies: shared transport and existing public Assurance checks/report types.
+//! Responsibility: Assurance CLI incoming adapter for bounded inspect/validate reports and pinned rig commands.
+//! Dependencies: shared transport and public Assurance checks and the M3 motion preset.
 //! Callers: main command dispatch.
 //! Invariants: unchanged bounds, role/source/check diagnostics and NOT_RUN scope; projection adds no validation policy or production acceptance claim.
 
@@ -87,19 +87,25 @@ pub(super) fn validate_response(
     )
 }
 
-pub(super) fn rig_bend_response(
+pub(super) fn rig_profile_response(
+    command: &str,
     call_id: Option<&String>,
     args: &ArgMatches,
     limits: val::ValidationLimits,
 ) -> (i32, Value) {
     let path = |id| args.get_one::<PathBuf>(id).expect("required").as_path();
-    match val::rig_blender::measure_rigged_simple(
-        path("blender"),
-        path("file"),
-        path("out"),
-        limits,
-    ) {
-        Ok(report) => (0, envelope("rig-bend", call_id, "PASS", json!([]), report)),
+    let result = match command {
+        "rig-bend" => val::rig_blender::measure_rigged_simple(
+            path("blender"),
+            path("file"),
+            path("out"),
+            limits,
+        ),
+        "motion-strike" => assetweft_core::motion::add_strike(path("file"), path("out"), limits),
+        _ => unreachable!("clap grammar"),
+    };
+    match result {
+        Ok(report) => (0, envelope(command, call_id, "PASS", json!([]), report)),
         Err(e) => {
             let message = e.to_string();
             let (code, status) = if e.is::<val::ValidationError>() {
@@ -112,10 +118,10 @@ pub(super) fn rig_bend_response(
             (
                 code,
                 envelope(
-                    "rig-bend",
+                    command,
                     call_id,
                     status,
-                    json!([error("rig-bend", status, message)]),
+                    json!([error(command, status, message)]),
                     Value::Null,
                 ),
             )

@@ -13,6 +13,7 @@ query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
+assetweft [--call-id ID] motion-strike RiggedSimple.glb --out NEW_FILE.glb
 assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
 assetweft [--call-id ID] validate FILE.glb [--role static-mesh|rigged-character|animated-character]
 assetweft [--call-id ID] plan --request request.json --trusted-context context.json
@@ -43,13 +44,14 @@ Global `--max-bytes N` bounds each file/JSON input separately (default and hard 
 and `budget reserve --request`, `candidate initialize --contract` and `candidate propose --proposal`; it never bounds database size or query result sizes and
 has no effect on library init/status/cancel/balance/intent/candidate/catalog queries or feedback-add.
 Its existing numeric parser validation still applies to every command.
+The optional [Rigged Simple motion profile](../../examples/rigged-simple/README.md) appends a reproducible, in-place strike to a new GLB. It uses the same bounded input reader.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-`rig-bend`, `library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
+`motion-strike`, `rig-bend`, `library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
+`command` is `inspect`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,

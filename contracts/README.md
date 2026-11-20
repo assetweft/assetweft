@@ -75,3 +75,7 @@ stdout 为机器结果，stderr 为日志；exit 0 表示 14/14 期望匹配，�
 - 费用：unknown（0 次付费调用；未知费用字段保持 null，不填 0）。
 - `ponytail` 插件不可用（NOT_FOUND）：按 需求→已有代码→标准库→平台原生→已装依赖→最小充分变更 选择 Ajv；代码索引/why 关联由协调者等价处理。
 - 本阶段零 Git 写入；未修改现行 `docs/CONTRACTS.md`、任务状态、Cargo*/crates/、`tools/c1.sh`、`.github/workflows/c1.yml`、原始 archive/evidence 与父工作区。
+
+## AW-003:B 媒体合同
+
+[媒体交付合同与兼容样例](media-compatibility.md)记录图集、声音和本地 Godot 表现包的实际读取入口、版本边界和对照输入。

@@ -6126,3 +6126,26 @@ fn catalog_preview_glb_draws_transformed_geometry_for_each_version() {
     }
     assert_eq!(fs::read(db).unwrap(), db_before);
 }
+
+#[test]
+fn rig_bend_rejects_other_bytes_before_launch_or_staging() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("new-evidence");
+    let (process, reply) = invoke(&[
+        OsStr::new("rig-bend"),
+        fixture("mesh_only.glb").as_os_str(),
+        OsStr::new("--blender"),
+        dir.path().join("absent-blender").as_os_str(),
+        OsStr::new("--out"),
+        out.as_os_str(),
+    ]);
+    assert_eq!(process.status.code(), Some(1));
+    assert_eq!(reply["status"], "NOT_RUN");
+    assert!(
+        reply["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("SHA-256")
+    );
+    assert!(!out.exists());
+}

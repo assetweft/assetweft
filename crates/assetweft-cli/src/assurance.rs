@@ -86,3 +86,39 @@ pub(super) fn validate_response(
         "not_run":report.not_run}),
     )
 }
+
+pub(super) fn rig_bend_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let path = |id| args.get_one::<PathBuf>(id).expect("required").as_path();
+    match val::rig_blender::measure_rigged_simple(
+        path("blender"),
+        path("file"),
+        path("out"),
+        limits,
+    ) {
+        Ok(report) => (0, envelope("rig-bend", call_id, "PASS", json!([]), report)),
+        Err(e) => {
+            let message = e.to_string();
+            let (code, status) = if e.is::<val::ValidationError>() {
+                (2, "INVALID_INPUT")
+            } else if message.starts_with("UNSUPPORTED") {
+                (1, "NOT_RUN")
+            } else {
+                (1, "FAIL")
+            };
+            (
+                code,
+                envelope(
+                    "rig-bend",
+                    call_id,
+                    status,
+                    json!([error("rig-bend", status, message)]),
+                    Value::Null,
+                ),
+            )
+        }
+    }
+}

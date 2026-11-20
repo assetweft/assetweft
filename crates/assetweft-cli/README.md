@@ -717,3 +717,11 @@ Cancellation blocks future claims, preserves results and still permits explicit
 finish of RUNNING work; it does not stop remote processes or refund fees.
 A stdout failure (exit 6) can follow a committed claim or finish: never retry an
 ambiguous mutation automatically. Use status to reconcile it.
+
+`assetweft catalog preview --db EXISTING_DB --version-id ID` generates a
+rebuildable thumbnail for one managed PNG version and returns its library-relative
+path under `previews/`. It verifies the exact source length and SHA-256 on every
+call. Static 8-bit RGBA input is limited to 16 MiB, 4096 pixels per axis and
+4,194,304 pixels total. Nearest-neighbour sampling preserves RGBA channels and
+fits the image inside 128 × 128 without upscaling. An identical preview can be
+reused. A conflicting file, missing object or unsupported image returns an error.

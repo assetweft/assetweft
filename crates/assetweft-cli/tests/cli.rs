@@ -5649,3 +5649,125 @@ fn catalog_search_finds_literal_version_matches_without_writes() {
     assert_eq!(fs::read(&cas).unwrap(), bytes);
     assert_eq!(entries(), initial_entries);
 }
+
+#[test]
+fn catalog_preview_decodes_exact_versions_and_preserves_library() {
+    use png::{BitDepth, ColorType, Decoder, Encoder};
+    use sha2::{Digest, Sha256};
+    use std::io::Cursor;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let db = root.join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let add = |id: &str, bytes: &[u8], format: &str| {
+        let file = root.join(format!("{id}.source"));
+        fs::write(&file, bytes).unwrap();
+        let hash: String = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let mut wire = object_wire(id);
+        wire["content_hash"] = json!(hash);
+        wire["source_format"] = json!(format);
+        let version = root.join("version.json");
+        fs::write(&version, wire.to_string()).unwrap();
+        let (out, value) =
+            catalog_write_invoke(&object_args(&db, &version, &file, &bytes.len().to_string()));
+        assert!(out.status.success(), "{value}");
+        root.join("objects").join(hash)
+    };
+    let make = |blue, animated| {
+        let mut bytes = Vec::new();
+        let mut encoder = Encoder::new(&mut bytes, 256, 64);
+        encoder.set_color(ColorType::Rgba);
+        encoder.set_depth(BitDepth::Eight);
+        if animated {
+            encoder.set_animated(1, 0).unwrap();
+        }
+        let mut writer = encoder.write_header().unwrap();
+        let mut pixels = Vec::new();
+        for y in 0..64 {
+            for x in 0..256 {
+                pixels.extend_from_slice(&[x as u8, y, blue, x as u8]);
+            }
+        }
+        writer.write_image_data(&pixels).unwrap();
+        writer.finish().unwrap();
+        bytes
+    };
+    let query = |id: &str| invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(id)));
+    let fail = |id: &str| {
+        let (out, result) = query(id);
+        assert!(!out.status.success(), "{id} {result}");
+        assert!(result["results"].is_null());
+    };
+    let first = make(27, false);
+    let cas = add("first", &first, "PNG");
+    add("second", &make(91, false), "PNG");
+    add("animated", &make(0, true), "PNG");
+    add("short", &first[..first.len() - 6], "PNG");
+    let mut corrupt = first.clone();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    add("crc", &corrupt, "PNG");
+    add("unsupported", &first, "WAV");
+    add("fake", b"not an image", "PNG");
+    let mut wide = Vec::new();
+    let mut encoder = Encoder::new(&mut wide, 4097, 1);
+    encoder.set_color(ColorType::Rgba);
+    encoder.set_depth(BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&vec![0; 4097 * 4]).unwrap();
+    writer.finish().unwrap();
+    add("wide", &wide, "PNG");
+    let db_before = fs::read(&db).unwrap();
+    for id in [
+        "unknown",
+        "animated",
+        "short",
+        "crc",
+        "unsupported",
+        "fake",
+        "wide",
+    ] {
+        fail(id);
+    }
+    assert!(!root.join("previews").exists());
+    let mut targets = Vec::new();
+    for (id, blue) in [("first", 27), ("second", 91)] {
+        let result = export_call(&db, "preview", id);
+        let target = root.join(result["relative_path"].as_str().unwrap());
+        assert_eq!(target.parent(), Some(root.join("previews").as_path()));
+        let encoded = fs::read(&target).unwrap();
+        let mut reader = Decoder::new(Cursor::new(&encoded)).read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (128, 32));
+        for y in 0..32 {
+            for x in 0..128 {
+                let i = (y * 128 + x) * 4;
+                assert_eq!(
+                    pixels[i..i + 4],
+                    [(x * 2) as u8, (y * 2) as u8, blue, (x * 2) as u8]
+                );
+            }
+        }
+        assert_eq!(export_call(&db, "preview", id), result);
+        targets.push(target);
+    }
+    fs::write(&targets[0], b"user file").unwrap();
+    fail("first");
+    assert_eq!(fs::read(&targets[0]).unwrap(), b"user file");
+    assert_eq!(fs::read(&cas).unwrap(), first);
+    fs::remove_file(&targets[0]).unwrap();
+    fs::write(&cas, &corrupt).unwrap();
+    fail("first");
+    fs::remove_file(&cas).unwrap();
+    fail("first");
+    assert!(!targets[0].exists());
+    assert_eq!(fs::read(root.join("first.source")).unwrap(), first);
+    assert_eq!(fs::read(db).unwrap(), db_before);
+}

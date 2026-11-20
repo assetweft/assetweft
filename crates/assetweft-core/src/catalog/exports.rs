@@ -10,9 +10,16 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
+
+fn hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 
 pub(crate) fn database_id(path: &Path) -> Option<FileId> {
     let parent = path
@@ -118,6 +125,21 @@ impl Export {
         database: Option<FileId>,
         id: &str,
     ) -> Result<Self, StorageError> {
+        let session = Self::open_bound(conn, root, database, id)?;
+        objects_sqlite::verify(
+            &session.source,
+            &session.object.content_hash,
+            session.object.byte_length,
+        )?;
+        Ok(session)
+    }
+
+    pub(crate) fn open_bound(
+        conn: &Connection,
+        root: &Path,
+        database: Option<FileId>,
+        id: &str,
+    ) -> Result<Self, StorageError> {
         validate_version_id(id).map_err(LibraryError::from)?;
         if root.canonicalize()? != root {
             return Err(StorageError::Invalid("redirected library root"));
@@ -133,24 +155,57 @@ impl Export {
         local_entry(root, &db_path, fs::Metadata::is_file)?;
         let lease = storage::lock(root)?;
         local_entry(root, &root.join(".aw-object-owner"), fs::Metadata::is_file)?;
-        storage::bind(conn, root)?;
+        storage::check_binding(conn, root)?;
         local_entry(root, &root.join("objects"), fs::Metadata::is_dir)?;
         let object = objects_sqlite::managed_record(conn, id)?
             .ok_or(StorageError::Invalid("verified managed version required"))?;
         let source = root.join("objects").join(&object.content_hash);
         local_entry(root, &source, fs::Metadata::is_file)?;
-        objects_sqlite::verify(&source, &object.content_hash, object.byte_length)?;
+
         Ok(Self {
             _lease: lease,
             database,
             root: root.into(),
-            name: Sha256::digest(id.as_bytes())
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
+            name: hash(id.as_bytes()),
             source,
             object,
         })
+    }
+
+    pub(crate) fn preview(self) -> Result<PathBuf, StorageError> {
+        let length = self.object.byte_length;
+        if length > 16 * 1024 * 1024 {
+            return Err(StorageError::Invalid("PNG input exceeds 16 MiB"));
+        }
+        let mut source = Vec::new();
+        File::open(&self.source)?
+            .take(length + 1)
+            .read_to_end(&mut source)?;
+        if source.len() as u64 != length || hash(&source) != self.object.content_hash {
+            return Err(StorageError::Corrupt);
+        }
+        let encoded = super::preview::thumbnail(&source)?;
+        let dir = self.root.join("previews");
+        match fs::create_dir(&dir) {
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+            result => result?,
+        }
+        local_entry(&self.root, &dir, fs::Metadata::is_dir)?;
+        let relative = Path::new("previews").join(format!("{}.png", self.name));
+        let target = self.root.join(&relative);
+        match local_entry(&self.root, &target, fs::Metadata::is_file) {
+            Ok(()) => {
+                objects_sqlite::verify(&target, &hash(&encoded), encoded.len() as u64)?;
+            }
+            Err(StorageError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
+                let mut temp = tempfile::NamedTempFile::new_in(&dir)?;
+                temp.write_all(&encoded)?;
+                temp.as_file().sync_all()?;
+                temp.persist_noclobber(target).map_err(|e| e.error)?;
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(relative)
     }
 
     fn witness(&self, identity: FileId) -> PathBuf {

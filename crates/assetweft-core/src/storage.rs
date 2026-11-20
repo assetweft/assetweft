@@ -31,12 +31,16 @@ pub enum StorageError {
     Io(io::Error),
     Library(LibraryError),
     Invalid(&'static str),
+    MissingPreviewSource,
     Corrupt,
     Busy,
 }
 impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::MissingPreviewSource => f.write_str("managed source file is missing"),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 impl std::error::Error for StorageError {}

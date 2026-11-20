@@ -5704,6 +5704,21 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
         assert!(!out.status.success(), "{id} {result}");
         assert!(result["results"].is_null());
     };
+    let expect_error = |id, exit, status, diagnostic: &str| {
+        let (out, result) = query(id);
+        assert_eq!(out.status.code(), Some(exit), "{id} {result}");
+        assert_eq!(result["status"], status);
+        assert_eq!(result["errors"][0]["code"], status);
+        assert_eq!(result["errors"][0]["field_path"], "catalog");
+        assert!(
+            result["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(diagnostic),
+            "{id} {result}"
+        );
+        assert!(result["results"].is_null());
+    };
     let first = make(27, false);
     let cas = add("first", &first, "PNG");
     add("second", &make(91, false), "PNG");
@@ -5724,15 +5739,18 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
     writer.finish().unwrap();
     add("wide", &wide, "PNG");
     let db_before = fs::read(&db).unwrap();
-    for id in [
-        "unknown",
-        "animated",
-        "short",
-        "crc",
-        "unsupported",
-        "fake",
-        "wide",
-    ] {
+    expect_error("unknown", 2, "INVALID_INPUT", "unknown version");
+    fs::remove_file(&cas).unwrap();
+    expect_error(
+        "first",
+        3,
+        "INPUT_INCOMPLETE",
+        "managed source file is missing",
+    );
+    assert!(!cas.exists());
+    assert!(!root.join("previews").exists());
+    fs::write(&cas, &first).unwrap();
+    for id in ["animated", "short", "crc", "unsupported", "fake", "wide"] {
         fail(id);
     }
     assert!(!root.join("previews").exists());
@@ -5758,16 +5776,58 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
         assert_eq!(export_call(&db, "preview", id), result);
         targets.push(target);
     }
+    let thumbnail = fs::read(&targets[0]).unwrap();
+    let other_thumbnail = fs::read(&targets[1]).unwrap();
     fs::write(&targets[0], b"user file").unwrap();
-    fail("first");
+    expect_error("first", 1, "FAIL", "Corrupt");
+    fs::remove_file(&cas).unwrap();
+    expect_error(
+        "first",
+        3,
+        "INPUT_INCOMPLETE",
+        "managed source file is missing",
+    );
+    assert!(!cas.exists());
     assert_eq!(fs::read(&targets[0]).unwrap(), b"user file");
-    assert_eq!(fs::read(&cas).unwrap(), first);
     fs::remove_file(&targets[0]).unwrap();
     fs::write(&cas, &corrupt).unwrap();
-    fail("first");
-    fs::remove_file(&cas).unwrap();
-    fail("first");
+    expect_error("first", 1, "FAIL", "Corrupt");
+    assert_eq!(fs::read(&cas).unwrap(), corrupt);
     assert!(!targets[0].exists());
+
+    // A missing library owner is still a storage failure even without the source file.
+    fs::remove_file(&cas).unwrap();
+    let owner = root.join(".aw-object-owner");
+    let owner_bytes = fs::read(&owner).unwrap();
+    fs::remove_file(&owner).unwrap();
+    expect_error("first", 6, "INTERNAL", "NotFound");
+    assert!(!targets[0].exists());
+    assert!(!owner.exists());
+    fs::write(&owner, owner_bytes).unwrap();
+
+    let objects = cas.parent().unwrap();
+    let displaced = root.join("displaced-objects");
+    fs::rename(objects, &displaced).unwrap();
+    expect_error("first", 6, "INTERNAL", "NotFound");
+    assert!(!objects.exists());
+    fs::rename(&displaced, objects).unwrap();
+
+    fs::write(&cas, &first).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::metadata(&cas).unwrap().permissions();
+        fs::set_permissions(&cas, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&cas).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied) {
+            expect_error("first", 6, "INTERNAL", "PermissionDenied");
+        }
+        fs::set_permissions(&cas, permissions).unwrap();
+        assert!(!targets[0].exists());
+    }
+    export_call(&db, "preview", "first");
+    assert_eq!(fs::read(&targets[0]).unwrap(), thumbnail);
+    assert_eq!(fs::read(&targets[1]).unwrap(), other_thumbnail);
+    assert_eq!(fs::read(&cas).unwrap(), first);
     assert_eq!(fs::read(root.join("first.source")).unwrap(), first);
     assert_eq!(fs::read(db).unwrap(), db_before);
 }

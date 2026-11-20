@@ -185,6 +185,7 @@ fn storage_outcome(failure: &StorageError) -> (i32, &'static str) {
     match failure {
         StorageError::Library(e) => library_outcome(e),
         StorageError::Invalid(_) => (2, "INVALID_INPUT"),
+        StorageError::MissingPreviewSource => (3, "INPUT_INCOMPLETE"),
         StorageError::Corrupt => (1, "FAIL"),
         StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
     }

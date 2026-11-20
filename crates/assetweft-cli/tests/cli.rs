@@ -5137,3 +5137,233 @@ fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
     assert_eq!(app.asset_version(&long_id).unwrap(), Some(long_version));
     assert_eq!(fs::read(original).unwrap(), bytes);
 }
+
+// Each case owns a fresh database and commits an external synthetic input through the CLI.
+fn export_fixture(parent: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let root = parent.join("library");
+    fs::create_dir(&root).unwrap();
+    let db = root.join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let file = parent.join("original");
+    let version = parent.join("version.json");
+    fs::write(&file, b"abc").unwrap();
+    for id in ["first", "second"] {
+        fs::write(&version, object_wire(id).to_string()).unwrap();
+        let (out, value) = catalog_write_invoke(&object_args(&db, &version, &file, "3"));
+        assert_eq!(out.status.code(), Some(0), "{value}");
+    }
+    let cas = root
+        .join("objects")
+        .join(object_wire("first")["content_hash"].as_str().unwrap());
+    (db, file, cas)
+}
+
+fn export_call(db: &Path, action: &str, id: &str) -> Value {
+    let (out, v) = catalog_write_invoke(&[
+        OsStr::new("catalog"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db.as_os_str(),
+        OsStr::new("--version-id"),
+        OsStr::new(id),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], format!("catalog {action}"));
+    assert_eq!(v["results"]["version_id"], id);
+    v["results"].clone()
+}
+
+#[test]
+fn catalog_export_roundtrip_preserves_library() {
+    use assetweft_core::{
+        history::{Decision, Feedback},
+        library::{ComponentReference, ComponentRole},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (db, file, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let mut app = Application::open(&db).unwrap();
+    let version = app.asset_version("first").unwrap().unwrap();
+    let reference = ComponentReference {
+        owner_version_id: "first".into(),
+        role: ComponentRole::Mesh,
+        component_version_id: "second".into(),
+    };
+    app.add_component_reference(&reference).unwrap();
+    let feedback = app
+        .append_feedback(&Feedback {
+            feedback_id: "review".into(),
+            asset_id: version.asset_id.clone(),
+            version_id: version.version_id.clone(),
+            decision: Decision::Reject,
+            reason: Some("keep history".into()),
+        })
+        .unwrap();
+    app.close().unwrap();
+    // Closed SQLite image covers all persistent metadata, including any operations.
+    let database_before = fs::read(&db).unwrap();
+    let export = |id| {
+        root.join(
+            export_call(&db, "materialize-export", id)["relative_path"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    let evict = || {
+        export_call(&db, "evict-export", "first")["removed"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(!evict());
+    let target = export("first");
+    assert_eq!(target.parent(), Some(root.join("exports").as_path()));
+    assert_eq!(export("first"), target);
+    let other = export("second");
+    assert_ne!(target, other);
+    let unknown = root.join("exports/user-notes");
+    fs::write(&unknown, b"keep").unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"abc");
+    assert!(evict());
+    assert!(!target.try_exists().unwrap());
+    assert!(!evict());
+    for keep in [&other, &file, &cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+    assert_eq!(fs::read(&unknown).unwrap(), b"keep");
+    assert_eq!(export("first"), target);
+    assert_eq!(fs::read(&target).unwrap(), fs::read(&cas).unwrap());
+    assert_eq!(fs::read(&db).unwrap(), database_before);
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(app.asset_version("first").unwrap(), Some(version.clone()));
+    assert_eq!(app.component_references("first").unwrap(), [reference]);
+    assert_eq!(
+        app.latest_feedback(&version.asset_id, Some("first"))
+            .unwrap(),
+        Some(feedback)
+    );
+    assert_eq!(
+        app.managed_object("first").unwrap().unwrap().content_hash,
+        version.content_hash
+    );
+}
+
+#[test]
+fn catalog_export_refuses_changed_unowned_and_unrecoverable_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, source, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let mut app = Application::open(&db).unwrap();
+    let target = root.join(app.materialize_export("first").unwrap());
+    let refuse = |app: &Application| {
+        assert!(app.evict_export("first").is_err());
+        assert!(app.materialize_export("first").is_err());
+    };
+    fs::write(&target, b"xyz").unwrap();
+    refuse(&app);
+    assert_eq!(fs::read(&target).unwrap(), b"xyz");
+    for keep in [&source, &cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+    fs::write(&target, b"abc").unwrap();
+    for corrupt in [true, false] {
+        if corrupt {
+            fs::write(&cas, b"bad").unwrap();
+        } else {
+            fs::remove_file(&cas).unwrap();
+        }
+        refuse(&app);
+        assert_eq!(fs::read(&target).unwrap(), b"abc");
+    }
+    fs::write(&cas, b"abc").unwrap();
+    let lock = root.join(".aw-storage.lock");
+    fs::write(&lock, b"in use").unwrap();
+    refuse(&app);
+    assert_eq!(fs::read(&lock).unwrap(), b"in use");
+    fs::remove_file(lock).unwrap();
+
+    // Keep the original inode alive. The replacement has the same name, size, digest
+    // and link count as the export but belongs to the user.
+    let moved = root.join("retained-export");
+    fs::rename(&target, &moved).unwrap();
+    fs::hard_link(&source, &target).unwrap();
+    refuse(&app);
+    for keep in [&moved, &target, &source, &cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+    let mut metadata = app.asset_version("first").unwrap().unwrap();
+    metadata.version_id = "metadata-only".into();
+    app.add_asset_version(&metadata).unwrap();
+    assert!(app.materialize_export("metadata-only").is_err());
+    assert!(app.evict_export("metadata-only").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_export_refuses_redirected_parents() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let (db, source, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let app = Application::open(&db).unwrap();
+    let relative = app.materialize_export("first").unwrap();
+    for name in ["exports", "objects"] {
+        let inside = root.join(name);
+        let outside = dir.path().join("moved");
+        fs::rename(&inside, &outside).unwrap();
+        symlink(&outside, &inside).unwrap();
+        assert!(app.evict_export("first").is_err());
+        assert!(app.materialize_export("second").is_err());
+        fs::remove_file(&inside).unwrap();
+        fs::rename(outside, inside).unwrap();
+    }
+    let alias = dir.path().join("alias.sqlite");
+    symlink(&db, &alias).unwrap();
+    assert!(
+        Application::open(&alias)
+            .unwrap()
+            .evict_export("first")
+            .is_err()
+    );
+    assert_eq!(fs::read(root.join(&relative)).unwrap(), b"abc");
+    assert_eq!(fs::read(cas).unwrap(), fs::read(source).unwrap());
+}
+
+#[test]
+fn catalog_export_partial_publication_never_adopts_or_sweeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, source, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let app = Application::open(&db).unwrap();
+    let target = root.join(app.materialize_export("first").unwrap());
+    let witness = fs::read_dir(root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".aw-export-")
+        })
+        .unwrap();
+
+    // A target without its producer receipt is ambiguous, even with perfect bytes.
+    let retained = root.join("retained");
+    fs::rename(&witness, &retained).unwrap();
+    assert!(app.evict_export("first").is_err());
+    assert!(app.materialize_export("first").is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"abc");
+    fs::rename(retained, &witness).unwrap();
+
+    // Witness-only is the disk state between publish/unlink steps after lease recovery.
+    fs::remove_file(&target).unwrap();
+    assert!(!app.evict_export("first").unwrap());
+    assert_eq!(root.join(app.materialize_export("first").unwrap()), target);
+    assert!(app.evict_export("first").unwrap());
+    assert!(!target.try_exists().unwrap());
+    for keep in [witness, source, cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+}

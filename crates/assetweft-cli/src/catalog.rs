@@ -278,6 +278,37 @@ pub(super) fn write_response(
             );
         }
     };
+    let storage_error = |e: assetweft_core::storage::StorageError| {
+        use assetweft_core::storage::StorageError;
+        let (code, status) = match &e {
+            StorageError::Library(e) => library_outcome(e),
+            StorageError::Invalid(_) => (2, "INVALID_INPUT"),
+            StorageError::Corrupt => (1, "FAIL"),
+            StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
+        };
+        finish(
+            code,
+            status,
+            json!([error("catalog", status, e)]),
+            Value::Null,
+        )
+    };
+    if matches!(action, "materialize-export" | "evict-export") {
+        let id = args.get_one::<String>("version-id").expect("required");
+        let result = if action == "materialize-export" {
+            app.materialize_export(id).map(
+                |path| json!({"scope":"local_version_export","version_id":id,"relative_path":path}),
+            )
+        } else {
+            app.evict_export(id).map(
+                |removed| json!({"scope":"local_version_export","version_id":id,"removed":removed}),
+            )
+        };
+        return match result {
+            Ok(value) => finish(0, "PASS", json!([]), value),
+            Err(e) => storage_error(e),
+        };
+    }
     if action == "commit-object" {
         let path = args.get_one::<PathBuf>("version").expect("required");
         let VersionObject(version) = match read_json(path, limits, "version") {
@@ -315,21 +346,7 @@ pub(super) fn write_response(
                 json!([]),
                 json!({"scope":"committed_local_managed_object","version_id":version.version_id,"content_hash":stored.content_hash,"byte_length":stored.byte_length}),
             ),
-            Err(e) => {
-                use assetweft_core::storage::StorageError;
-                let (code, status) = match &e {
-                    StorageError::Library(e) => library_outcome(e),
-                    StorageError::Invalid(_) => (2, "INVALID_INPUT"),
-                    StorageError::Corrupt => (1, "FAIL"),
-                    StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
-                };
-                finish(
-                    code,
-                    status,
-                    json!([error("catalog", status, e)]),
-                    Value::Null,
-                )
-            }
+            Err(e) => storage_error(e),
         };
     }
     let result = match action {

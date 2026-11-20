@@ -71,7 +71,7 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("catalog")
-                .about("Manage local metadata, exact references and version feedback; read stored head")
+                .about("Manage local metadata, managed version exports, exact references and feedback; read stored head")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("commit-object")
@@ -81,6 +81,11 @@ fn grammar() -> Command {
                         .arg(Arg::new("file").long("file").required(true).value_parser(value_parser!(PathBuf)))
                         .arg(Arg::new("expected-len").long("expected-len").required(true).value_parser(value_parser!(u64))),
                 )
+                .subcommands([
+                    ("materialize-export", "Create or verify one writable local copy of this managed version"),
+                    ("evict-export", "Remove this version's verified, library-produced export copy"),
+                ].map(|(name, help)| Command::new(name).about(help).arg(db())
+                    .arg(Arg::new("version-id").long("version-id").required(true))))
                 .subcommand(
                     Command::new("register-version")
                         .about("Register immutable declared metadata; no managed bytes or rights verification")
@@ -410,6 +415,8 @@ fn run() -> (i32, Value) {
     if command == "catalog" {
         let (action, query_args) = args.subcommand().expect("clap requires a catalog action");
         let wire = match action {
+            "materialize-export" => "catalog materialize-export",
+            "evict-export" => "catalog evict-export",
             "commit-object" => "catalog commit-object",
             "register-version" => "catalog register-version",
             "add-reference" => "catalog add-reference",
@@ -422,7 +429,12 @@ fn run() -> (i32, Value) {
         };
         if matches!(
             action,
-            "commit-object" | "register-version" | "add-reference" | "feedback-add"
+            "materialize-export"
+                | "evict-export"
+                | "commit-object"
+                | "register-version"
+                | "add-reference"
+                | "feedback-add"
         ) {
             return catalog::write_response(wire, call_id, action, query_args, limits);
         }

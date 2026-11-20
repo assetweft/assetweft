@@ -35,3 +35,11 @@ tempfile = "=3.27.0"
 
 [dev-dependencies]
 serde_json = "1.0"
+
+# Stable, safe Windows handle identity for hard-linked export ownership receipts.
+[target.'cfg(windows)'.dependencies]
+winapi-util = "=0.1.11"
+
+# tempfile already pins rustix. Use its safe statx API to reject Linux bind mounts.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }

@@ -170,3 +170,38 @@ current forwards through the same use case. initialize/advance remain concrete
 crate-private transaction APIs consumed by the Production acceptance and
 initialization use cases under their existing lease+transaction boundaries. No
 dependency/schema/SQL migration or new gate.
+
+## Disposable local version exports
+
+`Application::materialize_export(version_id)` returns a library-relative path
+under `exports/`. The corresponding `catalog materialize-export` command reports
+it as `relative_path`. `Application::evict_export(version_id)` and
+`catalog evict-export` report whether the visible copy was removed. Both require
+the exact managed version, matching immutable metadata and a size/SHA-256 verified
+local object, including on retries. The CLI takes only `--db` and `--version-id`
+as command-specific arguments. Neither operation updates SQLite or calls GC.
+
+The canonical database parent owns the store. The adapter checks the opened
+database's native identity and existing owner binding, then holds the common
+storage lease across source verification, ownership checks and publication or
+removal. The fixed export basename hashes the version ID. A private hard link in
+the library root records the producer's new file, keyed by version, database and
+file identity. This pins the inode/file ID even if someone replaces the visible
+file with byte-identical content. Both links must identify the same regular file,
+have exactly two names and contain the verified bytes. Editing the export cannot
+modify CAS. A second version with identical bytes gets a separate export.
+
+Publication stages and verifies an independent temporary copy, persists its
+witness without replacement and hard-links the visible name without replacement.
+Eviction unlinks the verified visible name first and its witness second. With a
+missing visible name, eviction reports absent. Interruption between the two names
+can strand a private witness or storage lock. After lease recovery, materializing
+an absent target creates a fresh witnessed copy. An unmatched visible file is
+preserved. Neither operation scans for orphans or breaks stale locks.
+
+As with managed storage, this protocol operates on a private local library with
+cooperating writers. The filesystem must support hard links and stable native file
+IDs. Storage parents must be real local directories on the library mount. Linux
+requires the kernel to report mount roots through statx and Windows rejects reparse points. Replacing
+paths concurrently outside the lease or forging private receipt state is outside
+that storage contract. Backup and sync do not consume export receipts.

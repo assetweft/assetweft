@@ -25,10 +25,12 @@ version = "0.0.0"
 dependencies = [
  "gltf",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "winapi-util",
 ]
 
 [[package]]
@@ -510,6 +512,15 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys",
+]
 
 [[package]]
 name = "windows-link"

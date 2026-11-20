@@ -74,7 +74,7 @@ fn digest(reader: &mut impl Read) -> Result<(String, u64), StorageError> {
         n,
     ))
 }
-fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageError> {
+pub(super) fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageError> {
     if !fs::symlink_metadata(path)?.file_type().is_file() {
         return Err(StorageError::Corrupt);
     }
@@ -83,6 +83,40 @@ fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageError> {
         return Err(StorageError::Corrupt);
     }
     Ok(())
+}
+
+// Caller holds the store lease. The managed binding must agree with the immutable version.
+pub(super) fn managed_record(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<StoredObject>, StorageError> {
+    use rusqlite::OptionalExtension;
+    library::require_current(conn)?;
+    let found = conn
+        .query_row(
+            "SELECT o.content_hash, o.byte_length, a.content_hash
+         FROM aw_managed_versions v JOIN aw_objects o USING(content_hash)
+         JOIN aw_asset_versions a USING(version_id) WHERE v.version_id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    match found {
+        Some((hash, size, expected)) if hash == expected && hash_ok(&hash) && size >= 0 => {
+            Ok(Some(StoredObject {
+                content_hash: hash,
+                byte_length: size as u64,
+            }))
+        }
+        Some(_) => Err(StorageError::Corrupt),
+        None => Ok(None),
+    }
 }
 
 impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
@@ -170,19 +204,14 @@ impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
     fn managed(&mut self, id: &str) -> Result<Option<StoredObject>, StorageError> {
         let conn = &mut *self.conn;
         let root = self.root;
-        use rusqlite::OptionalExtension;
         let _guard = lock(root)?;
         bind(conn, root)?;
-        library::require_current(conn)?;
-        let found=conn.query_row("SELECT o.content_hash,o.byte_length FROM aw_managed_versions v JOIN aw_objects o USING(content_hash) WHERE v.version_id=?1",[id],|r|Ok(StoredObject{content_hash:r.get(0)?,byte_length:r.get::<_,i64>(1)? as u64})).optional()?;
-        if let Some(o) = &found {
-            if !hash_ok(&o.content_hash) {
-                return Err(StorageError::Corrupt);
-            }
+        let found = managed_record(conn, id)?;
+        if let Some(object) = &found {
             verify(
-                &objects(root)?.join(&o.content_hash),
-                &o.content_hash,
-                o.byte_length,
+                &objects(root)?.join(&object.content_hash),
+                &object.content_hash,
+                object.byte_length,
             )?;
         }
         Ok(found)

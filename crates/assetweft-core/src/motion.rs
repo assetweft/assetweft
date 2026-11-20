@@ -10,12 +10,13 @@ use serde_json::{
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, error::Error, io::Write, path::Path};
 
+pub mod components;
 pub mod stance;
 
 const IDLE: &str = "AssetWeft_Idle";
 const CLIP: &str = "AssetWeft_InPlaceStrike";
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|v| format!("{v:02x}"))

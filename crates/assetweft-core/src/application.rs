@@ -536,6 +536,22 @@ impl Application {
         )
         .map_err(Into::into)
     }
+    /// Freeze the motion-only BYTE proposal for the pinned Cesium original and its idle/strike derivative.
+    /// # Errors
+    /// Returns a policy or storage error if owners, managed component bytes or locked versions differ.
+    pub fn propose_rigged_simple_motion(
+        &mut self,
+        proposal: &crate::candidate::Proposal,
+    ) -> Result<crate::candidate::Candidate, LibraryError> {
+        crate::production::staging_application::propose_rigged_simple(
+            &mut crate::production::staging_sqlite::SqliteStaging {
+                conn: &mut self.connection,
+                root: &self.library_root,
+            },
+            proposal,
+        )
+        .map_err(Into::into)
+    }
     /// Reads the immutable staged descriptor and its explicit validation scope.
     /// # Errors
     /// Returns schema, database or malformed identity errors.

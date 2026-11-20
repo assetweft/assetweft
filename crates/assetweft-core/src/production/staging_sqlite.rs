@@ -48,6 +48,75 @@ impl Staging for SqliteStaging<'_> {
         freeze(self.conn, self.root, proposal.into_candidate()).map_err(Into::into)
     }
 }
+impl super::staging_ports::RiggedSimpleStaging for SqliteStaging<'_> {
+    fn rigged_simple_snapshot(
+        &mut self,
+        owner: &str,
+        expected_sha256: &str,
+    ) -> Result<Vec<ComponentSnapshot>, StagingError> {
+        use crate::motion::digest;
+        use crate::{
+            assurance::{ValidationLimits, read_bounded},
+            motion::components::rigged_simple_components,
+        };
+        let metadata = crate::catalog::sqlite_metadata::asset_version(self.conn, owner)?
+            .ok_or(StagingError::InvalidInput("owner version"))?;
+        if metadata.content_hash != expected_sha256
+            || metadata.source_format != "GLB"
+            || metadata.license_id != "CC-BY-4.0"
+        {
+            return Err(StagingError::InvalidInput("Rigged Simple owner profile"));
+        }
+        let object = measured(self.conn, self.root, owner)?;
+        let bytes = read_bounded(
+            &self.root.join("objects").join(&object.content_hash),
+            ValidationLimits {
+                max_bytes: object.byte_length,
+            },
+        )
+        .map_err(|e| StagingError::Io(e.to_string()))?;
+        if digest(&bytes) != expected_sha256 {
+            return Err(StagingError::InvalidInput("owner byte drift"));
+        }
+        let mut parts = rigged_simple_components(&bytes).map_err(StagingError::InvalidInput)?;
+        let refs = crate::catalog::sqlite_metadata::component_references(self.conn, owner)?;
+        let mut snapshot = Vec::new();
+        for r in refs {
+            super::staging_domain::component_identity(
+                &snapshot,
+                r.role.as_str(),
+                &r.component_version_id,
+            )?;
+            let index = parts
+                .iter()
+                .position(|(role, _)| *role == r.role)
+                .ok_or(StagingError::InvalidInput("Rigged Simple component roles"))?;
+            let (_, expected) = parts.swap_remove(index);
+            let component =
+                crate::catalog::sqlite_metadata::asset_version(self.conn, &r.component_version_id)?
+                    .ok_or(StagingError::InvalidInput("component version"))?;
+            if component.source == "TEST_FIXTURE"
+                || component.license_id != "CC-BY-4.0"
+                || component.source_format != "JSON"
+                || component.content_hash != digest(&expected)
+            {
+                return Err(StagingError::InvalidInput(
+                    "Rigged Simple component profile",
+                ));
+            }
+            let measured = measured(self.conn, self.root, &r.component_version_id)?;
+            snapshot.push(ComponentSnapshot {
+                role: r.role.as_str().into(),
+                version: r.component_version_id,
+                measured_sha256: measured.content_hash,
+            });
+        }
+        if !parts.is_empty() {
+            return Err(StagingError::InvalidInput("Rigged Simple component roles"));
+        }
+        Ok(snapshot)
+    }
+}
 fn freeze(
     conn: &mut Connection,
     root: &Path,

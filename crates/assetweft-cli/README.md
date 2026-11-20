@@ -29,6 +29,7 @@ assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] candidate initialize --db EXISTING_DB --version-id ID --contract FILE
 assetweft [--call-id ID] candidate propose --db EXISTING_DB --proposal FILE
+assetweft [--call-id ID] candidate propose-rigged-simple-motion --db EXISTING_DB --proposal FILE
 assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
@@ -604,6 +605,28 @@ not an idempotency token. Fixtures and programmatic GLB checks are synthetic evi
 not real generated assets, authorization, budget approval, provider access or production
 acceptance. Full AW-033:B, product, real-data, paid/provider, F0, AI and engines are NOT_RUN.
 
+
+## Stage a Rigged Simple motion edit
+
+`candidate propose-rigged-simple-motion` takes the proposal JSON shown above with
+`editable: ["motion"]`, `lock_mode: "BYTE"` and an omitted or null contract.
+It measures two managed GLB versions of one asset: the original Cesium Rigged
+Simple and the pinned derivative with the added strike and idle clips. Both
+owners declare CC-BY-4.0 and the derivative declares a procedural edit.
+
+For each owner, use `assetweft_core::motion::components::rigged_simple_components`
+on its GLB bytes. Commit the four returned JSON payloads as managed Catalog
+versions and attach them with exact role references. The derivative reuses the
+original mesh, materials and rig version IDs and attaches its own motion version.
+Keep Cesium's attribution with these derivatives. Version and rights fields
+record the caller's declarations.
+
+A successful command freezes the measured descriptor under
+`RIGGED_SIMPLE_MOTION_BYTE_STAGING_V1`. Read it after reopening with
+`candidate show`, and retrieve individual selected objects with
+`catalog materialize-export`. Staging creates no current head. The fixture
+`candidate attempt` records `NotRun` for the absent contract. Read that
+historical result with `candidate receipt`.
 
 ## Local fixture candidate acceptance attempt (AW-033:B bounded slice)
 

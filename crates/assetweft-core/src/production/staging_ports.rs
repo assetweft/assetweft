@@ -27,3 +27,11 @@ pub(crate) trait Staging {
 pub(crate) trait CandidateRead {
     fn candidate(&mut self, id: &str) -> Result<Option<Candidate>, StagingError>;
 }
+
+pub(crate) trait RiggedSimpleStaging: Staging {
+    fn rigged_simple_snapshot(
+        &mut self,
+        owner: &str,
+        expected_sha256: &str,
+    ) -> Result<Vec<ComponentSnapshot>, StagingError>;
+}

@@ -1,6 +1,6 @@
 //! Responsibility: C2 actual-binary protocol and delegation regression gate.
 //! Dependencies: core fixtures/APIs, std process, tempfile; called by C1 and native CI.
-//! Invariants: synthetic evidence only; no mocks; full stdout parse, repeat stability,
+//! Invariants: synthetic cases and explicitly pinned licensed samples; full stdout parse, repeat stability,
 //! bounded reads, Chinese/space paths, unchanged input bytes and immutable local allowances.
 use assetweft_core::{
     application::Application,
@@ -6332,3 +6332,6 @@ fn motion_stance_uses_declared_role_and_sampled_world_contact() {
     out_of_range["stance"]["frames"] = json!([0, 8]);
     run(&out_of_range, "grounded-humanoid", 3, "NOT_RUN");
 }
+
+#[path = "candidate/rigged_simple.rs"]
+mod rigged_simple;

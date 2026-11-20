@@ -31,12 +31,14 @@ assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog references --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog current --db EXISTING_DB --asset-id ID
+assetweft [--call-id ID] catalog feedback-add --db EXISTING_DB --feedback-id ID --asset-id ID --version-id ID --decision ACCEPT|REJECT [--reason TEXT]
+assetweft [--call-id ID] catalog feedback-latest --db EXISTING_DB --asset-id ID [--version-id ID]
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
 16777216, minimum 1), including `workflow create --steps`, `budget approve --allowance`
 and `budget reserve --request`, `candidate initialize --contract` and `candidate propose --proposal`; it never bounds database size or query result sizes and
-has no effect on library init/status/cancel/balance/intent/candidate/catalog queries.
+has no effect on library init/status/cancel/balance/intent/candidate/catalog queries or feedback-add.
 Its existing numeric parser validation still applies to every command.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
 `library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
@@ -47,7 +49,8 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
-`catalog version`, `catalog references`, `catalog current`, `arguments`,
+`catalog version`, `catalog references`, `catalog current`, `catalog feedback-add`,
+`catalog feedback-latest`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
@@ -85,7 +88,7 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 |---|---|---|
 | `production.rs` | plan DTO/result projection; workflow create/status/cancel; explicit fixture initialization/staging; stored candidate queries | [Production](../assetweft-core/src/production/CONTRACT.md) |
 | `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
-| `catalog.rs` | strict declared metadata/exact-reference writes, stored projections and fixture-head query | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
+| `catalog.rs` | declared metadata, exact references, version feedback and fixture-head queries | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
 | `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
 
@@ -378,6 +381,33 @@ Repeated/reopened queries preserve the stored values even after fixture bytes di
 concurrent business writes can change what separate invocations observe. Full AW-033:B,
 product acceptance, providers, paid execution, F0, AI and engines remain outside this slice.
 
+
+## Local version feedback
+
+`catalog feedback-add` requires an existing initialized library and an exact
+registered asset/version pair. Decisions are case-sensitive `ACCEPT` or `REJECT`.
+The optional reason is passed verbatim. Catalog validates IDs and reasons and
+appends one opinion through `Application::append_feedback`. Success returns
+PASS/0 with `results.scope: "appended_local_version_feedback"` and a
+`results.feedback` record:
+
+```json
+{"sequence":1,"feedback_id":"opinion-1","asset_id":"asset","version_id":"v1","decision":"REJECT","reason":"Needs revision"}
+```
+
+`catalog feedback-latest` uses `Application::latest_feedback` and returns
+PASS/0 with `results.scope: "stored_local_version_feedback"`. It returns the
+same record shape, ordered by the persisted local sequence. With `--version-id`
+it matches that exact asset/version pair. Without it, it selects the newest
+opinion across the asset's versions. No match yields `results.feedback: null`.
+An omitted reason is represented as `reason: null` within a record.
+
+Both commands use regular-file database admission and the v1 JSON envelope.
+Duplicate feedback IDs and write-time version/asset mismatches return
+INVALID_INPUT/2 at `catalog`. An uninitialized library returns
+INPUT_INCOMPLETE/3. Feedback is independent of candidate acceptance and the
+current head. A stdout failure can return exit 6 after an append commits.
+Inspect persisted feedback before deciding how to proceed.
 
 ## Stored Catalog queries (AW-033:B bounded slice)
 

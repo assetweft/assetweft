@@ -43,3 +43,6 @@ jobs:
 
       - name: C1 (stdout protocol + full check)
         run: ./tools/c1-stdout-contract.sh
+
+      - name: Default SQLite busy wait on the budget writer
+        run: python3 tools/default-busy-wait.py

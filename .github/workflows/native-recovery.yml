@@ -66,3 +66,6 @@ jobs:
         run: |
           set -eu
           cargo test --locked -p assetweft-cli --test cli
+
+      - name: Default SQLite busy wait on the budget writer
+        run: python3 tools/default-busy-wait.py

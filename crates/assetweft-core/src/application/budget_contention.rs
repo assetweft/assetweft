@@ -23,12 +23,18 @@ fn run_writer(
 fn overlapping_claim_and_cancel() {
     for cancel_first in [true, false] {
         for veto in [false, true] {
-            check_overlap(cancel_first, veto);
+            check_overlap(cancel_first, veto, false);
         }
     }
 }
 
-fn check_overlap(cancel_first: bool, veto: bool) {
+#[test]
+#[ignore = "run tools/default-busy-wait.py for the isolated native sleep trace"]
+fn default_busy_wait() {
+    check_overlap(false, false, true);
+}
+
+fn check_overlap(cancel_first: bool, veto: bool, native_wait: bool) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let mut first = Application::open(&path).unwrap();
@@ -71,27 +77,54 @@ fn check_overlap(cancel_first: bool, veto: bool) {
         .unwrap();
 
     let (sql, statements) = channel();
-    second
-        .connection
-        .trace_v2(
-            TraceEventCodes::SQLITE_TRACE_STMT,
-            Some(move |event: TraceEvent<'_>| {
-                if let TraceEvent::Stmt(_, statement) = event {
-                    let _ = sql.send(statement.to_owned());
-                }
-            }),
-        )
-        .unwrap();
     let (witness, witnessed) = channel();
-    second
-        .connection
-        .busy_handler(Some(move |attempt| {
-            attempt == 0
-                && witness.send(()).is_ok()
-                && collision.send(()).is_ok()
-                && retry.recv_timeout(WAIT).is_ok()
-        }))
-        .unwrap();
+    let observe = move || {
+        witness.send(()).is_ok() && collision.send(()).is_ok() && retry.recv_timeout(WAIT).is_ok()
+    };
+    if native_wait {
+        for (role, app) in [("claim", &first), ("cancel", &second)] {
+            let cfg = app.connection_config();
+            assert_eq!(cfg.busy_timeout_ms, 200);
+            eprintln!(
+                "{role}: journal_mode={} busy_timeout_ms={}",
+                cfg.journal_mode, cfg.busy_timeout_ms
+            );
+        }
+        // Only the isolated SQLite build emits this event, after its first native sleep.
+        second
+            .connection
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(move |event: TraceEvent<'_>| match event {
+                    TraceEvent::Stmt(_, "BEGIN IMMEDIATE") => {
+                        let _ = sql.send("BEGIN IMMEDIATE".to_owned());
+                    }
+                    TraceEvent::Stmt(stmt, "-- AW015 native sleep returned")
+                        if stmt.sql() == "BEGIN IMMEDIATE" && observe() =>
+                    {
+                        let _ = sql.send("resumed".to_owned());
+                    }
+                    _ => {}
+                }),
+            )
+            .unwrap();
+    } else {
+        second
+            .connection
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(move |event: TraceEvent<'_>| {
+                    if let TraceEvent::Stmt(_, statement) = event {
+                        let _ = sql.send(statement.to_owned());
+                    }
+                }),
+            )
+            .unwrap();
+        second
+            .connection
+            .busy_handler(Some(move |attempt| attempt == 0 && observe()))
+            .unwrap();
+    }
     let worker = thread::spawn(move || {
         start.recv_timeout(WAIT).expect("first writer at commit");
         let mut calls = 0;
@@ -109,6 +142,12 @@ fn check_overlap(cancel_first: bool, veto: bool) {
     );
     finished.send(()).unwrap();
     let (second_result, second_calls) = worker.join().unwrap();
+    if native_wait {
+        assert_eq!(statements.try_iter().collect::<Vec<_>>(), ["resumed"]);
+        eprintln!(
+            "BEGIN IMMEDIATE: first native 1ms sleep returned while claim held; cancel resumed after release"
+        );
+    }
     if veto {
         assert!(
             matches!(first_result, Err(LibraryError::Constraint(_))),

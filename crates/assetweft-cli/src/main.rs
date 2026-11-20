@@ -101,6 +101,7 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(PathBuf))),
                 )
                 .subcommands([
+                    ("preview", "Generate a static PNG thumbnail for one exact managed version"),
                     ("version", "Read stored exact version metadata; no byte validation"),
                     ("file-availability", "Check local managed bytes for one exact version"),
                 ].map(|(name, help)| Command::new(name).about(help).arg(db())
@@ -426,6 +427,7 @@ fn run() -> (i32, Value) {
             "add-reference" => "catalog add-reference",
             "version" => "catalog version",
             "search" => "catalog search",
+            "preview" => "catalog preview",
             "file-availability" => "catalog file-availability",
             "references" => "catalog references",
             "current" => "catalog current",

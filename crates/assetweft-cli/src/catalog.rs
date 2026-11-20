@@ -80,7 +80,7 @@ pub(super) fn query_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let opened = if matches!(action, "file-availability" | "search") {
+    let opened = if matches!(action, "file-availability" | "search" | "preview") {
         Application::open_read_only(db)
     } else {
         Application::open(db)
@@ -96,6 +96,26 @@ pub(super) fn query_response(
             );
         }
     };
+    if action == "preview" {
+        let version = id("version-id");
+        return match app.preview(version) {
+            Ok(path) => finish(
+                0,
+                "PASS",
+                json!([]),
+                json!({"scope":"local_version_png_preview","version_id":version,"relative_path":path}),
+            ),
+            Err(e) => {
+                let (code, status) = storage_outcome(&e);
+                finish(
+                    code,
+                    status,
+                    json!([error("catalog", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
     if action == "file-availability" {
         let version_id = id("version-id");
         return match app.file_availability(version_id) {

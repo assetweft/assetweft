@@ -1,0 +1,246 @@
+//! Responsibility: produce and evict one reconstructible, version-addressed local export.
+//! Depends on the Catalog managed-object verifier, root binding and storage lease.
+//! Caller: Application. The private witness pins the copy's identity across process exits.
+use super::{domain::validate_version_id, objects_domain::StoredObject, objects_sqlite};
+use crate::{
+    library::LibraryError,
+    storage::{self, Guard, StorageError},
+};
+use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File},
+    io::{self, Read},
+    path::{Path, PathBuf},
+};
+
+fn redirected(m: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Includes junctions and other reparse points.
+        m.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        m.is_symlink()
+    }
+}
+
+pub(crate) fn database_id(path: &Path) -> Option<FileId> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if redirected(&fs::symlink_metadata(parent).ok()?) {
+        return None;
+    }
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || redirected(&metadata) {
+        return None;
+    }
+    identity(path).ok().map(|(id, _)| id)
+}
+
+// All components below the canonical library root are checked separately. In
+// particular a bind mount can redirect a regular file or directory on the same device.
+fn local_entry(
+    root: &Path,
+    path: &Path,
+    expected: fn(&fs::Metadata) -> bool,
+) -> Result<(), StorageError> {
+    let meta = fs::symlink_metadata(path)?;
+    if !expected(&meta) || redirected(&meta) || path.canonicalize()? != path {
+        return Err(StorageError::Invalid(
+            "redirected or unexpected storage entry",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::fs::{AtFlags, CWD, StatxAttributes, StatxFlags, statx};
+        let info = statx(
+            CWD,
+            path,
+            AtFlags::NO_AUTOMOUNT | AtFlags::SYMLINK_NOFOLLOW,
+            StatxFlags::empty(),
+        )
+        .map_err(io::Error::from)?;
+        if !info
+            .stx_attributes_mask
+            .contains(StatxAttributes::MOUNT_ROOT)
+            || info.stx_attributes.contains(StatxAttributes::MOUNT_ROOT)
+        {
+            return Err(StorageError::Invalid(
+                "mounted storage entry or unavailable mount identity",
+            ));
+        }
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if fs::metadata(root)?.dev() != meta.dev() {
+            return Err(StorageError::Invalid("mounted storage entry"));
+        }
+    }
+    #[cfg(any(windows, target_os = "linux"))]
+    let _ = root;
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileId {
+    volume: u64,
+    index: u64,
+}
+
+fn identity(path: &Path) -> io::Result<(FileId, u64)> {
+    #[cfg(unix)]
+    let (volume, index, links) = {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::symlink_metadata(path)?;
+        (m.dev(), m.ino(), m.nlink())
+    };
+    #[cfg(windows)]
+    let (volume, index, links) = {
+        let m = winapi_util::file::information(File::open(path)?)?;
+        (
+            m.volume_serial_number(),
+            m.file_index(),
+            m.number_of_links(),
+        )
+    };
+    if index == 0 {
+        return Err(io::Error::other("unavailable file identity"));
+    }
+    Ok((FileId { volume, index }, links))
+}
+
+pub(crate) struct Export {
+    _lease: Guard,
+    database: FileId,
+    root: PathBuf,
+    name: String,
+    source: PathBuf,
+    object: StoredObject,
+}
+
+impl Export {
+    pub(crate) fn open(
+        conn: &Connection,
+        root: &Path,
+        database: Option<FileId>,
+        id: &str,
+    ) -> Result<Self, StorageError> {
+        validate_version_id(id).map_err(LibraryError::from)?;
+        if root.canonicalize()? != root {
+            return Err(StorageError::Invalid("redirected library root"));
+        }
+        let db = conn.path().ok_or(StorageError::Invalid("file database"))?;
+        let database = database
+            .filter(|expected| Some(*expected) == database_id(Path::new(db)))
+            .ok_or(StorageError::Invalid("redirected or replaced database"))?;
+        let db_path = Path::new(db).canonicalize()?;
+        if db_path.parent() != Some(root) {
+            return Err(StorageError::Invalid("database outside library"));
+        }
+        local_entry(root, &db_path, fs::Metadata::is_file)?;
+        let lease = storage::lock(root)?;
+        local_entry(root, &root.join(".aw-object-owner"), fs::Metadata::is_file)?;
+        storage::bind(conn, root)?;
+        local_entry(root, &root.join("objects"), fs::Metadata::is_dir)?;
+        let object = objects_sqlite::managed_record(conn, id)?
+            .ok_or(StorageError::Invalid("verified managed version required"))?;
+        let source = root.join("objects").join(&object.content_hash);
+        local_entry(root, &source, fs::Metadata::is_file)?;
+        objects_sqlite::verify(&source, &object.content_hash, object.byte_length)?;
+        Ok(Self {
+            _lease: lease,
+            database,
+            root: root.into(),
+            name: Sha256::digest(id.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            source,
+            object,
+        })
+    }
+
+    fn witness(&self, identity: FileId) -> PathBuf {
+        self.root.join(format!(
+            ".aw-export-{}-{:x}-{:x}-{:x}-{:x}",
+            self.name, self.database.volume, self.database.index, identity.volume, identity.index
+        ))
+    }
+
+    fn owned(&self, target: &Path) -> Result<Option<PathBuf>, StorageError> {
+        match local_entry(&self.root, target, fs::Metadata::is_file) {
+            Err(StorageError::Io(e)) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            other => other?,
+        }
+        let (id, links) = identity(target)?;
+        let witness = self.witness(id);
+        if links != 2 {
+            return Err(StorageError::Invalid("unowned export"));
+        }
+        match local_entry(&self.root, &witness, fs::Metadata::is_file) {
+            Err(StorageError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(StorageError::Invalid("missing export ownership witness"));
+            }
+            other => other?,
+        }
+        if identity(&witness)? != (id, links) {
+            return Err(StorageError::Invalid("export witness mismatch"));
+        }
+        objects_sqlite::verify(target, &self.object.content_hash, self.object.byte_length)?;
+        Ok(Some(witness))
+    }
+
+    pub(crate) fn materialize(self) -> Result<PathBuf, StorageError> {
+        let dir = self.root.join("exports");
+        match fs::create_dir(&dir) {
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+            outcome => outcome?,
+        }
+        local_entry(&self.root, &dir, fs::Metadata::is_dir)?;
+        let relative = Path::new("exports").join(&self.name);
+        let target = self.root.join(&relative);
+        if self.owned(&target)?.is_none() {
+            let mut temp = tempfile::NamedTempFile::new_in(&self.root)?;
+            io::copy(
+                &mut File::open(&self.source)?.take(self.object.byte_length + 1),
+                &mut temp,
+            )?;
+            temp.as_file().sync_all()?;
+            objects_sqlite::verify(
+                temp.path(),
+                &self.object.content_hash,
+                self.object.byte_length,
+            )?;
+            let witness = self.witness(identity(temp.path())?.0);
+            temp.persist_noclobber(&witness).map_err(|e| e.error)?;
+            // Publish last. A crash here can leave an unreachable private witness.
+            if let Err(error) = fs::hard_link(&witness, target) {
+                // We just exclusively created this name under the same lease.
+                fs::remove_file(witness)?;
+                return Err(error.into());
+            }
+        }
+        Ok(relative)
+    }
+
+    pub(crate) fn evict(self) -> Result<bool, StorageError> {
+        let dir = self.root.join("exports");
+        if fs::symlink_metadata(&dir).is_err_and(|e| e.kind() == io::ErrorKind::NotFound) {
+            return Ok(false);
+        }
+        local_entry(&self.root, &dir, fs::Metadata::is_dir)?;
+        let target = dir.join(&self.name);
+        let Some(witness) = self.owned(&target)? else {
+            return Ok(false);
+        };
+        fs::remove_file(target)?;
+        fs::remove_file(witness)?;
+        Ok(true)
+    }
+}

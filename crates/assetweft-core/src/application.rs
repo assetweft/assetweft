@@ -19,6 +19,7 @@ pub struct Application {
     connection: Connection,
     library_root: PathBuf,
     config: ConnectionConfig,
+    export_database: Option<crate::catalog::exports::FileId>,
 }
 
 impl Application {
@@ -79,6 +80,7 @@ impl Application {
             .ok_or_else(|| ProtoError::Other("database parent required".into()))?
             .to_path_buf();
         Ok(Self {
+            export_database: crate::catalog::exports::database_id(path),
             connection,
             config,
             library_root,
@@ -117,6 +119,35 @@ impl Application {
         );
         crate::catalog::objects_application::managed(&mut adapter, id)
     }
+    /// Materializes one independently writable copy; returns its library-relative path.
+    /// # Errors
+    /// Requires verified managed bytes and an absent or provably owned destination.
+    pub fn materialize_export(
+        &self,
+        version_id: &str,
+    ) -> Result<PathBuf, crate::storage::StorageError> {
+        self.export_session(version_id)?.materialize()
+    }
+
+    /// Evicts this version's verified export. Returns false if the target is absent.
+    /// # Errors
+    /// Refuses ambiguous ownership, changed bytes, or an unavailable managed source.
+    pub fn evict_export(&self, version_id: &str) -> Result<bool, crate::storage::StorageError> {
+        self.export_session(version_id)?.evict()
+    }
+
+    fn export_session(
+        &self,
+        id: &str,
+    ) -> Result<crate::catalog::exports::Export, crate::storage::StorageError> {
+        crate::catalog::exports::Export::open(
+            &self.connection,
+            &self.library_root,
+            self.export_database,
+            id,
+        )
+    }
+
     /// Sets real object retention constraints; clearing them requires caller evidence.
     /// # Errors
     /// Rejects invalid/unknown hash, lock or database failure.

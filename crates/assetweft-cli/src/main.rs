@@ -71,7 +71,7 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("catalog")
-                .about("Manage local metadata, managed version exports, exact references and feedback; read stored head")
+                .about("Search and manage local Catalog metadata, references, version exports and feedback")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("commit-object")
@@ -105,6 +105,12 @@ fn grammar() -> Command {
                     ("file-availability", "Check local managed bytes for one exact version"),
                 ].map(|(name, help)| Command::new(name).about(help).arg(db())
                     .arg(Arg::new("version-id").long("version-id").required(true))))
+                .subcommand(
+                    Command::new("search")
+                        .about("Find up to 100 registered versions by a literal asset or version ID substring")
+                        .arg(db())
+                        .arg(Arg::new("query").long("query").required(true)),
+                )
                 .subcommand(
                     Command::new("references")
                         .about("Read stored ordered exact component references; no expansion")
@@ -419,6 +425,7 @@ fn run() -> (i32, Value) {
             "register-version" => "catalog register-version",
             "add-reference" => "catalog add-reference",
             "version" => "catalog version",
+            "search" => "catalog search",
             "file-availability" => "catalog file-availability",
             "references" => "catalog references",
             "current" => "catalog current",

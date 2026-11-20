@@ -97,6 +97,17 @@ cooperating collection, so the query needs no storage lease or filesystem
 creation. The CLI uses a read-only SQLite connection. This observation does not
 update persisted Presence and is valid only for the bytes read during the call.
 
+## Local version discovery
+
+`Application::search_versions` queries a single checked Catalog metadata
+snapshot. It matches a nonempty, case-sensitive literal substring against
+either immutable identifier. It returns one row per matching version with
+`asset_id`, `version_id`, and stored `source_format` as declared. The adapter
+reads at most 101 rows in SQLite BINARY order by asset ID then version ID.
+Only the first 100 are returned and `truncated` signals that the query needs
+refining for more specific results. The CLI opens the existing library read-only.
+The exact returned version ID can be passed to version and file-availability.
+
 ## Exact-version feedback
 
 Catalog domain owns Decision, Feedback, FeedbackRecord, HistoryQuery and their

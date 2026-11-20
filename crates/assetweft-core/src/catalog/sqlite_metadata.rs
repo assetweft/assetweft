@@ -1,9 +1,12 @@
-//! Responsibility: Catalog SQLite immutable metadata and exact-reference persistence.
+//! Responsibility: Catalog SQLite immutable metadata, version discovery and exact-reference persistence.
 //! Dependencies: rusqlite, existing library migration/error guard and storage retention lease.
 //! Callers: Application metadata use cases, Production staging/acceptance/initialization adapters and Catalog objects_sqlite.
 //! Invariants: lease before IMMEDIATE; asset+version atomic; borrowed insertion never commits.
 use super::{
-    domain::{self, AssetVersion, ComponentReference, ComponentRole, MetadataError, Presence},
+    domain::{
+        self, AssetVersion, ComponentReference, ComponentRole, MetadataError, Presence,
+        VersionSearchMatch, VersionSearchResult,
+    },
     ports::Metadata,
 };
 use crate::{
@@ -118,6 +121,39 @@ pub(crate) fn asset_version(
     tx.commit()?;
     Ok(result)
 }
+pub(crate) fn search_versions(
+    conn: &mut Connection,
+    query: &str,
+) -> Result<VersionSearchResult, LibraryError> {
+    const LIMIT: u16 = 100;
+    if query.is_empty() {
+        return Err(LibraryError::InvalidInput("empty search query"));
+    }
+    let tx = conn.transaction()?;
+    library::require_current(&tx)?;
+    let mut matches = {
+        let mut stmt = tx.prepare(
+            "SELECT asset_id, version_id, source_format
+             FROM aw_asset_versions
+             WHERE instr(asset_id, ?1) > 0 OR instr(version_id, ?1) > 0
+             ORDER BY asset_id COLLATE BINARY, version_id COLLATE BINARY
+             LIMIT ?2",
+        )?;
+        stmt.query_map(params![query, LIMIT + 1], |row| {
+            Ok(VersionSearchMatch {
+                asset_id: row.get(0)?,
+                version_id: row.get(1)?,
+                source_format: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+    };
+    let truncated = matches.len() > usize::from(LIMIT);
+    matches.truncate(usize::from(LIMIT));
+    tx.commit()?;
+    Ok(VersionSearchResult { matches, truncated })
+}
+
 fn add_component_reference(
     conn: &mut Connection,
     r: &ComponentReference,

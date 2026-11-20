@@ -80,7 +80,7 @@ pub(super) fn query_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let opened = if action == "file-availability" {
+    let opened = if matches!(action, "file-availability" | "search") {
         Application::open_read_only(db)
     } else {
         Application::open(db)
@@ -125,6 +125,9 @@ pub(super) fn query_response(
         };
     }
     let result = match action {
+        "search" => app.search_versions(id("query")).map(|result| {
+            json!({"scope":"stored_local_asset_version_search","matches":result.matches,"truncated":result.truncated})
+        }),
         "version" => app.asset_version(id("version-id")).map(|version| {
             json!({"scope":"stored_local_asset_version_metadata","version":version.map(version_value)})
         }),

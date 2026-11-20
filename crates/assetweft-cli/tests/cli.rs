@@ -5509,3 +5509,143 @@ fn catalog_file_availability_observes_exact_local_bytes_without_writes() {
     assert_eq!(fs::read(&source_fixture).unwrap(), bytes);
     assert!(!dir.path().join(".aw-storage.lock").exists());
 }
+
+#[test]
+fn catalog_search_finds_literal_version_matches_without_writes() {
+    use assetweft_core::library::Presence;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let search = |query: &str| {
+        let query_arg = format!("--query={query}");
+        invoke(&[
+            OsStr::new("--call-id"),
+            OsStr::new("discovery"),
+            OsStr::new("catalog"),
+            OsStr::new("search"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+            OsStr::new(&query_arg),
+        ])
+    };
+    let (out, result) = search("mesh");
+    assert_eq!(result["command"], "catalog search");
+    assert_eq!(out.status.code(), Some(2), "{result}");
+    assert_eq!(result["errors"][0]["field_path"], "db");
+    assert!(result["results"].is_null());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+
+    fs::write(&db, []).unwrap();
+    let (out, result) = search("mesh");
+    assert_eq!(out.status.code(), Some(3), "{result}");
+    assert!(result["results"].is_null());
+    assert!(fs::read(&db).unwrap().is_empty());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+
+    let original = dir.path().join("original.glb");
+    let bytes = fs::read(fixture("mesh_only.glb")).unwrap();
+    fs::write(&original, &bytes).unwrap();
+    let mut managed = catalog_version("part-雪%_' v2", Presence::Unknown);
+    managed.asset_id = "a-mesh".into();
+    managed.source_format = "GLB".into();
+    managed.content_hash =
+        "4658deaae78fb1ae6050baca75a8c098db6ccad311c74ba02097fceac01e45a5".into();
+    app.commit_object(
+        &managed,
+        &mut bytes.as_slice(),
+        bytes.len() as u64,
+        bytes.len() as u64,
+    )
+    .unwrap();
+    for (asset, id, format) in [
+        ("a-mesh", "mesh-part雪%_' v1", "OBJ"),
+        ("z-prop", "mesh-雪%_' v1", " WAV "),
+        ("z-prop", "mesh-雪xx' v1", "PNG"),
+    ] {
+        let mut row = catalog_version(id, Presence::Missing);
+        row.asset_id = asset.into();
+        row.source_format = format.into();
+        app.add_asset_version(&row).unwrap();
+    }
+    for n in (0..101).rev() {
+        let mut row = catalog_version(&format!("batch-{n:03}"), Presence::Unknown);
+        row.asset_id = "another".into();
+        app.add_asset_version(&row).unwrap();
+    }
+    app.close().unwrap();
+    let db_bytes = fs::read(&db).unwrap();
+    let cas = dir.path().join("objects").join(&managed.content_hash);
+    let entries = || {
+        let mut paths = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
+    let initial_entries = entries();
+    let hit = |asset: &str, version: &str, format: &str| json!({"asset_id":asset,"version_id":version,"source_format":format});
+    let first = hit("a-mesh", "mesh-part雪%_' v1", "OBJ");
+    let second = hit("a-mesh", &managed.version_id, "GLB");
+    let third = hit("z-prop", "mesh-雪%_' v1", " WAV ");
+    let fourth = hit("z-prop", "mesh-雪xx' v1", "PNG");
+    let check = |query: &str, matches: Value, truncated: bool| {
+        let (out, result) = search(query);
+        assert_eq!(out.status.code(), Some(0), "{result}");
+        assert_eq!(
+            result,
+            json!({
+                "schema_version":1,"command":"catalog search","call_id":"discovery",
+                "status":"PASS","errors":[],"results":{
+                    "scope":"stored_local_asset_version_search","matches":matches,"truncated":truncated
+                }
+            })
+        );
+        assert!(out.stderr.is_empty());
+        result
+    };
+    check("mesh", json!([first, second, third, fourth]), false);
+    let literal = check("-雪%_' ", json!([second, third]), false);
+    check("MESH", json!([]), false);
+    check("雪%_'  ", json!([]), false);
+    check(
+        "batch",
+        json!(
+            (0..100)
+                .map(|n| { hit("another", &format!("batch-{n:03}"), "declared-format") })
+                .collect::<Vec<_>>()
+        ),
+        true,
+    );
+    check(
+        "batch-0",
+        json!(
+            (0..100)
+                .map(|n| { hit("another", &format!("batch-{n:03}"), "declared-format") })
+                .collect::<Vec<_>>()
+        ),
+        false,
+    );
+    let (out, result) = search("");
+    assert_eq!(out.status.code(), Some(2), "{result}");
+    assert!(result["results"].is_null());
+
+    let id = literal["results"]["matches"][0]["version_id"]
+        .as_str()
+        .unwrap();
+    let (out, result) = invoke(&catalog_args("version", db.as_os_str(), OsStr::new(id)));
+    assert_eq!(out.status.code(), Some(0), "{result}");
+    assert_eq!(result["results"]["version"]["source_format"], "GLB");
+    catalog_query(
+        &db,
+        "file-availability",
+        id,
+        json!({"scope":"local_managed_version_bytes","version_id":id,"availability":"AVAILABLE"}),
+    );
+    assert_eq!(fs::read(&db).unwrap(), db_bytes);
+    assert_eq!(fs::read(&original).unwrap(), bytes);
+    assert_eq!(fs::read(&cas).unwrap(), bytes);
+    assert_eq!(entries(), initial_entries);
+}

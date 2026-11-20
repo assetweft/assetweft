@@ -7,7 +7,8 @@ use crate::assurance::{self, ValidationLimits};
 use serde_json::{Value, json};
 use std::path::Path;
 
-const RIGGED_SIMPLE: &str = "3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401";
+pub(crate) const RIGGED_SIMPLE: &str =
+    "3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401";
 
 /// Run one preset world-space bend on the exact licensed Cesium reference asset.
 /// Requires a caller-selected trusted Blender 5.1.2 executable and a new evidence directory.

@@ -6149,3 +6149,46 @@ fn rig_bend_rejects_other_bytes_before_launch_or_staging() {
     );
     assert!(!out.exists());
 }
+
+#[test]
+fn motion_strike_writes_only_a_new_supported_glb() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let input =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/rigged-simple/RiggedSimple.glb");
+    let output = dir.path().join("strike.glb");
+    let run = |file: &Path, out: &Path| {
+        invoke(&[
+            OsStr::new("motion-strike"),
+            file.as_os_str(),
+            OsStr::new("--out"),
+            out.as_os_str(),
+        ])
+    };
+    let (p, r) = run(&input, &output);
+    assert!(p.status.success(), "{r}");
+    assert_eq!(r["results"]["clip"], "AssetWeft_InPlaceStrike");
+    let bytes = fs::read(&output).unwrap();
+    let hash: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect();
+    assert_eq!(r["results"]["output_sha256"], hash);
+    assert_eq!(
+        hash,
+        "20f7e1596107d9b875ea6b276c1d79aeb5c98c3a9ca3ec9054bc2cd57d4eb90b"
+    );
+    let (p, r) = invoke(&[
+        OsStr::new("validate"),
+        output.as_os_str(),
+        OsStr::new("--role"),
+        OsStr::new("animated-character"),
+    ]);
+    assert!(p.status.success(), "{r}");
+    fs::write(&output, b"existing").unwrap();
+    assert!(!run(&input, &output).0.status.success());
+    assert_eq!(fs::read(&output).unwrap(), b"existing");
+    let rejected = dir.path().join("rejected.glb");
+    assert_eq!(run(&output, &rejected).1["status"], "NOT_RUN");
+    assert!(!rejected.exists());
+}

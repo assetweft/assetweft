@@ -101,7 +101,7 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(PathBuf))),
                 )
                 .subcommands([
-                    ("preview", "Generate a static PNG thumbnail for one exact managed version"),
+                    ("preview", "Generate a PNG thumbnail or WAV audition clip for one exact managed version"),
                     ("version", "Read stored exact version metadata; no byte validation"),
                     ("file-availability", "Check local managed bytes for one exact version"),
                 ].map(|(name, help)| Command::new(name).about(help).arg(db())

@@ -5650,10 +5650,33 @@ fn catalog_search_finds_literal_version_matches_without_writes() {
     assert_eq!(entries(), initial_entries);
 }
 
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn add_preview_source(db: &Path, id: &str, bytes: &[u8], format: &str) -> std::path::PathBuf {
+    let root = db.parent().unwrap();
+    let file = root.join(format!("{id}.source"));
+    fs::write(&file, bytes).unwrap();
+    let hash = sha256(bytes);
+    let mut wire = object_wire(id);
+    wire["content_hash"] = json!(hash);
+    wire["source_format"] = json!(format);
+    let version = root.join("version.json");
+    fs::write(&version, wire.to_string()).unwrap();
+    let (out, value) =
+        catalog_write_invoke(&object_args(db, &version, &file, &bytes.len().to_string()));
+    assert!(out.status.success(), "{value}");
+    root.join("objects").join(hash)
+}
+
 #[test]
 fn catalog_preview_decodes_exact_versions_and_preserves_library() {
     use png::{BitDepth, ColorType, Decoder, Encoder};
-    use sha2::{Digest, Sha256};
     use std::io::Cursor;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -5662,26 +5685,7 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
         .unwrap()
         .initialize_library()
         .unwrap();
-    let sha256 = |bytes: &[u8]| -> String {
-        Sha256::digest(bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
-    };
-    let add = |id: &str, bytes: &[u8], format: &str| {
-        let file = root.join(format!("{id}.source"));
-        fs::write(&file, bytes).unwrap();
-        let hash = sha256(bytes);
-        let mut wire = object_wire(id);
-        wire["content_hash"] = json!(hash);
-        wire["source_format"] = json!(format);
-        let version = root.join("version.json");
-        fs::write(&version, wire.to_string()).unwrap();
-        let (out, value) =
-            catalog_write_invoke(&object_args(&db, &version, &file, &bytes.len().to_string()));
-        assert!(out.status.success(), "{value}");
-        root.join("objects").join(hash)
-    };
+    let add = |id: &str, bytes: &[u8], format: &str| add_preview_source(&db, id, bytes, format);
     let make = |blue, animated, gamma| {
         let mut bytes = Vec::new();
         let mut encoder = Encoder::new(&mut bytes, 256, 64);
@@ -5734,7 +5738,7 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
     let last = corrupt.len() - 1;
     corrupt[last] ^= 1;
     add("crc", &corrupt, "PNG");
-    add("unsupported", &first, "WAV");
+    add("unsupported", &first, "GLB");
     add("fake", b"not an image", "PNG");
     let mut wide = Vec::new();
     let mut encoder = Encoder::new(&mut wide, 4097, 1);
@@ -5849,4 +5853,75 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
     assert_eq!(fs::read(&cas).unwrap(), first);
     assert_eq!(fs::read(root.join("first.source")).unwrap(), first);
     assert_eq!(fs::read(db).unwrap(), db_before);
+}
+
+#[test]
+fn catalog_preview_wav_uses_complete_frames_of_the_requested_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let wave = |channels: u16, samples: &[i16]| {
+        let size = (samples.len() * 2) as u32;
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + size).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend(channels.to_le_bytes());
+        bytes.extend(8000u32.to_le_bytes());
+        bytes.extend((16000 * u32::from(channels)).to_le_bytes());
+        bytes.extend((2 * channels).to_le_bytes());
+        bytes.extend(16u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend(size.to_le_bytes());
+        bytes.extend(samples.iter().flat_map(|s| s.to_le_bytes()));
+        bytes
+    };
+    let source = wave(1, &[-107, 17, 85]);
+    // Three seconds of stereo with a different square wave in each channel.
+    let stereo = (0..24000)
+        .flat_map(|i| {
+            [
+                if i % 20 < 10 { 8000 } else { -8000 },
+                if i % 40 < 20 { 5000 } else { -5000 },
+            ]
+        })
+        .collect::<Vec<_>>();
+    let other = wave(2, &stereo);
+    let cas = add_preview_source(&db, "one", &source, "WAV");
+    add_preview_source(&db, "two", &other, "wav");
+    // Both outer and inner size fields, format, rate, byte rate, frame size and bit depth matter.
+    for offset in [4, 16, 20, 22, 26, 28, 32, 34, 36, 40] {
+        let mut invalid = source.clone();
+        invalid[offset] ^= 0x10;
+        let id = format!("invalid-{offset}");
+        add_preview_source(&db, &id, &invalid, "WAV");
+        let (out, result) = invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(&id)));
+        assert_eq!(out.status.code(), Some(2), "{result}");
+        assert!(result["results"].is_null());
+    }
+    assert!(!dir.path().join("previews").exists());
+    let before = fs::read(&db).unwrap();
+    for (id, expected) in [
+        ("two", wave(2, &stereo[..16000])),
+        ("one", wave(1, &[-107])),
+    ] {
+        let result = export_call(&db, "preview", id);
+        assert_eq!(result["scope"], "local_version_wav_preview");
+        let path = dir.path().join(result["relative_path"].as_str().unwrap());
+        assert_eq!(
+            path,
+            dir.path()
+                .join("previews")
+                .join(format!("{}.v1.wav", sha256(id.as_bytes())))
+        );
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        assert_eq!(export_call(&db, "preview", id), result);
+    }
+    assert_eq!(fs::read(cas).unwrap(), source);
+    assert_eq!(fs::read(dir.path().join("one.source")).unwrap(), source);
+    assert_eq!(fs::read(db).unwrap(), before);
 }

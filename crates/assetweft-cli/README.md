@@ -29,6 +29,7 @@ assetweft [--call-id ID] candidate propose --db EXISTING_DB --proposal FILE
 assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
+assetweft [--call-id ID] catalog search --db EXISTING_DB --query TEXT
 assetweft [--call-id ID] catalog file-availability --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog references --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog current --db EXISTING_DB --asset-id ID
@@ -50,7 +51,7 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
-`catalog version`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
+`catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
 `catalog feedback-latest`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
@@ -436,6 +437,22 @@ The stored object preserves every AssetVersion field: `asset_id`, `version_id`,
 Presence is exactly `UNKNOWN` or `MISSING`; there is no READY state. Authorization,
 authorized and license fields are stored declarations, never a new authentication,
 rights or availability guarantee. A valid absent identity returns `version:null`.
+
+`catalog search --db EXISTING_DB --query TEXT` opens an existing library read-only.
+It matches the case-sensitive literal substring against either the asset ID or the
+version ID. It preserves spaces and treats characters such as `%` and `_` literally.
+Use `--query='-part'` when the value starts with a dash. An empty query is invalid.
+
+A successful v1 response exits 0 with status `PASS` and `results` containing
+`scope:"stored_local_asset_version_search"`, `matches`, and `truncated`.
+Each match contains exactly `asset_id`, `version_id`, and `source_format` as stored.
+Format is a metadata declaration. Matches use SQLite BINARY order by asset ID,
+then version ID, with one row per matching registered version. No match yields
+`matches:[]` and `truncated:false`. When more than 100 versions match, only the
+first 100 are returned and `truncated:true`. Refine the substring to narrow the
+results. This command has no continuation token.
+Pass a returned `version_id` as `--version-id` to `catalog version` or
+`catalog file-availability`.
 
 `catalog file-availability --db EXISTING_DB --version-id ID` opens SQLite in
 read-only mode. A successful query exits 0 with outer status `PASS` and returns

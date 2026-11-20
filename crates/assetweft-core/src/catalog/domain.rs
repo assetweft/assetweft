@@ -110,6 +110,22 @@ pub struct AssetVersion {
     pub presence: Presence,
 }
 
+/// Stored identifiers and declared source format for one registered version.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct VersionSearchMatch {
+    pub asset_id: String,
+    pub version_id: String,
+    pub source_format: String,
+}
+
+/// First 100 matching versions in asset ID, then version ID order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionSearchResult {
+    pub matches: Vec<VersionSearchMatch>,
+    /// More matches exist. Use a more specific query to narrow the result.
+    pub truncated: bool,
+}
+
 /// An explicit reference to a component version, never an implicit latest pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentReference {

@@ -333,6 +333,18 @@ impl Application {
         crate::catalog::application::exact_version(&mut metadata, id).map_err(Into::into)
     }
 
+    /// Finds registered versions by a nonempty, case-sensitive literal substring
+    /// of asset ID or version ID. Reads metadata in a single snapshot.
+    ///
+    /// # Errors
+    /// Returns invalid input for an empty query, or a schema or database error.
+    pub fn search_versions(
+        &mut self,
+        query: &str,
+    ) -> Result<crate::catalog::domain::VersionSearchResult, LibraryError> {
+        crate::catalog::sqlite_metadata::search_versions(&mut self.connection, query)
+    }
+
     /// Associates a component role with an existing version.
     ///
     /// # Errors

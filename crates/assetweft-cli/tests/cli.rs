@@ -4512,7 +4512,7 @@ fn object_commit_rejects_inputs_without_registration() {
         ("hash", "3", "16777216", 1),
         ("short", "2", "16777216", 2),
         ("long", "4", "16777216", 2),
-        ("cap", "3", "2", 2),
+        ("json-cap", "3", "2", 2),
         ("array", "3", "16777216", 2),
         ("presence", "3", "16777216", 2),
         ("unknown", "3", "16777216", 2),
@@ -4535,6 +4535,9 @@ fn object_commit_rejects_inputs_without_registration() {
         args.extend([OsStr::new("--max-bytes"), OsStr::new(cap)]);
         let (out, value) = catalog_write_invoke(&args);
         assert_eq!(out.status.code(), Some(code), "{case}: {value}");
+        if case == "json-cap" {
+            assert_eq!(value["errors"][0]["field_path"], "version", "{value}");
+        }
         assert_eq!(
             Application::open(&db).unwrap().asset_version(case).unwrap(),
             None
@@ -4582,6 +4585,55 @@ fn object_commit_rejects_inputs_without_registration() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn object_commit_enforces_source_cap_after_admitting_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let version = dir.path().join("version.json");
+    let file = dir.path().join("bytes");
+    let bytes = [b'a'; 1024];
+    // SHA-256 of 1024 ASCII 'a' bytes.
+    let hash = "2edc986847e209b4016e141a6dc8716d3207350f416969382d431539bf292e4a";
+    let id = "source-cap";
+    let mut wire = object_wire(id);
+    wire["content_hash"] = json!(hash);
+    let metadata = wire.to_string();
+    assert!(metadata.len() < bytes.len());
+    fs::write(&version, &metadata).unwrap();
+    fs::write(&file, bytes).unwrap();
+
+    let expected_len = bytes.len().to_string();
+    let cap = metadata.len().to_string();
+    let mut args = object_args(&db, &version, &file, &expected_len);
+    args.extend([OsStr::new("--max-bytes"), OsStr::new(&cap)]);
+    let (out, value) = catalog_write_invoke(&args);
+    assert_eq!(out.status.code(), Some(2), "{value}");
+    assert_eq!(value["status"], "INVALID_INPUT");
+    assert_eq!(value["errors"][0]["field_path"], "catalog", "{value}");
+    {
+        let mut app = Application::open(&db).unwrap();
+        assert_eq!(app.asset_version(id).unwrap(), None);
+        assert_eq!(app.managed_object(id).unwrap(), None);
+    }
+
+    *args.last_mut().unwrap() = OsStr::new(&expected_len);
+    let (out, value) = catalog_write_invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    assert_eq!(value["status"], "PASS");
+    assert_eq!(value["results"]["version_id"], id);
+    assert_eq!(value["results"]["content_hash"], hash);
+    assert_eq!(value["results"]["byte_length"], bytes.len());
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(app.asset_version(id).unwrap().unwrap().content_hash, hash);
+    let object = app.managed_object(id).unwrap().unwrap();
+    assert_eq!(object.content_hash, hash);
+    assert_eq!(object.byte_length, bytes.len() as u64);
 }
 #[test]
 fn object_commit_first_write_survives_broken_stream() {

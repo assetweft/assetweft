@@ -211,7 +211,7 @@ impl Export {
             result => result?,
         }
         local_entry(&self.root, &dir, fs::Metadata::is_dir)?;
-        let relative = Path::new("previews").join(format!("{}.png", self.name));
+        let relative = Path::new("previews").join(format!("{}.v2.png", self.name));
         let target = self.root.join(&relative);
         match local_entry(&self.root, &target, fs::Metadata::is_file) {
             Ok(()) => {

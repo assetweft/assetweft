@@ -5662,13 +5662,16 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
         .unwrap()
         .initialize_library()
         .unwrap();
+    let sha256 = |bytes: &[u8]| -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
     let add = |id: &str, bytes: &[u8], format: &str| {
         let file = root.join(format!("{id}.source"));
         fs::write(&file, bytes).unwrap();
-        let hash: String = Sha256::digest(bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let hash = sha256(bytes);
         let mut wire = object_wire(id);
         wire["content_hash"] = json!(hash);
         wire["source_format"] = json!(format);
@@ -5679,11 +5682,14 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
         assert!(out.status.success(), "{value}");
         root.join("objects").join(hash)
     };
-    let make = |blue, animated| {
+    let make = |blue, animated, gamma| {
         let mut bytes = Vec::new();
         let mut encoder = Encoder::new(&mut bytes, 256, 64);
         encoder.set_color(ColorType::Rgba);
         encoder.set_depth(BitDepth::Eight);
+        if let Some(gamma) = gamma {
+            encoder.set_source_gamma(png::ScaledFloat::from_scaled(gamma));
+        }
         if animated {
             encoder.set_animated(1, 0).unwrap();
         }
@@ -5719,10 +5725,10 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
         );
         assert!(result["results"].is_null());
     };
-    let first = make(27, false);
+    let first = make(27, false, None);
     let cas = add("first", &first, "PNG");
-    add("second", &make(91, false), "PNG");
-    add("animated", &make(0, true), "PNG");
+    add("second", &make(91, false, Some(100_000)), "PNG");
+    add("animated", &make(0, true, None), "PNG");
     add("short", &first[..first.len() - 6], "PNG");
     let mut corrupt = first.clone();
     let last = corrupt.len() - 1;
@@ -5754,13 +5760,25 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
         fail(id);
     }
     assert!(!root.join("previews").exists());
+    let preview_dir = root.join("previews");
+    fs::create_dir(&preview_dir).unwrap();
+    let legacy = preview_dir.join(format!("{}.png", sha256(b"second")));
+    fs::write(&legacy, b"legacy or user-owned").unwrap();
     let mut targets = Vec::new();
     for (id, blue) in [("first", 27), ("second", 91)] {
         let result = export_call(&db, "preview", id);
         let target = root.join(result["relative_path"].as_str().unwrap());
         assert_eq!(target.parent(), Some(root.join("previews").as_path()));
+        assert_eq!(
+            target,
+            preview_dir.join(format!("{}.v2.png", sha256(id.as_bytes())))
+        );
         let encoded = fs::read(&target).unwrap();
         let mut reader = Decoder::new(Cursor::new(&encoded)).read_info().unwrap();
+        assert_eq!(
+            reader.info().gama_chunk.map(|v| v.into_scaled()),
+            (id == "second").then_some(100_000)
+        );
         let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut pixels).unwrap();
         assert_eq!((info.width, info.height), (128, 32));
@@ -5778,6 +5796,7 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
     }
     let thumbnail = fs::read(&targets[0]).unwrap();
     let other_thumbnail = fs::read(&targets[1]).unwrap();
+    assert_eq!(fs::read(legacy).unwrap(), b"legacy or user-owned");
     fs::write(&targets[0], b"user file").unwrap();
     expect_error("first", 1, "FAIL", "Corrupt");
     fs::remove_file(&cas).unwrap();

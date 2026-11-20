@@ -637,13 +637,24 @@ Include the same object in the proposal's `contract` field and use a fresh candi
 {"contract_id":"RIGGED_SIMPLE_MOTION_STRUCTURE_V1","max_component_bytes":16777216,"required_quality":[]}
 ```
 
+To generate the derivative from an initialized original, first use
+`candidate schedule-rigged-simple-motion --db DB --proposal FILE`. Supply the same
+structural BYTE proposal used for staging. Its ID becomes the workflow run ID.
+The response includes the measured base component versions and hashes. Read
+`workflow status`, then `workflow claim`. For the claimed motion step, materialize
+the exact base version and run `motion-strike SOURCE --with-idle --out NEW_FILE`.
+Record the driver's actual outcome with `workflow finish`. An unresolved claim
+blocks further claims after restart. Register the generated GLB and motion bytes
+and reuse the three locked component versions as references before staging.
+
 Stage with `candidate propose-rigged-simple-motion`, then run
 `candidate attempt --db DB --candidate-id ID`. The durable receipt identifies
 the two structurally validated GLBs, their managed mesh/material/rig/motion
 references, and the local head. A stale expected version or revision yields
 Conflict and preserves both candidates. Retry returns the original receipt.
 GLB structure and exact locked dependencies are the extent of this decision.
-Visual quality, Blender playback, engine import and workflow scheduling are NOT_RUN.
+The structural receipt records visual quality, Blender playback, engine import and
+workflow scheduling as NOT_RUN. The workflow records the separately claimed step.
 
 ## Local fixture candidate acceptance attempt (AW-033:B bounded slice)
 

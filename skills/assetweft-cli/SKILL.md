@@ -57,3 +57,53 @@ cli balance 0 PASS budget balance --db library.sqlite --budget-id approved
 Check `results.state:SUCCEEDED`, `invoked:true` and `artifact.{file,sha256}`. Reusing the same settled intent and inputs yields identical artifact information, `invoked:false` and the same persisted usage receipt. If execution returns `UNKNOWN/1` or an output error makes a write ambiguous (`exit 6`), query the existing intent, receipts or workflow status before acting. Avoid resubmission while state is uncertain. Workflow claim and finish persist state; the finish acknowledgment echoes caller-supplied evidence.
 
 The three execution rejection controls assert zero adapter invocations, no output or staging residue, and identical SQLite dumps before and after each rejection. They use a precreated output directory because a budget rejection can follow temporary local staging and directory creation. Positive checks bind the output GLB hash to the usage receipt, Catalog row and stored CAS bytes, and read the finished step back from SQLite. The fixture adapter only copies a real synthetic GLB. Live remote GPU calls, paid APIs, full engine rendering and the optional AW-033:C MCP adapter are `NOT_RUN`.
+
+## AW-034:B Incremental reuse and backup/restore
+
+After the same CLI build, run `./skills/assetweft-cli/eval_extended_recipe.sh`. The evaluator uses the same binary overrides, prints each CLI receipt and cleans its private temporary directory. It seeds a managed GLB from the checked-in static mesh fixture and executes the command block below.
+
+- **Reuse.** Supply the library, exact version ID, asset ID and expected SHA-256. Require `AVAILABLE`, matching Catalog metadata and CAS bytes, and a matching current head when one exists. Direct commits can leave the candidate head unset. An unknown version stops at the reuse gate even when the query itself returns `PASS`. After admission, validate the managed mesh and record exact-version feedback. The recipe skips generation and duplicate commit.
+- **Restore.** Supply the original library and fresh snapshot and restore directories. Require backup and restore `PASS`, matching version, availability, SHA-256 and feedback after isolation of the original library, then append and read back new feedback in the restored database. A same-length corruption in a snapshot copy must fail hash verification without publishing a destination manifest.
+
+Live paid remote GPU, full Unity/Unreal/Godot 4.7.2 rendering and AW-033:C MCP are `NOT_RUN`.
+
+```sh extended-recipe
+cli init 0 PASS library init --db "$db"
+cli seed 0 PASS catalog commit-object --db "$db" --version version.json --file seed.glb --expected-len "$bytes"
+cli before-current 0 PASS catalog current --db "$db" --asset-id "$asset"
+cli before-version 0 PASS catalog version --db "$db" --version-id "$version"
+cli before-availability 0 PASS catalog file-availability --db "$db" --version-id "$version"
+cli missing-availability 0 PASS catalog file-availability --db "$db" --version-id uncommitted
+missing_rc=0
+reuse_gate missing 2> missing.log || missing_rc=$?
+[ "$missing_rc" -eq 3 ]
+grep -Fx 'reuse refused: uncommitted is UNKNOWN_VERSION' missing.log
+reuse_gate before
+cli validate-existing 0 PASS validate "$object" --role static-mesh
+cli review 0 PASS catalog feedback-add --db "$db" --asset-id "$asset" --version-id "$version" --feedback-id review-1 --decision ACCEPT --reason 'Validated existing static mesh'
+cli before-feedback 0 PASS catalog feedback-latest --db "$db" --asset-id "$asset" --version-id "$version"
+
+cli backup 0 PASS library backup --db "$db" --out "$tmp/backup-snap"
+[ -f backup-snap/manifest.json ]
+mv original retired
+[ ! -e "$db" ]
+db="$tmp/restored-lib/library.sqlite"
+object="$tmp/restored-lib/objects/$digest"
+cli restore 0 PASS library restore --from "$tmp/backup-snap" --dest "$tmp/restored-lib"
+[ -f restored-lib/manifest.json ]
+cli after-current 0 PASS catalog current --db "$db" --asset-id "$asset"
+cli after-version 0 PASS catalog version --db "$db" --version-id "$version"
+cli after-availability 0 PASS catalog file-availability --db "$db" --version-id "$version"
+cli after-feedback 0 PASS catalog feedback-latest --db "$db" --asset-id "$asset" --version-id "$version"
+reuse_gate after
+cli resume 0 PASS catalog feedback-add --db "$db" --asset-id "$asset" --version-id "$version" --feedback-id review-2 --decision ACCEPT --reason 'Reviewed after restore'
+cli resumed-feedback 0 PASS catalog feedback-latest --db "$db" --asset-id "$asset" --version-id "$version"
+
+cp -R backup-snap corrupt-snap
+node -e 'const fs = require("node:fs"); const file = process.argv[1]; const bytes = fs.readFileSync(file); bytes[0] ^= 1; fs.writeFileSync(file, bytes)' "corrupt-snap/objects/$digest"
+cli corrupt-restore 2 INVALID_INPUT library restore --from "$tmp/corrupt-snap" --dest "$tmp/failed-lib"
+[ ! -e failed-lib/manifest.json ]
+check_resume
+[ ! -e "$ASSETWEFT_RECIPE_INVOCATIONS" ]
+printf 'PASS reused %s sha256=%s invocations=0; restored and resumed; corrupt snapshot refused\n' "$version" "$digest"
+```

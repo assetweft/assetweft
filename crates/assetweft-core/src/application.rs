@@ -318,6 +318,13 @@ impl Application {
     ///
     /// # Errors
     /// Returns invalid input for an empty query, or a schema or database error.
+    pub fn list_versions(
+        &mut self,
+        limit: u16,
+    ) -> Result<crate::catalog::domain::VersionSearchResult, LibraryError> {
+        crate::catalog::sqlite_metadata::list_versions(&mut self.connection, limit)
+    }
+
     pub fn search_versions(
         &mut self,
         query: &str,
@@ -346,6 +353,11 @@ impl Application {
             &self.library_root,
         );
         crate::catalog::application::exact_references(&mut metadata, version_id).map_err(Into::into)
+    }
+
+    pub fn current_library_schema_version(&self) -> Result<i64, LibraryError> {
+        library::require_current(&self.connection)?;
+        Ok(library::CURRENT_SCHEMA)
     }
 
     /// Reads SQLite's internal schema cookie as a connection health check. This is

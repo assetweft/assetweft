@@ -37,6 +37,7 @@ assetweft [--call-id ID] candidate propose-rigged-simple-motion --db EXISTING_DB
 assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
+assetweft [--call-id ID] catalog list --db EXISTING_DB [--limit 1..100]
 assetweft [--call-id ID] catalog search --db EXISTING_DB --query TEXT
 assetweft [--call-id ID] catalog file-availability --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog references --db EXISTING_DB --version-id ID
@@ -540,6 +541,8 @@ The stored object preserves every AssetVersion field: `asset_id`, `version_id`,
 Presence is exactly `UNKNOWN` or `MISSING`; there is no READY state. Authorization,
 authorized and license fields are stored declarations, never a new authentication,
 rights or availability guarantee. A valid absent identity returns `version:null`.
+
+`catalog list --db EXISTING_DB [--limit 1..100]` reads registered versions in binary asset ID and version ID order. The default limit is 100. The one-line response carries `results.matches` and `results.truncated`. An invalid limit or uninitialized database returns `INPUT_INCOMPLETE` (exit 3).
 
 `catalog search --db EXISTING_DB --query TEXT` opens an existing library read-only.
 It matches the case-sensitive literal substring against either the asset ID or the

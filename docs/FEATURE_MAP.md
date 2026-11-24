@@ -59,3 +59,7 @@
 ## 10. AW-034:A Agent Skill 与 CLI 操作配方
 - **入口**：[Skill](../skills/assetweft-cli/SKILL.md) · [离线评估](../skills/assetweft-cli/eval_recipe.sh)
 - **正常判据**：构建后运行评估脚本，缺预算、额度不足、缺上传授权均拒绝且调用次数为零；成功路径核对单行 JSON、历史回执重放、SQLite 工作流及 CAS 字节。远端 GPU、付费 API、完整渲染与可选 MCP 适配器为 `NOT_RUN`。
+
+## 11. AW-032:A 本地素材工作台
+- **入口**：[构建与启动](../apps/workbench/README.md) · `assetweft catalog list --db <DB> [--limit <N>]`
+- **正常判据**：无需配置数据库服务器或登录，能打开或初始化本地 SQLite，索引、受管文件和版本反馈与 Core 一致；GLB 只显示静态网格，支持 PNG/WAV 预览。生成与高级编辑保持 `NOT_RUN`，云端同步与登录已禁用。

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>AssetWeft Workbench</title>
+  <link rel="stylesheet" href="./main.css">
+</head>
+<body>
+  <div class="workbench">
+    <header class="topbar">
+      <div class="identity">
+        <h1>AssetWeft Workbench</h1>
+        <p id="library-label">No local library open</p>
+      </div>
+      <nav aria-label="Library actions">
+        <button id="open-library" class="primary" type="button">Open library</button>
+        <button id="import-file" type="button" disabled>Import local file</button>
+        <button id="capabilities" type="button">Capabilities</button>
+      </nav>
+    </header>
+    <aside class="sidebar" id="assets" aria-label="Catalog"></aside>
+    <main class="stage" id="preview" aria-label="Preview"></main>
+    <aside class="inspector" id="inspector" aria-label="Version inspector"></aside>
+  </div>
+  <div class="visually-hidden" id="field-announcement" aria-live="polite"></div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

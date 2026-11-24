@@ -6739,3 +6739,49 @@ fn motion_stance_uses_declared_role_and_sampled_world_contact() {
 
 #[path = "candidate/rigged_simple.rs"]
 mod rigged_simple;
+
+#[test]
+fn catalog_list_reports_bounded_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("list.sqlite");
+    let list = |limit: Option<&str>| {
+        let mut args = vec![
+            OsStr::new("catalog"),
+            OsStr::new("list"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+        ];
+        if let Some(limit) = limit {
+            args.extend([OsStr::new("--limit"), OsStr::new(limit)]);
+        }
+        invoke(&args)
+    };
+    let mut app = Application::open(&db).unwrap();
+    let (out, wire) = list(None);
+    assert_eq!(out.status.code(), Some(3), "{wire}");
+    assert_eq!(wire["status"], "INPUT_INCOMPLETE");
+    app.initialize_library().unwrap();
+    let (out, wire) = list(None);
+    assert!(out.status.success(), "{wire}");
+    assert_eq!(wire["results"], json!({"matches":[],"truncated":false}));
+    for id in ["z", "a"] {
+        app.add_asset_version(&catalog_version(
+            id,
+            assetweft_core::library::Presence::Unknown,
+        ))
+        .unwrap();
+    }
+    let (out, wire) = list(None);
+    assert!(out.status.success(), "{wire}");
+    assert_eq!(wire["results"]["matches"][0]["version_id"], "a");
+    assert_eq!(wire["results"]["matches"][1]["version_id"], "z");
+    let (out, wire) = list(Some("1"));
+    assert!(out.status.success(), "{wire}");
+    assert_eq!(wire["results"]["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(wire["results"]["truncated"], true);
+    for limit in ["0", "101", "99999", "invalid"] {
+        let (out, wire) = list(Some(limit));
+        assert_eq!(out.status.code(), Some(3), "{wire}");
+        assert_eq!(wire["status"], "INPUT_INCOMPLETE");
+    }
+}

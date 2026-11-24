@@ -117,6 +117,12 @@ fn grammar() -> Command {
                 ].map(|(name, help)| Command::new(name).about(help).arg(db())
                     .arg(Arg::new("version-id").long("version-id").required(true))))
                 .subcommand(
+                    Command::new("list")
+                        .about("List registered versions in asset and version ID order")
+                        .arg(db())
+                        .arg(Arg::new("limit").long("limit").default_value("100").allow_hyphen_values(true)),
+                )
+                .subcommand(
                     Command::new("search")
                         .about("Find up to 100 registered versions by a literal asset or version ID substring")
                         .arg(db())
@@ -467,6 +473,7 @@ fn run() -> (i32, Value) {
             "add-reference" => "catalog add-reference",
             "version" => "catalog version",
             "search" => "catalog search",
+            "list" => "catalog list",
             "preview" => "catalog preview",
             "file-availability" => "catalog file-availability",
             "references" => "catalog references",

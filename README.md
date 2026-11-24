@@ -8,6 +8,7 @@
 |---|---|
 | 能力地图与正常判据 | [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) |
 | 开发规范（DDD × 六边形 · 去注释化） | [docs/DEVELOPMENT_STANDARDS.md](docs/DEVELOPMENT_STANDARDS.md) |
+| 本地素材工作台（AW-032:A） | [apps/workbench/README.md](apps/workbench/README.md) |
 | CLI v1 协议、命令与退出码 | [crates/assetweft-cli/README.md](crates/assetweft-cli/README.md) |
 | Agent Skill 与可复跑配方 | [skills/assetweft-cli/SKILL.md](skills/assetweft-cli/SKILL.md) |
 | 交付合同 Schema 与媒体兼容 | [contracts/README.md](contracts/README.md) · [contracts/media-compatibility.md](contracts/media-compatibility.md) |

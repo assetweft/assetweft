@@ -271,3 +271,38 @@ fn two_application_product_writers_observe_bounded_busy_then_recover() {
     assert!(verify.asset_version("version-0").unwrap().is_some());
     assert!(verify.asset_version("version-1").unwrap().is_some());
 }
+
+#[test]
+fn catalog_list_is_bounded_and_ordered() {
+    let dir = Dir::new();
+    let mut app = Application::open(&dir.0.join("list.sqlite")).unwrap();
+    assert!(matches!(
+        app.list_versions(1),
+        Err(LibraryError::Uninitialized)
+    ));
+    app.initialize_library().unwrap();
+    let empty = app.list_versions(100).unwrap();
+    assert!(empty.matches.is_empty() && !empty.truncated);
+    for (asset, version) in [("z", "a"), ("a", "z"), ("a", "b")] {
+        app.add_asset_version(&sample(asset, version)).unwrap();
+    }
+    let ordered = app.list_versions(3).unwrap();
+    assert_eq!(
+        ordered
+            .matches
+            .iter()
+            .map(|item| item.version_id.as_str())
+            .collect::<Vec<_>>(),
+        ["b", "z", "a"]
+    );
+    assert!(!ordered.truncated);
+    let page = app.list_versions(2).unwrap();
+    assert_eq!(page.matches, ordered.matches[..2]);
+    assert!(page.truncated);
+    for limit in [0, 101] {
+        assert!(matches!(
+            app.list_versions(limit),
+            Err(LibraryError::InvalidInput("list limit"))
+        ));
+    }
+}

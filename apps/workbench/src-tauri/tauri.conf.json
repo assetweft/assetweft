@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AssetWeft Workbench",
+  "version": "0.0.0",
+  "identifier": "dev.assetweft.workbench",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AssetWeft Workbench — Local Library",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

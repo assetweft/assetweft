@@ -44,7 +44,7 @@ const OUTCOME = Object.freeze({
   UNSUPPORTED: 'UNSUPPORTED',
   INTERNAL: 'INTERNAL',
 });
-const ALLOWED_EXPECT = new Set(Object.values(OUTCOME));
+const ALLOWED_EXPECT = new Set(Object.values(OUTCOME).filter((outcome) => outcome !== OUTCOME.INTERNAL));
 // 多重违规时取更严重者（数值越大越严重），保证错误语义可预测。
 const RANK = Object.freeze({
   VALID: 0, FAIL: 1, UNSUPPORTED: 2, LOCK_VIOLATION: 3,
@@ -96,6 +96,14 @@ function unsafePublicRef(r) {
 // ---- 信封校验：非空、唯一 ID、合法 expect、一一覆盖、TEST_FIXTURE 溯源在外包装 ----
 function validateEnvelopes(fixtureSet, manifest) {
   const reasons = [];
+  const fixtureId = fixtureSet?.schema;
+  const manifestId = manifest?.schema;
+  if (fixtureId !== undefined || manifestId !== undefined) {
+    const version = typeof fixtureId === 'string'
+      ? /^aw003-fixture-set\/(\d+\.\d+\.\d+)$/.exec(fixtureId)?.[1] : undefined;
+    if (!version || manifestId !== 'aw003-fixture-manifest/' + version)
+      reasons.push('envelope schema: expected aw003-fixture-set and aw003-fixture-manifest identifiers with the same version');
+  }
   const fixtures = Array.isArray(fixtureSet && fixtureSet.fixtures) ? fixtureSet.fixtures : null;
   const expectations = Array.isArray(manifest && manifest.expectations) ? manifest.expectations : null;
   if (!fixtures || fixtures.length === 0) reasons.push('fixtures.json: fixtures[] must be a non-empty array');

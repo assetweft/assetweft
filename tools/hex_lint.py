@@ -128,6 +128,13 @@ SQL_START = {
 }
 SQL_ID_RE = re.compile(SQL_ID, re.IGNORECASE)
 CFG_TEST = ["#", "[", "cfg", "(", "test", ")", "]"]
+# External module declarations support complementary simple cfg atoms, unix
+# versus windows, and different values for single-value target keys. Compound
+# predicates and cfg_attr stay potentially overlapping. Every source is scanned.
+CFG_ATOM = r'(?:\w+ = "[\w.-]+"|\w+)'
+SIMPLE_CFG = re.compile(rf'# \[ cfg \( ({CFG_ATOM}|not \( {CFG_ATOM} \)) \) \]')
+TARGET_KEYS = {"target_arch", "target_os", "target_env", "target_vendor",
+               "target_endian", "target_pointer_width", "target_abi"}
 IO_PREFIXES = (
     "rusqlite", "sqlx", "std::fs", "std::process", "std::env", "std::net",
     "std::os::unix::fs", "std::os::windows::fs", "tempfile", "rustix::fs", "winapi_util",
@@ -176,6 +183,9 @@ def classify(path):
         layer = NAMED_LAYERS[context].get(file)
         if layer:
             return context, layer
+        parts = file.split("/")
+        if parts == ["application", "ports"] or (len(parts) == 3 and parts[:2] == ["application", "ports"]):
+            return context, "ports"
         if "/" not in file:
             if file == "mod":
                 return context, "facade"
@@ -300,7 +310,8 @@ def collect(unit, module):
                     (string_value(unit.tokens[i + 3]) for i in range(start, index)
                      if values[i:i + 3] == ["[", "path", "="]), None,
                 )
-                unit.modules.append((token, scope.module, name, explicit, test))
+                conditions = tuple(SIMPLE_CFG.findall(" ".join(attrs)))
+                unit.modules.append((token, scope.module, name, explicit, test, conditions))
             index += 2
             start = index + 1
         elif scope.test:
@@ -361,9 +372,21 @@ def collect(unit, module):
 BEGIN_SQL = re.compile(r"\b(insert|replace|update|delete)\b", re.IGNORECASE)
 
 
-def module_file(path, module, parent, name, explicit):
+def mutually_exclusive(left, right):
+    for a in left:
+        for b in right:
+            if a == f"not ( {b} )" or b == f"not ( {a} )" or {a, b} == {"unix", "windows"}:
+                return True
+            key, _, value = a.partition(" = ")
+            other_key, _, other_value = b.partition(" = ")
+            if key == other_key and key in TARGET_KEYS and value != other_value:
+                return True
+    return False
+
+
+def module_file(path, module, parent, name, explicit, owns_directory):
     directory = path.parent
-    if path.name not in {"lib.rs", "main.rs", "mod.rs"}:
+    if not owns_directory and path.name != "mod.rs":
         directory /= path.stem
     for item in parent[len(module):]:
         directory /= item
@@ -377,6 +400,43 @@ def module_file(path, module, parent, name, explicit):
 def module_prefix(path, modules):
     return next((path[:length] for length in range(len(path), 0, -1)
                  if path[:length] in modules), ())
+
+
+class AlternateModule(Exception):
+    pass
+
+
+class ModuleIndex(dict):
+    def __missing__(self, logical):
+        ancestor = self.variants.get(logical, ())
+        if len(ancestor) > 1:
+            raise AlternateModule(logical, ancestor)
+        return ancestor[0] if ancestor else None
+
+    def __contains__(self, logical):
+        return logical in self.variants
+
+    def get(self, logical):
+        return self[logical]
+
+    def __init__(self, variants):
+        super().__init__()
+        self.variants = variants
+
+
+def resolve_ref(ref, scope, index):
+    # Branch only on bindings actually consulted by this reference.
+    try:
+        dependency = expand(ref, scope, index)
+        yield dependency, index.get(module_prefix(dependency, index))
+    except AlternateModule as branch:
+        logical, scopes = branch.args
+        try:
+            for candidate in scopes:
+                index[logical] = candidate
+                yield from resolve_ref(ref, scope, index)
+        finally:
+            del index[logical]
 
 
 def expand(path, scope, modules, seen=frozenset()):
@@ -471,8 +531,19 @@ def sql_names(value, writes):
     names = [word[0].lower() for word in words] + [""] * 6
     if names[0] not in SQL_START:
         return
+    statement_start = True
+    diagnostic = False
     for i, word in enumerate(words):
         verb = names[i]
+        if verb == ";":
+            statement_start = True
+            diagnostic = False
+            continue
+        if statement_start:
+            diagnostic = writes and verb == "explain"
+            statement_start = False
+        if diagnostic:
+            continue
         end = i + 1
         if not writes:
             if names[i:i + 2] != ["create", "table"]:
@@ -610,13 +681,30 @@ def scan():
         roles[path] = role
         units[path] = Unit(path, [t for t in tokens if t.kind != "comment"], source)
 
+    try:
+        metadata = subprocess.run(
+            ["cargo", "metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        )
+        targets = {
+            Path(target["src_path"]).resolve().relative_to(ROOT.resolve())
+            for package in json.loads(metadata.stdout)["packages"]
+            for target in package["targets"]
+            if {"test", "example"}.intersection(target["kind"])
+        }
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        add("HEX-COVERAGE", Path("Cargo.toml"), 1,
+            f"无法解析 Cargo 目标：{getattr(error, 'stderr', None) or error}", "")
+        targets = set()
+
     core = {}
     cli = {}
     index_roles = {}
     visited = set()
     linked = {}
+    target_roots = targets | {CORE / "lib.rs", CLI / "main.rs"}
 
-    def visit(path, module, index, origin=None):
+    def visit(path, module, index, origin=None, conditions=(), explicit_path=False):
         if path not in units:
             file, line = origin or (path, 1)
             add("HEX-COVERAGE", file, line, f"模块 {path} 无法分类或不存在", "")
@@ -630,13 +718,16 @@ def scan():
         unit = units[path]
         collect(unit, module)
         for logical, scope in unit.scopes.items():
-            if logical in index:
+            variants = index.setdefault(logical, [])
+            if any(not mutually_exclusive(conditions, other) for _, other in variants):
                 add("HEX-COVERAGE", path, 1, f"模块 {'::'.join(logical)} 有多个源文件", "")
-            index[logical] = scope
+            variants.append((scope, conditions))
             index_roles[id(scope)] = roles[path]
-        for token, parent, name, explicit, test in unit.modules:
+        declarations = {}
+        for token, parent, name, explicit, test, cfg in unit.modules:
             try:
-                child = module_file(path, module, parent, name, explicit)
+                child = module_file(path, module, parent, name, explicit,
+                                    explicit_path or path in target_roots)
             except (OSError, ValueError):
                 add("HEX-COVERAGE", path, token.line, "模块路径超出仓库范围", token.text)
                 continue
@@ -644,22 +735,32 @@ def scan():
                 if child not in roles or roles[child][1] != "test":
                     add("HEX-COVERAGE", path, token.line, f"测试模块 {child} 未登记测试层", token.text)
                 else:
-                    visit(child, (*parent, name), {})
+                    visit(child, (*parent, name), {}, explicit_path=explicit is not None)
                 continue
             if child in roles and roles[path][1] not in {"test", "example"} and roles[child][1] in {"test", "example"}:
                 add("HEX-COVERAGE", path, token.line, f"生产模块引用了 {child} 的测试或示例代码", token.text)
             else:
                 logical = (*parent, name)
-                visit(child, logical, index, (path, token.line))
+                # A physical test helper may be shared across Cargo targets.
+                # Check repeated declarations even when that file was visited.
+                previous = declarations.setdefault(logical, [])
+                if any(not mutually_exclusive(cfg, other) for other in previous):
+                    add("HEX-COVERAGE", path, token.line, f"模块 {'::'.join(logical)} 有多个声明", token.text)
+                previous.append(cfg)
+                visit(child, logical, index, (path, token.line), (*conditions, *cfg),
+                      explicit_path=explicit is not None)
                 if child in roles and roles[path][0] != roles[child][0] and roles[path][0] in CONTEXTS:
                     linked.setdefault(path, []).append((token, unit.scopes.get(parent), ("crate", *logical), None))
 
     visit(CORE / "lib.rs", (), core)
     visit(CLI / "main.rs", (), cli)
-    for path in units:
-        if path.parts[2] in {"tests", "examples"} and (
-                len(path.parts) == 4 or (len(path.parts) == 5 and path.name == "main.rs")):
-            visit(path, (), {})
+    for path in sorted(targets):
+        visit(path, (), {})
+
+    core_index = ModuleIndex({logical: tuple(scope for scope, _ in variants)
+                              for logical, variants in core.items()})
+    cli_index = ModuleIndex({logical: tuple(scope for scope, _ in variants)
+                             for logical, variants in cli.items()})
     for path, unit in units.items():
         context, layer = roles[path]
         if path not in visited:
@@ -668,32 +769,31 @@ def scan():
         if layer == "test":
             continue
 
-        destination = core if path.is_relative_to(CORE) or layer == "example" else cli
+        destination = core_index if path.is_relative_to(CORE) or layer == "example" else cli_index
         lines = unit.source.splitlines()
         for token, scope, ref, _ in [*unit.refs, *linked.get(path, ())]:
             if scope is None:
                 continue
-            dependency = expand(ref, scope, destination)
-            target_module = module_prefix(dependency, destination)
-            target_scope = destination.get(target_module)
-            target = index_roles.get(id(target_scope)) if target_scope else None
-            name = "::".join(dependency)
-            evidence = lines[token.line - 1]
-            if check_ref(path, (context, layer), dependency, target):
-                add("HEX-LAYER", path, token.line, f"{layer} 层依赖 {name}", evidence)
-            if not target or context not in CONTEXTS or layer == "delivery":
-                continue
-            other = target[0]
-            if other not in CONTEXTS or context == other:
-                continue
-            edge = (context, other)
-            edges.setdefault(edge, (path, token.line, evidence))
-            allowed = EDGE_PREFIXES.get(edge, ())
-            if path.is_relative_to(CORE):
-                allowed += ADAPTER_EDGES.get(path.relative_to(CORE).as_posix(), ())
-            borrowed_head_module = path == CORE / "sqlite/acceptance.rs" and name == "catalog::sqlite_store"
-            if not borrowed_head_module and not starts(name, allowed):
-                add("HEX-CONTEXT", path, token.line, f"{context} 到 {other} 的 {name} 未列入契约边", evidence)
+            resolutions = {(dep, index_roles.get(id(owner)))
+                           for dep, owner in resolve_ref(ref, scope, destination)}
+            for dependency, target in sorted(resolutions, key=repr):
+                name = "::".join(dependency)
+                evidence = lines[token.line - 1]
+                if check_ref(path, (context, layer), dependency, target):
+                    add("HEX-LAYER", path, token.line, f"{layer} 层依赖 {name}", evidence)
+                if not target or context not in CONTEXTS or layer == "delivery":
+                    continue
+                other = target[0]
+                if other not in CONTEXTS or context == other:
+                    continue
+                edge = (context, other)
+                edges.setdefault(edge, (path, token.line, evidence))
+                allowed = EDGE_PREFIXES.get(edge, ())
+                if path.is_relative_to(CORE):
+                    allowed += ADAPTER_EDGES.get(path.relative_to(CORE).as_posix(), ())
+                borrowed_head_module = path == CORE / "sqlite/acceptance.rs" and name == "catalog::sqlite_store"
+                if not borrowed_head_module and not starts(name, allowed):
+                    add("HEX-CONTEXT", path, token.line, f"{context} 到 {other} 的 {name} 未列入契约边", evidence)
 
         for token, value in unit.strings:
             check_sql(path, token.line, value, add, seen_writers)

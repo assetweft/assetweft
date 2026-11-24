@@ -69,16 +69,12 @@ impl AcceptanceInputs for SqliteAcceptance<'_> {
         max_component_bytes: u64,
     ) -> Result<(), AcceptanceError> {
         for s in snapshots {
-            crate::production::staging_sqlite::bounded_regular(
-                &self.root.join("objects").join(&s.measured_sha256),
-                Some(max_component_bytes),
+            crate::production::staging_sqlite::remeasure_base_component(
+                self.conn,
+                self.root,
+                s,
+                max_component_bytes,
             )?;
-            if crate::production::staging_sqlite::measured(self.conn, self.root, &s.version)?
-                .content_hash
-                != s.measured_sha256
-            {
-                return Err(AcceptanceError::InvalidInput("base byte drift"));
-            }
         }
         Ok(())
     }

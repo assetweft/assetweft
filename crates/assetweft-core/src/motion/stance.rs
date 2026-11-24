@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{error::Error, path::Path};
 
 const SLIP_LIMIT_M: f64 = 0.01;
+const NANOMETRES_PER_METRE: f64 = 1_000_000_000.0;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -84,6 +85,7 @@ fn measure(stance: Option<&Stance>, tracks: &[Track]) -> Result<(f64, usize), &'
 }
 
 /// Check a declared support foot against a one-centimetre horizontal slip limit.
+/// The verdict rounds the peak slip to the nearest nanometre, with ties to even.
 ///
 /// # Errors
 /// Returns an error on unreadable, oversized or malformed input. Incomplete
@@ -104,7 +106,9 @@ pub fn assess(
         ),
         MotionRole::GroundedHumanoid => match measure(clip.stance.as_ref(), &clip.tracks) {
             Ok((peak, count)) => (
-                if peak > SLIP_LIMIT_M {
+                if (peak * NANOMETRES_PER_METRE).round_ties_even()
+                    > SLIP_LIMIT_M * NANOMETRES_PER_METRE
+                {
                     Status::Fail
                 } else {
                     Status::Pass
@@ -127,4 +131,37 @@ pub fn assess(
         samples_evaluated,
         reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn centimetre_boundary_is_stable_at_translated_origins() {
+        let input = tempfile::NamedTempFile::new().unwrap();
+        for origin in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [10.0, -5.0, 3.0]] {
+            for (slip, expected) in [(0.01, "PASS"), (0.0101, "FAIL"), (0.011, "FAIL")] {
+                let mut moved = origin;
+                moved[0] += slip;
+                let clip = json!({
+                    "stance": {"contact": "sole", "frames": [0, 1]},
+                    "tracks": [{"marker": "sole", "world_y_up_m": [origin, moved]}]
+                });
+                std::fs::write(input.path(), serde_json::to_vec(&clip).unwrap()).unwrap();
+                let report = assess(
+                    input.path(),
+                    MotionRole::GroundedHumanoid,
+                    ValidationLimits { max_bytes: 4096 },
+                )
+                .unwrap();
+                let report = serde_json::to_value(report).unwrap();
+                assert_eq!(
+                    report["status"], expected,
+                    "origin={origin:?} slip={slip}: {report}"
+                );
+            }
+        }
+    }
 }

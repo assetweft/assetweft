@@ -4,7 +4,7 @@ use super::{
     staging_domain::check_contract,
     staging_ports::{Owners, Staging, StagingError},
 };
-use crate::catalog::domain::FixtureContract;
+use crate::catalog::domain::{AssetVersion, FixtureContract};
 use crate::{
     library::{self, LibraryError},
     storage,
@@ -281,20 +281,47 @@ fn wait_storage<T>(
 pub(crate) fn guard(root: &Path) -> Result<storage::Guard, LibraryError> {
     wait_storage(|| storage::reference_guard(root))
 }
-pub(crate) fn measured(
+fn measured(
     conn: &mut Connection,
     root: &Path,
     id: &str,
 ) -> Result<storage::StoredObject, LibraryError> {
     let metadata = crate::catalog::sqlite_metadata::asset_version(conn, id)?
         .ok_or_else(|| invalid("managed metadata"))?;
-    crate::catalog::domain::validate_version(&metadata).map_err(LibraryError::from)?;
+    measure_version(conn, root, &metadata, None)
+}
+
+pub(crate) fn remeasure_base_component(
+    conn: &mut Connection,
+    root: &Path,
+    snapshot: &ComponentSnapshot,
+    max_component_bytes: u64,
+) -> Result<(), LibraryError> {
+    let metadata = crate::catalog::sqlite_metadata::asset_version(conn, &snapshot.version)?
+        .ok_or_else(|| invalid("managed metadata"))?;
+    if metadata.content_hash != snapshot.measured_sha256 {
+        return Err(invalid("base byte drift"));
+    }
+    let object = measure_version(conn, root, &metadata, Some(max_component_bytes))?;
+    if object.content_hash != snapshot.measured_sha256 {
+        return Err(invalid("base byte drift"));
+    }
+    Ok(())
+}
+
+fn measure_version(
+    conn: &mut Connection,
+    root: &Path,
+    metadata: &AssetVersion,
+    max_component_bytes: Option<u64>,
+) -> Result<storage::StoredObject, LibraryError> {
+    crate::catalog::domain::validate_version(metadata).map_err(LibraryError::from)?;
     let path = root.join("objects").join(&metadata.content_hash);
-    bounded_regular(&path, None)?;
+    bounded_regular(&path, max_component_bytes)?;
     wait_storage(|| {
         match crate::catalog::objects_application::managed(
             &mut crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, std::io::empty()),
-            id,
+            &metadata.version_id,
         ) {
             Err(storage::StorageError::Busy) => {
                 Err(LibraryError::Busy("storage lease deadline".into()))
@@ -305,10 +332,7 @@ pub(crate) fn measured(
         }
     })
 }
-pub(crate) fn bounded_regular(
-    path: &Path,
-    max_component_bytes: Option<u64>,
-) -> Result<(), LibraryError> {
+fn bounded_regular(path: &Path, max_component_bytes: Option<u64>) -> Result<(), LibraryError> {
     let info = std::fs::symlink_metadata(path).map_err(|e| LibraryError::Io(e.to_string()))?;
     if !info.file_type().is_file() || info.len() > MANAGED_BYTE_CEILING {
         return Err(invalid("bounded managed regular file"));

@@ -296,11 +296,12 @@ impl Prepared<'_> {
 
     pub(crate) fn stage(&self) -> Result<Staged<'_>, Invalid> {
         let stage_error = |_| Invalid("out-dir", "could not stage the adapter inputs or output");
+        let mut new_destination = NewOutputDir(None);
         if fs::symlink_metadata(&self.out_dir)
             .is_err_and(|err| err.kind() == io::ErrorKind::NotFound)
         {
             match fs::create_dir(&self.out_dir) {
-                Ok(()) => {}
+                Ok(()) => new_destination.0 = Some(&self.out_dir),
                 Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(err) => return Err(stage_error(err)),
             }
@@ -354,6 +355,7 @@ impl Prepared<'_> {
         }
         Ok(Staged {
             _work: work,
+            new_destination,
             command,
             output,
             destination: &self.out_dir,
@@ -365,11 +367,22 @@ impl Prepared<'_> {
 
 pub(crate) struct Staged<'a> {
     _work: tempfile::TempDir,
+    new_destination: NewOutputDir<'a>,
     command: Command,
     output: PathBuf,
     destination: &'a Path,
     artifact: &'static str,
     max_bytes: u64,
+}
+
+struct NewOutputDir<'a>(Option<&'a Path>);
+
+impl Drop for NewOutputDir<'_> {
+    fn drop(&mut self) {
+        if let Some(path) = self.0 {
+            let _ = fs::remove_dir(path);
+        }
+    }
 }
 
 impl Staged<'_> {
@@ -392,6 +405,7 @@ impl Staged<'_> {
             .map_err(|_| "could not stage the published artifact")?;
         file.persist_noclobber(self.destination.join(self.artifact))
             .map_err(|_| "could not publish the new artifact without overwriting")?;
+        self.new_destination.0 = None;
         Ok(digest(&bytes))
     }
 }

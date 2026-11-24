@@ -92,3 +92,22 @@ and checks its evaluated coordinates against the preset and disabled-driver refe
 The [CLI profile](../../../assetweft-cli/README.md#rigged-simple-bend-measurement) documents
 the asset identity, license, pose, units and tolerance. Generic rig inspection still reports
 pose deformation as NOT_RUN.
+
+## G-DET-1 DeterminismPolicy
+
+Canonical floats reject NaN and infinities and map both signed zeros to `+0.0`.
+Vectors and matrices preserve entry order. Quantization multiplies by `1_000_000`,
+rejects values outside the signed `i64` range, and rounds ties to even. Integer
+micro-units are authoritative for byte encoding.
+
+glTF quaternions use `[x, y, z, w]` order. Reject non-finite components and
+squared norms that are non-finite or at most `1e-24`. Normalize with separate
+Rust multiply and add operations and `f64::sqrt`, then quantize. The first
+nonzero micro-unit in `w, x, y, z` order must be positive.
+
+`canonical_semantic_bytes` encodes ordered signed micro-units as eight bytes each
+in little-endian order. `semantic_sha256_hex` hashes the ASCII tag
+`assetweft:semantic:1` followed by one NUL byte and the canonical bytes, and
+returns lowercase hex. Pass rotations through `canonical_quaternion` before
+hashing so equivalent signs produce the same digest. Component-level SEMANTIC
+execution remains a caller responsibility.

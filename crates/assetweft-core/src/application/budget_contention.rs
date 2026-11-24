@@ -195,3 +195,108 @@ fn check_overlap(cancel_first: bool, veto: bool, native_wait: bool) {
         Err(LibraryError::InvalidInput("approved capacity exhausted"))
     );
 }
+
+#[test]
+fn submission_survives_busy_at_transaction_entry_without_replaying_callback() {
+    for busy_after_callback in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut app = Application::open(&path).unwrap();
+        app.initialize_library().unwrap();
+        app.approve_budget(&Allowance {
+            id: "a".into(),
+            unit: Unit::Token,
+            capacity: 10,
+            approval: Approval::ExplicitBounded,
+            source: "fixture".into(),
+        })
+        .unwrap();
+        app.reserve_call(&Request {
+            id: "race".into(),
+            account: "a".into(),
+            input_fingerprint: "fixture".into(),
+            unit: Unit::Token,
+            quote: Some(10),
+            reservation: 10,
+            source: "fixture".into(),
+        })
+        .unwrap();
+
+        let mut blocker = rusqlite::Connection::open(&path).unwrap();
+        let (start, starting) = channel();
+        let (held, holding) = channel();
+        let (release, releasing) = channel();
+        let (released, finished) = channel();
+        let (sql, statements) = channel();
+        let (busy, conflicts) = channel();
+        app.connection
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(move |event: TraceEvent<'_>| {
+                    if let TraceEvent::Stmt(_, sql_text) = event {
+                        let _ = sql.send(sql_text.to_owned());
+                    }
+                }),
+            )
+            .unwrap();
+        app.connection
+            .busy_handler(Some(move |attempt| {
+                assert_eq!(attempt, 0);
+                busy.send(()).unwrap();
+                release.send(()).unwrap();
+                finished.recv_timeout(WAIT).unwrap();
+                false
+            }))
+            .unwrap();
+
+        let worker = thread::spawn(move || {
+            starting.recv_timeout(WAIT).unwrap();
+            let tx = blocker
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            held.send(()).unwrap();
+            releasing.recv_timeout(WAIT).unwrap();
+            tx.commit().unwrap();
+            released.send(()).unwrap();
+        });
+        let hold = || {
+            start.send(()).unwrap();
+            holding.recv_timeout(WAIT).unwrap();
+        };
+        if !busy_after_callback {
+            hold();
+        }
+        let mut calls = 0;
+        let result = app.submit_test_fixture("race", || {
+            calls += 1;
+            if busy_after_callback {
+                hold();
+            }
+        });
+        worker.join().unwrap();
+        assert_eq!(conflicts.try_iter().count(), 1);
+        let statements: Vec<_> = statements.try_iter().collect();
+        assert_eq!(
+            result,
+            Ok(true),
+            "Busy at BEGIN IMMEDIATE, callback already run={busy_after_callback}, calls={calls}, SQL={statements:?}"
+        );
+        assert_eq!(
+            statements
+                .iter()
+                .filter(|sql| sql.as_str() == "BEGIN IMMEDIATE")
+                .count(),
+            3
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(
+            app.call_intent("race").unwrap().unwrap().state,
+            State::Unknown
+        );
+        assert_eq!(app.budget_balance("a").unwrap().reserved, 10);
+        assert!(
+            !app.submit_test_fixture("race", || panic!("duplicate callback"))
+                .unwrap()
+        );
+    }
+}

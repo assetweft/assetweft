@@ -78,7 +78,7 @@ pub(super) fn query_response(
     let opened = if matches!(action, "file-availability" | "search" | "preview") {
         Application::open_read_only(db)
     } else {
-        Application::open(db)
+        Application::open_existing(db)
     };
     let mut app = match opened {
         Ok(app) => app,
@@ -334,7 +334,7 @@ pub(super) fn write_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let mut app = match Application::open_existing(db) {
         Ok(app) => app,
         Err(e) => {
             return finish(

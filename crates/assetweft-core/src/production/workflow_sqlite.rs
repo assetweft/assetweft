@@ -77,7 +77,15 @@ pub(crate) fn claim(conn: &mut Connection, run: &str) -> Result<Option<String>, 
         None
     };
     if cancelled == 0 {
-        let records = read(&tx, run)?;
+        // #48: Keep state/result validation inside the claim transaction without reading the bodies.
+        let records = read_records(
+            &tx,
+            run,
+            "SELECT id,state,
+                    CASE typeof(raw) WHEN 'text' THEN '' WHEN 'null' THEN NULL ELSE 0 END AS raw,
+                    CASE typeof(evidence) WHEN 'text' THEN '' WHEN 'null' THEN NULL ELSE 0 END AS evidence
+             FROM aw_workflow_steps WHERE run_id=?1 ORDER BY ordinal",
+        )?;
         let mut stmt = tx.prepare(
             "SELECT step_id,dependency_id FROM aw_workflow_dependencies WHERE run_id=?1",
         )?;
@@ -132,9 +140,15 @@ pub(crate) fn read(conn: &Connection, run: &str) -> Result<Vec<StepRecord>, Libr
     if !exists {
         return Err(invalid("unknown run"));
     }
-    let mut stmt = conn.prepare(
+    read_records(
+        conn,
+        run,
         "SELECT id,state,raw,evidence FROM aw_workflow_steps WHERE run_id=?1 ORDER BY ordinal",
-    )?;
+    )
+}
+
+fn read_records(conn: &Connection, run: &str, sql: &str) -> Result<Vec<StepRecord>, LibraryError> {
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([run], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -166,5 +180,70 @@ pub(crate) fn is_cancelled(conn: &Connection, run: &str) -> Result<bool, Library
         0 => Ok(false),
         1 => Ok(true),
         _ => Err(invalid("invalid cancellation state")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+
+    #[test]
+    fn completed_claim_does_not_project_result_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = Connection::open(dir.path().join("db")).unwrap();
+        library::initialize(&mut conn).unwrap();
+        let steps: Vec<_> = (0..64)
+            .map(|n| Step {
+                id: n.to_string(),
+                dependencies: vec![],
+            })
+            .collect();
+        create(&mut conn, "r", &steps).unwrap();
+        let outcome = Outcome::Success {
+            raw: "a".repeat(1_048_576),
+            evidence: Some("b".repeat(4096)),
+        };
+        for step in &steps {
+            assert_eq!(
+                claim(&mut conn, "r").unwrap().as_deref(),
+                Some(step.id.as_str())
+            );
+            finish(&mut conn, "r", &step.id, &outcome).unwrap();
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        conn.trace_v2(
+            TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(move |event: TraceEvent<'_>| {
+                if let TraceEvent::Stmt(_, sql) = event {
+                    let _ = send.send(sql.to_owned());
+                }
+            }),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            assert_eq!(claim(&mut conn, "r").unwrap(), None);
+        }
+        let statements: Vec<_> = receive.try_iter().collect();
+        assert_eq!(
+            statements
+                .iter()
+                .filter(|s| s.as_str() == "BEGIN IMMEDIATE")
+                .count(),
+            3
+        );
+        assert!(
+            !statements
+                .iter()
+                .any(|s| s.starts_with("SELECT id,state,raw,evidence ")),
+            "{statements:?}"
+        );
+        let history = read(&conn, "r").unwrap();
+        assert_eq!(history.len(), 64);
+        assert!(
+            history
+                .iter()
+                .all(|step| step.outcome.as_ref() == Some(&outcome))
+        );
     }
 }

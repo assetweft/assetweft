@@ -164,7 +164,7 @@ pub(super) fn budget_response(
     let opened = if action == "receipts" {
         Application::open_read_only(db)
     } else {
-        Application::open(db)
+        Application::open_existing(db)
     };
     let mut app = match opened {
         Ok(app) => app,

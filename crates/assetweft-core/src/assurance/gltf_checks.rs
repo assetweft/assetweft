@@ -103,8 +103,9 @@ fn deserialize_webp_source<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<u32>, D::Error> {
     #[derive(Deserialize)]
-    struct WebpReference {
-        source: u32,
+    struct WebpReference<'a> {
+        #[serde(borrow)]
+        source: &'a RawValue,
     }
     let raw = <&RawValue>::deserialize(deserializer)?;
     if !raw.get().starts_with('{') {
@@ -112,12 +113,50 @@ fn deserialize_webp_source<'de, D: Deserializer<'de>>(
             "EXT_texture_webp must be an object",
         ));
     }
-    serde_json::from_str::<WebpReference>(raw.get())
-        .map(|reference| Some(reference.source))
-        .map_err(serde::de::Error::custom)
+    let reference: WebpReference<'_> =
+        serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+    exact_image_index(reference.source.get())
+        .map(Some)
+        .ok_or_else(|| {
+            serde::de::Error::custom("EXT_texture_webp.source must be an unsigned integer index")
+        })
 }
 
-fn declared_uri_mime<'a>(uri: &'a str, mime: Option<&'a str>) -> Option<&'a str> {
+fn exact_image_index(raw: &str) -> Option<u32> {
+    if let Ok(index) = raw.parse::<u32>() {
+        return Some(index);
+    }
+    let (mantissa, exponent) = raw.split_once(['e', 'E']).unwrap_or((raw, "0"));
+    let unsigned = mantissa.strip_prefix('-').unwrap_or(mantissa);
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if !whole
+        .bytes()
+        .chain(fraction.bytes())
+        .all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Some(0);
+    }
+    if mantissa.starts_with('-') {
+        return None;
+    }
+    let significant = digits.trim_end_matches('0');
+    let scale = exponent
+        .parse::<i64>()
+        .ok()?
+        .checked_sub(fraction.len() as i64)?
+        .checked_add((digits.len() - significant.len()) as i64)?;
+    significant
+        .parse::<u32>()
+        .ok()?
+        .checked_mul(10_u32.checked_pow(scale.try_into().ok()?)?)
+}
+
+fn declared_uri_mime<'a>(uri: &'a str, mime: Option<&'a str>) -> Result<Option<&'a str>, ()> {
     if uri.is_empty()
         || uri.chars().any(|c| c.is_whitespace() || c.is_control())
         || uri.match_indices('%').any(|(i, _)| {
@@ -126,18 +165,20 @@ fn declared_uri_mime<'a>(uri: &'a str, mime: Option<&'a str>) -> Option<&'a str>
                 .is_some_and(|digits| digits.iter().all(u8::is_ascii_hexdigit))
         })
     {
-        return None;
+        return Err(());
     }
     if let Some((scheme, data)) = uri.split_once(':')
         && scheme.eq_ignore_ascii_case("data")
     {
-        let (metadata, payload) = data.split_once(',')?;
-        let media_type = metadata.split(';').next()?;
+        let (metadata, payload) = data.split_once(',').ok_or(())?;
+        let media_type = metadata.split(';').next().ok_or(())?;
         return (!payload.is_empty()
+            && !media_type.is_empty()
             && mime.is_none_or(|mime| media_type.eq_ignore_ascii_case(mime)))
-        .then_some(media_type);
+        .then_some(Some(media_type))
+        .ok_or(());
     }
-    mime.or_else(|| {
+    Ok(mime.or_else(|| {
         let path = uri.split(['?', '#']).next()?;
         let path = match path
             .strip_prefix("//")
@@ -153,7 +194,7 @@ fn declared_uri_mime<'a>(uri: &'a str, mime: Option<&'a str>) -> Option<&'a str>
             "jpg" | "jpeg" => Some("image/jpeg"),
             _ => None,
         }
-    })
+    }))
 }
 
 fn declares_image(root: &json::Root, bin: Option<&[u8]>, source: u32, formats: &[&str]) -> bool {
@@ -165,10 +206,12 @@ fn declares_image(root: &json::Root, bin: Option<&[u8]>, source: u32, formats: &
         return false;
     }
     match (image.buffer_view, image.uri.as_deref()) {
-        (None, Some(uri)) => declared_uri_mime(uri, mime).is_some_and(|mime| {
-            formats
-                .iter()
-                .any(|format| mime.eq_ignore_ascii_case(format))
+        (None, Some(uri)) => declared_uri_mime(uri, mime).is_ok_and(|mime| {
+            mime.is_none_or(|mime| {
+                formats
+                    .iter()
+                    .any(|format| mime.eq_ignore_ascii_case(format))
+            })
         }),
         (Some(index), None) => {
             let Some(view) = root.get(index) else {
@@ -178,6 +221,8 @@ fn declares_image(root: &json::Root, bin: Option<&[u8]>, source: u32, formats: &
                 return false;
             };
             mime.is_some()
+                && view.byte_stride.is_none()
+                && view.target.is_none()
                 && view.byte_length.0 > 0
                 && view
                     .byte_offset
@@ -185,15 +230,20 @@ fn declares_image(root: &json::Root, bin: Option<&[u8]>, source: u32, formats: &
                     .checked_add(view.byte_length.0)
                     .is_some_and(|end| {
                         end <= buffer.byte_length.0
-                            && (buffer.uri.is_some()
-                                || bin.is_some_and(|bin| end <= bin.len() as u64))
+                            && match &buffer.uri {
+                                Some(uri) => !uri.is_empty(),
+                                None => {
+                                    view.buffer.value() == 0
+                                        && bin.is_some_and(|bin| end <= bin.len() as u64)
+                                }
+                            }
                     })
         }
         _ => false,
     }
 }
 
-pub(super) fn parse_glb(bytes: &[u8]) -> Result<(Gltf, Vec<String>), String> {
+pub(crate) fn parse_glb(bytes: &[u8]) -> Result<(Gltf, Vec<String>), String> {
     check_glb_container(bytes)?;
     let parser_error = |err: gltf::Error| format!("gltf parser rejected the GLB structure: {err}");
     let glb = Glb::from_slice(bytes).map_err(parser_error)?;
@@ -217,13 +267,10 @@ pub(super) fn parse_glb(bytes: &[u8]) -> Result<(Gltf, Vec<String>), String> {
             let source = texture.extensions.as_ref()?.webp?;
             Some((index, source, texture.source))
         });
-    if sources.clone().next().is_none() && used == 0 && required == 0 {
-        return Ok((
-            Gltf::from_slice(bytes).map_err(parser_error)?,
-            declarations.extensions_required,
-        ));
-    }
-    if used != 1 || required > 1 || sources.clone().next().is_none() {
+    let has_webp_sources = sources.clone().next().is_some();
+    if (has_webp_sources || used > 0 || required > 0)
+        && (used != 1 || required > 1 || !has_webp_sources)
+    {
         return Err(format!(
             "{WEBP_EXTENSION} must occur on a texture and be listed once in extensionsUsed and at most once in extensionsRequired"
         ));
@@ -231,6 +278,29 @@ pub(super) fn parse_glb(bytes: &[u8]) -> Result<(Gltf, Vec<String>), String> {
 
     let mut root: json::Root =
         json::deserialize::from_slice(&glb.json).map_err(|err| parser_error(err.into()))?;
+    for (index, texture) in declarations.textures.iter().enumerate() {
+        let Some(image) = texture
+            .source
+            .and_then(|source| root.images.get(source as usize))
+        else {
+            continue;
+        };
+        let mime = image.mime_type.as_ref().map(|mime| mime.0.as_str());
+        let uri_mime = image
+            .uri
+            .as_deref()
+            .and_then(|uri| declared_uri_mime(uri, mime).ok().flatten());
+        if mime
+            .into_iter()
+            .chain(uri_mime)
+            .any(|mime| mime.eq_ignore_ascii_case("image/webp"))
+        {
+            return Err(format!(
+                "textures[{index}].source must not reference a WebP image"
+            ));
+        }
+    }
+
     for (index, source, fallback) in sources.clone() {
         let path = format!("textures[{index}].extensions.{WEBP_EXTENSION}");
         if !declares_image(&root, glb.bin.as_deref(), source, WEBP_MIME) {
@@ -251,14 +321,30 @@ pub(super) fn parse_glb(bytes: &[u8]) -> Result<(Gltf, Vec<String>), String> {
         }
     }
 
-    // gltf 1.4.1 validates core texture sources but does not recognize required WebP.
+    // gltf 1.4.1 does not recognize required WebP (#138).
     for (index, source, _) in sources {
         root.textures[index].source = json::Index::new(source);
     }
     root.extensions_required.retain(|ext| ext != WEBP_EXTENSION);
-    let normalized = serde_json::to_vec(&root).map_err(|err| parser_error(err.into()))?;
-    let mut gltf = Gltf::from_slice(&normalized).map_err(parser_error)?;
-    gltf.blob = glb.bin.map(|bin| bin.into_owned());
+    // gltf-json 1.4.1 indexes POSITION before reporting an invalid accessor (#124).
+    let position = json::validation::Checked::Valid(gltf::Semantic::Positions);
+    for (mesh_index, mesh) in root.meshes.iter().enumerate() {
+        for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
+            if primitive
+                .attributes
+                .get(&position)
+                .is_some_and(|accessor| root.get(*accessor).is_none())
+            {
+                return Err(format!(
+                    "meshes[{mesh_index}].primitives[{primitive_index}].attributes.POSITION references a missing accessor"
+                ));
+            }
+        }
+    }
+    let gltf = Gltf {
+        document: gltf::Document::from_json(root).map_err(parser_error)?,
+        blob: glb.bin.map(|bin| bin.into_owned()),
+    };
     Ok((gltf, declarations.extensions_required))
 }
 

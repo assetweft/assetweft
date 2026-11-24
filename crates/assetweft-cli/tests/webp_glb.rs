@@ -6,6 +6,7 @@ use std::{fs, path::Path, process::Command};
 const WEBP: &str = "EXT_texture_webp";
 const PIXEL: &[u8] = b"RIFF\x1a\0\0\0WEBPVP8L\x0e\0\0\0/\0\0\0\0\x07\x10\x11\xfd\x0fDD\xff\x03";
 const MESH: &[u8] = include_bytes!("../../assetweft-core/tests/fixtures/validation/mesh_only.glb");
+type Change = fn(&mut Value);
 
 fn split_glb(bytes: &[u8]) -> (Value, &[u8]) {
     let json_end = 20 + u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
@@ -35,8 +36,11 @@ fn glb(doc: &Value) -> Vec<u8> {
     encode_glb(doc, bin)
 }
 
-fn encode_glb(doc: &Value, mut bin: Vec<u8>) -> Vec<u8> {
-    let mut json = serde_json::to_vec(doc).unwrap();
+fn encode_glb(doc: &Value, bin: Vec<u8>) -> Vec<u8> {
+    encode_glb_json(serde_json::to_vec(doc).unwrap(), bin)
+}
+
+fn encode_glb_json(mut json: Vec<u8>, mut bin: Vec<u8>) -> Vec<u8> {
     json.resize(json.len().next_multiple_of(4), b' ');
     bin.resize(bin.len().next_multiple_of(4), 0);
     let mut bytes = b"glTF\x02\0\0\0".to_vec();
@@ -118,6 +122,161 @@ fn optional_webp_selects_unresolved_uri_over_png_fallback() {
 }
 
 #[test]
+fn extensionless_external_webp_and_fallback_stay_unresolved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("external.glb");
+    let mut doc = webp_document();
+    doc.as_object_mut().unwrap().remove("extensionsRequired");
+    let uris = ["tiles/fallback", "tiles/albedo?revision=1"];
+    doc["images"] = json!([{"uri": uris[0]}, {"uri": uris[1]}]);
+    doc["textures"][0] = json!({"source": 0, "extensions": {(WEBP): {"source": 1}}});
+    fs::write(&path, glb(&doc)).unwrap();
+    let (validated, validation) = invoke("validate", &path);
+    let (inspected, inspection) = invoke("inspect", &path);
+    assert_eq!(
+        (validated, inspected),
+        (Some(0), Some(0)),
+        "{validation} {inspection}"
+    );
+    let geometry = &inspection["results"]["geometry"];
+    assert_eq!(geometry["textures"], json!([[0, 1]]));
+    assert_eq!(
+        geometry["images"],
+        json!([{"UriUnresolved": uris[0]}, {"UriUnresolved": uris[1]}])
+    );
+}
+
+#[test]
+fn webp_source_accepts_exact_decimal_and_exponent_integers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("integer.glb");
+    let mut doc = webp_document();
+    doc["textures"][0]["extensions"][WEBP]["source"] = json!("SOURCE");
+    let raw = serde_json::to_string(&doc).unwrap();
+    let bytes = glb(&webp_document());
+    let (_, bin) = split_glb(&bytes);
+    let failures: Vec<_> = ["0.0", "0e0", "0.0001e-999", "4294967296", "\"0\""]
+        .into_iter()
+        .filter_map(|source| {
+            let bytes =
+                encode_glb_json(raw.replace("\"SOURCE\"", source).into_bytes(), bin.to_vec());
+            fs::write(&path, bytes).unwrap();
+            let actual = (invoke("validate", &path).0, invoke("inspect", &path).0);
+            let expected = if matches!(source, "0.0" | "0e0") {
+                (Some(0), Some(0))
+            } else {
+                (Some(1), Some(2))
+            };
+            (actual != expected).then_some((source, actual, expected))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+fn invalid_webp_document_reports_the_gltf_field_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad-alpha.glb");
+    let mut doc = webp_document();
+    doc["materials"] = json!([{"alphaMode": "BOGUS"}]);
+    fs::write(&path, glb(&doc)).unwrap();
+    for (command, code) in [("validate", 1), ("inspect", 2)] {
+        let (exit, reply) = invoke(command, &path);
+        assert_eq!(exit, Some(code), "{reply}");
+        assert!(
+            reply["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("materials[0].alphaMode"),
+            "{command}: {reply}"
+        );
+    }
+}
+
+#[test]
+fn embedded_webp_and_core_texture_sources_obey_image_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("texture.glb");
+    let cases: &[(&str, Change)] = &[
+        ("byteStride", |doc| {
+            doc["bufferViews"][1]["byteStride"] = json!(4)
+        }),
+        ("target", |doc| {
+            doc["bufferViews"][1]["target"] = json!(34962)
+        }),
+        ("missing nonzero URI", |doc| {
+            doc["buffers"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"byteLength": 128}));
+            doc["bufferViews"][1]["buffer"] = json!(1);
+        }),
+        ("empty buffer URI", |doc| {
+            doc["buffers"][0]["uri"] = json!("")
+        }),
+        ("bare core WebP", |doc| {
+            let fields = doc.as_object_mut().unwrap();
+            fields.remove("extensionsUsed");
+            fields.remove("extensionsRequired");
+            doc["textures"][0] = json!({"source": 0});
+        }),
+        ("bare core WebP alongside extension", |doc| {
+            doc["textures"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"source": 0}));
+        }),
+    ];
+    let mut failures = Vec::new();
+    for (name, change) in cases {
+        let mut doc = webp_document();
+        change(&mut doc);
+        fs::write(&path, glb(&doc)).unwrap();
+        let actual = (invoke("validate", &path).0, invoke("inspect", &path).0);
+        if actual != (Some(1), Some(2)) {
+            failures.push((name, actual));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+fn motion_idle_malformed_glb_returns_one_error_receipt_without_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("malformed.glb");
+    let output = dir.path().join("clips.glb");
+    let mut mismatched = MESH.to_vec();
+    mismatched.extend_from_slice(b"tail");
+    for (bytes, reason) in [
+        (&MESH[..10], "too short for a GLB header"),
+        (&mismatched, "declared length"),
+    ] {
+        fs::write(&input, bytes).unwrap();
+        let process = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .arg("motion-strike")
+            .arg(&input)
+            .args(["--with-idle", "--out"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert_eq!(process.status.code(), Some(1), "{process:?}");
+        assert!(process.stderr.is_empty(), "{process:?}");
+        assert_eq!(process.stdout.split_inclusive(|&b| b == b'\n').count(), 1);
+        let reply: Value = serde_json::from_slice(&process.stdout).unwrap();
+        assert_eq!(reply["status"], "NOT_RUN", "{reply}");
+        assert!(reply["results"].is_null(), "{reply}");
+        assert!(
+            reply["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(reason),
+            "{reply}"
+        );
+        assert!(!output.exists());
+    }
+}
+
+#[test]
 fn rig_checks_still_decode_original_bin_with_webp_texture() {
     let input = include_bytes!("../../../examples/rigged-simple/RiggedSimple.glb");
     let baseline = rig::inspect_bytes(input);
@@ -141,7 +300,6 @@ fn rig_checks_still_decode_original_bin_with_webp_texture() {
 
 #[test]
 fn malformed_webp_and_unrelated_invalid_textures_are_rejected() {
-    type Change = fn(&mut Value);
     let dir = tempfile::tempdir().unwrap();
     let cases: &[(&str, Change)] = &[
         ("unknown-required", |doc| {
@@ -193,6 +351,12 @@ fn malformed_webp_and_unrelated_invalid_textures_are_rejected() {
         ("data-uri-with-wrong-mime", |doc| {
             doc["images"][0] =
                 json!({"uri": "data:image/png;base64,eA==", "mimeType": "image/webp"});
+        }),
+        ("malformed-data-uri", |doc| {
+            doc["images"][0] = json!({"uri": "data:image/webp;base64"});
+        }),
+        ("malformed-external-uri", |doc| {
+            doc["images"][0] = json!({"uri": "tiles/%GG"});
         }),
         ("undeclared-with-fallback", |doc| {
             doc.as_object_mut().unwrap().remove("extensionsUsed");

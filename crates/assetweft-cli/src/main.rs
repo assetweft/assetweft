@@ -1,11 +1,11 @@
 //! Responsibility: CLI process entry, argument grammar/dispatch and explicit library bootstrap.
 //! Dependencies: clap, shared transport, business incoming adapters and existing Application init.
 //! Callers: humans, automation and unchanged C1 black-box tests.
-//! Invariants: one compact v1 JSON line; stderr is best effort, stdout failure exits 6. Only explicit library init initializes/migrates; no generation, shell, network or replay.
 
 mod assurance;
 mod catalog;
 mod consumption;
+mod execution;
 mod production;
 mod protocol;
 
@@ -303,6 +303,7 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(String))),
                 ),
         )
+        .subcommand(execution::grammar())
         .subcommand(
             Command::new("plan")
                 .arg(
@@ -434,6 +435,9 @@ fn run() -> (i32, Value) {
     let limits = val::ValidationLimits {
         max_bytes: *matches.get_one::<u64>("max-bytes").expect("default"),
     };
+    if command == "byo-gpu" {
+        return execution::response(args, call_id, limits.max_bytes);
+    }
     if command == "library" {
         let (_, init_args) = args.subcommand().expect("clap requires library init");
         return library_init_response(call_id, init_args);

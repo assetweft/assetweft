@@ -638,6 +638,21 @@ impl Application {
         )
         .map_err(Into::into)
     }
+
+    pub fn feedback_by_id(
+        &mut self,
+        asset_id: &str,
+        version_id: &str,
+        feedback_id: &str,
+    ) -> Result<Option<crate::history::FeedbackRecord>, LibraryError> {
+        crate::catalog::feedback::by_id(
+            &mut crate::catalog::sqlite_feedback::SqliteFeedback(&mut self.connection),
+            asset_id,
+            version_id,
+            feedback_id,
+        )
+        .map_err(Into::into)
+    }
 }
 
 impl Application {

@@ -16,4 +16,10 @@ pub(crate) trait Feedback {
         &mut self,
         query: super::domain::HistoryQuery<'_>,
     ) -> Result<Vec<super::domain::FeedbackRecord>, MetadataError>;
+    fn by_id(
+        &mut self,
+        asset_id: &str,
+        version_id: &str,
+        feedback_id: &str,
+    ) -> Result<Option<super::domain::FeedbackRecord>, MetadataError>;
 }

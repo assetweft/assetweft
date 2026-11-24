@@ -8,11 +8,10 @@ description: Run AssetWeft's offline BYO GPU fixture recipe and verify its CLI r
 From the repository root, build the binary from cached Rust dependencies and run the recipe. Humans and agents use the same entry point. The evaluator executes the command block below verbatim, prints each raw CLI receipt, and deletes its private temporary library and fixtures even on failure.
 
 ```sh
-cargo build --locked --offline -p assetweft-cli
-./skills/assetweft-cli/eval_recipe.sh
+cargo build --locked --offline -p assetweft-cli && ./skills/assetweft-cli/eval_recipe.sh
 ```
 
-The evaluator uses POSIX shell, Node.js and the SQLite CLI. Set `ASSETWEFT_BIN` to use a different already-built binary. AssetWeft needs no Python runtime, daemon or MCP server for this recipe. See the [CLI v1 protocol](../../crates/assetweft-cli/README.md) and [feature map](../../docs/FEATURE_MAP.md).
+The evaluator uses POSIX shell, Node.js and the SQLite CLI. It reads the debug executable from `CARGO_TARGET_DIR` when set or from the target directory reported by offline Cargo metadata. Keep the same `CARGO_TARGET_DIR` for the build and evaluation. Set `ASSETWEFT_BIN` to override discovery with an already-built executable. The evaluator prints the executable's absolute path and SHA-256 before the receipts. AssetWeft needs no Python runtime, daemon or MCP server for this recipe. See the [CLI v1 protocol](../../crates/assetweft-cli/README.md) and [feature map](../../docs/FEATURE_MAP.md).
 
 ## Authorization
 

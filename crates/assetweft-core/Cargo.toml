@@ -21,11 +21,12 @@ workspace = true
 # AW-013:A 只把已锁的成熟 wire 解析提升为直接依赖（版本与 Cargo.lock 既有 pin 一致，不新增 crate 版本）。
 # serde/serde_json 仅做 JSON→Rust 类型解析；验证逻辑唯一在 generation_spec.rs，不写第二套 JSON Schema 引擎。
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.154"
+serde_json = { version = "=1.0.154", features = ["raw_value"] }
 # 成熟标准解析器：glTF 2.0/GLB 官方 Rust 实现；不使用 import（图片/URI）能力，仅做容器与结构解析。
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 # 成熟哈希库，不自造 SHA-256。
 sha2 = "0.11.1"
+png = "=0.18.1"
 
 # AW-004:A fixed bundled SQLite build; preserve the reviewed validation dependencies.
 rusqlite = { version = "=0.42.0", features = ["bundled", "backup"] }
@@ -34,4 +35,13 @@ rusqlite = { version = "=0.42.0", features = ["bundled", "backup"] }
 tempfile = "=3.27.0"
 
 [dev-dependencies]
+rusqlite = { version = "=0.42.0", features = ["hooks", "trace"] }
 serde_json = "1.0"
+
+# Stable, safe Windows handle identity for hard-linked export ownership receipts.
+[target.'cfg(windows)'.dependencies]
+winapi-util = "=0.1.11"
+
+# tempfile already pins rustix. Use its safe statx API to reject Linux bind mounts.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }

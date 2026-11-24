@@ -1,4 +1,3 @@
-//! M1 real-file feedback gates; fixtures are owned tempfile directories, not user assets.
 use assetweft_core::{
     application::Application,
     history::{Decision, Feedback, HistoryQuery},
@@ -197,7 +196,6 @@ fn feedback_preserves_originals_metadata_and_existing_current_pointer() {
     missing.presence = Presence::Missing;
     app.add_asset_version(&missing).unwrap();
     let raw = Connection::open(&db).unwrap();
-    // Sentinel existing head, inspected directly: this does not claim candidate acceptance.
     raw.execute(
         "INSERT INTO aw_candidate_current VALUES ('a','v1',9,'sentinel')",
         [],
@@ -235,22 +233,118 @@ fn feedback_preserves_originals_metadata_and_existing_current_pointer() {
         ("v1".into(), 9, "sentinel".into())
     );
 }
+fn open_v5(db: &std::path::Path) -> Connection {
+    let raw = Connection::open(db).unwrap();
+    for sql in [
+        include_str!("../src/library/001_initial.sql"),
+        include_str!("../src/library/002_objects.sql"),
+        include_str!("../src/library/003_workflow.sql"),
+        include_str!("../src/library/004_budget.sql"),
+        include_str!("../src/library/005_candidates.sql"),
+    ] {
+        raw.execute_batch(sql).unwrap();
+    }
+    raw.execute_batch("CREATE TABLE aw_schema_version(singleton INTEGER PRIMARY KEY, version INTEGER); INSERT INTO aw_schema_version VALUES(1,5);").unwrap();
+    raw
+}
+
+#[test]
+fn existing_identities_registered_by_public_api_support_exact_feedback() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("current.sqlite");
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    let versions = legacy_versions();
+    for version in &versions {
+        app.add_asset_version(version).unwrap();
+    }
+    assert_legacy_feedback(&db, app, &versions);
+}
+
+#[test]
+fn existing_v5_identities_support_exact_feedback_after_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("legacy.sqlite");
+    let raw = open_v5(&db);
+    let versions = legacy_versions();
+    for v in &versions {
+        raw.execute("INSERT INTO aw_assets VALUES(?1)", [&v.asset_id])
+            .unwrap();
+        raw.execute(
+            "INSERT INTO aw_asset_versions VALUES(?1,?2,?3,'input','fixture','UNKNOWN',0,'UNKNOWN','UNKNOWN','BIN','1.0.0','UNKNOWN')",
+            [&v.version_id, &v.asset_id, &v.content_hash],
+        ).unwrap();
+    }
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+    assert_eq!(
+        raw.query_row("SELECT version FROM aw_schema_version", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    drop(raw);
+    assert_legacy_feedback(&db, app, &versions);
+}
+
+fn legacy_versions() -> [AssetVersion; 3] {
+    [
+        version(&"a".repeat(256), &("界".repeat(85) + "b")),
+        version(&("界".repeat(85) + "ab"), &"b".repeat(257)),
+        version(" \u{2003} ", "\t "),
+    ]
+}
+
+fn assert_legacy_feedback(db: &std::path::Path, mut app: Application, versions: &[AssetVersion]) {
+    let mut expected = Vec::new();
+    for (index, version) in versions.iter().enumerate() {
+        let (a, v) = (&version.asset_id, &version.version_id);
+        assert_eq!(app.asset_version(v).unwrap().as_ref(), Some(version));
+        let first = feedback(&format!("first-{index}"), a, v, Decision::Accept);
+        let last = feedback(&format!("last-{index}"), a, v, Decision::Reject);
+        let first_record = app.append_feedback(&first).unwrap();
+        let last_record = app.append_feedback(&last).unwrap();
+        assert_eq!(first_record.feedback, first);
+        assert_eq!(last_record.feedback, last);
+        expected.push((first_record, last_record));
+    }
+    app.close().unwrap();
+    let mut reopened = Application::open_read_only(db).unwrap();
+    for (version, (first, last)) in versions.iter().zip(expected) {
+        let (a, v) = (&version.asset_id, &version.version_id);
+        assert_eq!(reopened.asset_version(v).unwrap().as_ref(), Some(version));
+        assert_eq!(
+            reopened.latest_feedback(a, None).unwrap().as_ref(),
+            Some(&last)
+        );
+        assert_eq!(
+            reopened.latest_feedback(a, Some(v)).unwrap().as_ref(),
+            Some(&last)
+        );
+        assert_eq!(
+            reopened
+                .feedback_history(query(a, Some(v), 1, None))
+                .unwrap()
+                .as_slice(),
+            std::slice::from_ref(&last)
+        );
+        assert_eq!(
+            reopened
+                .feedback_history(query(a, Some(v), 1, Some(last.sequence)))
+                .unwrap(),
+            [first]
+        );
+    }
+}
+
 #[test]
 fn migration_005_to_006_is_atomic_and_reopen_is_idempotent() {
     for conflict in [false, true] {
         let d = tempfile::tempdir().unwrap();
         let db = d.path().join("old.sqlite");
-        let raw = Connection::open(&db).unwrap();
-        for sql in [
-            include_str!("../src/library/001_initial.sql"),
-            include_str!("../src/library/002_objects.sql"),
-            include_str!("../src/library/003_workflow.sql"),
-            include_str!("../src/library/004_budget.sql"),
-            include_str!("../src/library/005_candidates.sql"),
-        ] {
-            raw.execute_batch(sql).unwrap();
-        }
-        raw.execute_batch("CREATE TABLE aw_schema_version(singleton INTEGER PRIMARY KEY, version INTEGER); INSERT INTO aw_schema_version VALUES(1,5); INSERT INTO aw_assets VALUES('legacy');").unwrap();
+        let raw = open_v5(&db);
+        raw.execute("INSERT INTO aw_assets VALUES('legacy')", [])
+            .unwrap();
         if conflict {
             raw.execute_batch("CREATE INDEX aw_feedback_version_order ON aw_assets(asset_id);")
                 .unwrap();

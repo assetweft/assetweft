@@ -1,6 +1,3 @@
-//! Responsibility: fixture proposal values and pure descriptor/lock policy.
-//! Dependencies: stable Catalog values, LockMode and Production errors; callers: staging use case/adapter.
-//! Invariants: byte-only fixture scope, exact snapshot order and unchanged Candidate encoding.
 use super::{
     domain::{Candidate, ComponentSnapshot},
     staging_ports::StagingError,
@@ -43,7 +40,10 @@ pub(crate) fn check_contract(c: &FixtureContract) -> Result<(), StagingError> {
     }
     Ok(())
 }
-pub(crate) fn editable(p: &Proposal) -> Result<Vec<String>, StagingError> {
+pub(crate) fn editable(
+    p: &Proposal,
+    validate_contract: fn(&FixtureContract) -> Result<(), StagingError>,
+) -> Result<Vec<String>, StagingError> {
     if ![&p.id, &p.base_version, &p.candidate_version]
         .iter()
         .all(|v| id_ok(v))
@@ -61,7 +61,7 @@ pub(crate) fn editable(p: &Proposal) -> Result<Vec<String>, StagingError> {
         return Err(invalid("editable roles"));
     }
     if let Some(contract) = &p.contract {
-        check_contract(contract)?;
+        validate_contract(contract)?;
     }
     let mut editable = Vec::new();
     for role in &p.editable {
@@ -78,6 +78,8 @@ pub(crate) fn descriptor(
     editable: Vec<String>,
     base: Vec<ComponentSnapshot>,
     proposed: Vec<ComponentSnapshot>,
+    source: &str,
+    scope: &str,
 ) -> Result<Candidate, StagingError> {
     if base.len() != proposed.len() || editable.iter().any(|r| !base.iter().any(|s| &s.role == r)) {
         return Err(invalid("role set"));
@@ -99,8 +101,8 @@ pub(crate) fn descriptor(
         editable,
         base,
         proposed,
-        source: "TEST_FIXTURE".into(),
-        scope: "MANAGED_COMPONENT_BYTE_STAGING_ONLY".into(),
+        source: source.into(),
+        scope: scope.into(),
         contract: p.contract.clone(),
         not_run: vec![
             "FORMAT_AND_ROLE_VALIDATION".into(),
@@ -113,7 +115,6 @@ pub(crate) fn descriptor(
     Ok(candidate)
 }
 
-/// Validate facts at their original observation point; never promote declaration to rights evidence.
 pub(crate) fn component_count(count: usize) -> Result<(), StagingError> {
     if count == 0 || count > 7 {
         return Err(invalid("component count"));

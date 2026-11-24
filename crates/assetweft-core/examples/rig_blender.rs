@@ -1,25 +1,12 @@
-//! Responsibility: optional, bounded Blender 5.1.2 GLB skin roundtrip tool.
-//! Dependencies: Assurance rig checks, gltf/serde/sha2/tempfile, external explicit Blender.
-//! Callers: opt-in local M3 fixture checks. No Python runtime required by core.
-//! Invariants: fixed embedded script; no shell/foreign script; new output directory;
-//! immutable staged input, no URI/texture/extension/animation/morph processing.
 use assetweft_core::assurance::{self, CheckStatus, ValidationLimits};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+#[path = "../src/assurance/rig_blender/process.rs"]
+mod process;
 use std::{
-    env, fs,
+    env,
     io::{self, Write},
     path::Path,
-    process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
 };
-fn hash(b: &[u8]) -> String {
-    Sha256::digest(b)
-        .iter()
-        .map(|v| format!("{v:02x}"))
-        .collect()
-}
 fn reject_external(v: &Value, path: &str) -> Result<(), String> {
     match v {
         Value::Object(map) => {
@@ -50,18 +37,11 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
         return Err("Blender binary path must be explicit and absolute".into());
     }
     let bytes = assurance::read_bounded(Path::new(&a[1]), ValidationLimits::default())?;
-    let r = assurance::checks::inspect_rig_bytes(&bytes);
-    if r.validation.format_status != CheckStatus::Pass
-        || r.bound_nodes.len() != 1
-        || r.checks.iter().any(|c| c.status != CheckStatus::Pass)
-    {
-        return Err(format!("input rig gate rejected/NOT_RUN: {:?}", r.checks).into());
-    }
+    process::check_rig(&bytes)?;
     let g = gltf::Gltf::from_slice(&bytes)?;
     let container = gltf::binary::Glb::from_slice(&bytes)?;
     let j: Value = serde_json::from_slice(&container.json)?;
     reject_external(&j, "")?;
-    // Deliberately narrow supported slice; never ask Blender to repair rejected data.
     for key in [
         "animations",
         "textures",
@@ -104,64 +84,17 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
             return Err("UNSUPPORTED /meshes/0/primitives: morph or non-triangles".into());
         }
     }
-    // Fixed declaration intentionally admits only this programmatic proof, not F0.
     if j["asset"]["generator"] != "AssetWeft TEST_FIXTURE pose v1" || names != ["root", "bend"] {
         return Err("UNSUPPORTED fixture declaration or identity mapping".into());
     }
     let out = Path::new(&a[2]);
-    fs::create_dir(out)?;
-    let out = out.canonicalize()?;
-    fs::write(out.join("input.glb"), &bytes)?;
-    let temp = tempfile::tempdir()?;
-    let script = temp.path().join("rig_blender.py");
-    fs::write(&script, include_bytes!("rig_blender/bridge.py"))?;
-    fs::write(
-        out.join("started.json"),
-        serde_json::to_vec_pretty(
-            &json!({"binary":binary,"arguments":["--background","--factory-startup","--disable-autoexec","--python-exit-code","7","--python","FIXED_EMBEDDED_SCRIPT","--",out],"input_sha256":hash(&bytes),"script_sha256":hash(include_bytes!("rig_blender/bridge.py")),"timeout_seconds":100,"wake":"synchronous bounded child wait","raw_logs":["blender.stdout.log","blender.stderr.log"]}),
-        )?,
+    let (result, receipt) = process::evaluate(
+        binary,
+        &bytes,
+        out,
+        include_bytes!("rig_blender/bridge.py"),
+        "TEST_FIXTURE",
     )?;
-    let log = fs::File::create(out.join("blender.stdout.log"))?;
-    let err = fs::File::create(out.join("blender.stderr.log"))?;
-    let mut child = Command::new(binary)
-        .args([
-            "--background",
-            "--factory-startup",
-            "--disable-autoexec",
-            "--python-exit-code",
-            "7",
-            "--python",
-        ])
-        .arg(&script)
-        .arg("--")
-        .arg(&out)
-        .stdin(Stdio::null())
-        .stdout(log)
-        .stderr(err)
-        .spawn()?;
-    let start = Instant::now();
-    let mut timeout = false;
-    let status = loop {
-        if let Some(s) = child.try_wait()? {
-            break s;
-        }
-        if start.elapsed() > Duration::from_secs(100) {
-            timeout = true;
-            child.kill()?;
-            break child.wait()?;
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-    let receipt = json!({"input_sha256":hash(&bytes),"script_sha256":hash(include_bytes!("rig_blender/bridge.py")),"timeout_seconds":100,"timed_out":timeout,"raw_exit":status.code(),"success":status.success(),"source":"TEST_FIXTURE","unknown_cost":null});
-    fs::write(
-        out.join("process.json"),
-        serde_json::to_vec_pretty(&receipt)?,
-    )?;
-    if !status.success() || timeout {
-        return Err(format!("Blender failed: {receipt}").into());
-    }
-    let result = assurance::read_bounded(&out.join("result.json"), ValidationLimits::default())?;
-    let result: Value = serde_json::from_slice(&result)?;
     let output = assurance::read_bounded(&out.join("roundtrip.glb"), ValidationLimits::default())?;
     let rr = assurance::checks::inspect_rig_bytes(&output);
     if rr.validation.format_status != CheckStatus::Pass
@@ -171,7 +104,7 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
         return Err(format!("output rig rejected: {:?}", rr.checks).into());
     }
     Ok(
-        json!({"status":"MEASURED","process":receipt,"output_sha256":hash(&output),"result":result,"not_run":["F0","AI","renderer","Windows","Unity","Unreal","Godot","wholeRigB"]}),
+        json!({"status":"MEASURED","process":receipt,"output_sha256":process::hash(&output),"result":result,"not_run":["F0","AI","renderer","Windows","Unity","Unreal","Godot","wholeRigB"]}),
     )
 }
 fn main() {

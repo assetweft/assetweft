@@ -1,4 +1,3 @@
-//! Persistent local workflow behavior through the product API.
 use assetweft_core::{
     application::Application,
     workflow::{Outcome, State, Step},
@@ -231,5 +230,28 @@ fn pending_survives_reopen_and_remains_claimable() {
     app.close().unwrap();
     let mut app = Application::open(&path).unwrap();
     assert_eq!(app.workflow_steps("r").unwrap()[0].state, State::Pending);
+    assert_eq!(app.claim_workflow_step("r").unwrap().as_deref(), Some("a"));
+}
+
+#[test]
+fn database_moved_after_file_check_is_not_recreated_by_existing_open() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    let renamed = dir.path().join("moved");
+    let mut app = setup(&path);
+    app.create_workflow("r", &[step("a", &[])]).unwrap();
+    app.close().unwrap();
+
+    assert!(std::fs::metadata(&path).unwrap().is_file());
+    std::fs::rename(&path, &renamed).unwrap();
+    for open in [Application::open_read_only, Application::open_existing] {
+        let result = open(&path);
+        assert!(!path.exists(), "existing open recreated the original path");
+        assert!(matches!(
+            result,
+            Err(assetweft_core::sqlite::ProtoError::Io(_))
+        ));
+    }
+    let mut app = Application::open_existing(&renamed).unwrap();
     assert_eq!(app.claim_workflow_step("r").unwrap().as_deref(), Some("a"));
 }

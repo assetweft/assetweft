@@ -1,13 +1,12 @@
-//! Responsibility: Catalog incoming adapter for declared immutable metadata/exact-reference writes and stored queries.
-//! Dependencies: shared CLI transport, public Application and Catalog compatibility values.
-//! Callers: main catalog command dispatch; projections remain local to this consumer.
-//! Invariants: one owning facade call per action; strict wire shapes; submitted write acknowledgements and stored queries preserve values; no SQL, policy, CAS, retry or implicit init.
-
-use crate::protocol::{envelope, error, existing_database, library_outcome, read_json};
+use crate::protocol::{
+    database_open_error, envelope, error, existing_database, library_outcome, read_json,
+};
 use assetweft_core::{
     application::Application,
     assurance as val,
+    catalog::domain::{Decision, Feedback, FeedbackRecord},
     library::{AssetVersion, ComponentReference, ComponentRole, Presence},
+    storage::{FileAvailability, StorageError},
 };
 use clap::ArgMatches;
 use serde_json::{Value, json};
@@ -55,6 +54,16 @@ fn reference_value(reference: ComponentReference) -> Value {
     json!({"owner_version_id":owner_version_id,"role":role,"component_version_id":component_version_id})
 }
 
+fn feedback_value(record: FeedbackRecord) -> Value {
+    let FeedbackRecord { sequence, feedback } = record;
+    let decision = match feedback.decision {
+        Decision::Accept => "ACCEPT",
+        Decision::Reject => "REJECT",
+    };
+    json!({"sequence":sequence,"feedback_id":feedback.feedback_id,"asset_id":feedback.asset_id,
+        "version_id":feedback.version_id,"decision":decision,"reason":feedback.reason})
+}
+
 pub(super) fn query_response(
     wire: &str,
     call_id: Option<&String>,
@@ -62,21 +71,21 @@ pub(super) fn query_response(
     args: &ArgMatches,
 ) -> (i32, Value) {
     let db = args.get_one::<PathBuf>("db").expect("required");
-    let id = args
-        .get_one::<String>(if action == "current" {
-            "asset-id"
-        } else {
-            "version-id"
-        })
-        .expect("required");
+    let id = |name| args.get_one::<String>(name).expect("required");
     let finish =
         |code, status, errors, results| (code, envelope(wire, call_id, status, errors, results));
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let read_only = matches!(action, "file-availability" | "search" | "preview");
+    let opened = if read_only {
+        Application::open_read_only(db)
+    } else {
+        Application::open_existing(db)
+    };
+    let mut app = match opened {
         Ok(app) => app,
-        Err(e) => {
+        Err(e) if read_only => {
             return finish(
                 2,
                 "INVALID_INPUT",
@@ -84,17 +93,84 @@ pub(super) fn query_response(
                 Value::Null,
             );
         }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
+    if action == "preview" {
+        let version = id("version-id");
+        return match app.preview(version) {
+            Ok(path) => {
+                let scope = if path.extension().is_some_and(|ext| ext == "wav") {
+                    "local_version_wav_preview"
+                } else {
+                    "local_version_png_preview"
+                };
+                finish(
+                    0,
+                    "PASS",
+                    json!([]),
+                    json!({"scope":scope,"version_id":version,"relative_path":path}),
+                )
+            }
+            Err(e) => {
+                let (code, status) = storage_outcome(&e);
+                finish(
+                    code,
+                    status,
+                    json!([error("catalog", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
+    if action == "file-availability" {
+        let version_id = id("version-id");
+        return match app.file_availability(version_id) {
+            Ok(observed) => {
+                let availability = match observed {
+                    FileAvailability::UnknownVersion => "UNKNOWN_VERSION",
+                    FileAvailability::MetadataOnly => "METADATA_ONLY",
+                    FileAvailability::Missing => "MISSING",
+                    FileAvailability::Available => "AVAILABLE",
+                };
+                finish(
+                    0,
+                    "PASS",
+                    json!([]),
+                    json!({"scope":"local_managed_version_bytes","version_id":version_id,"availability":availability}),
+                )
+            }
+            Err(e) => {
+                let (code, status) = storage_outcome(&e);
+                finish(
+                    code,
+                    status,
+                    json!([error("catalog", status, e)]),
+                    Value::Null,
+                )
+            }
+        };
+    }
     let result = match action {
-        "version" => app.asset_version(id).map(|version| {
+        "search" => app.search_versions(id("query")).map(|result| {
+            json!({"scope":"stored_local_asset_version_search","matches":result.matches,"truncated":result.truncated})
+        }),
+        "version" => app.asset_version(id("version-id")).map(|version| {
             json!({"scope":"stored_local_asset_version_metadata","version":version.map(version_value)})
         }),
-        "references" => app.component_references(id).map(|references| {
+        "references" => app.component_references(id("version-id")).map(|references| {
             json!({"scope":"stored_local_exact_component_references","references":references.into_iter().map(reference_value).collect::<Vec<_>>()})
         }),
-        "current" => app.candidate_current(id).map(|current| {
+        "current" => app.candidate_current(id("asset-id")).map(|current| {
             json!({"scope":"stored_local_candidate_current","current":current})
         }),
+        "feedback-latest" => app
+            .latest_feedback(
+                id("asset-id"),
+                args.get_one::<String>("version-id").map(String::as_str),
+            )
+            .map(|record| {
+                json!({"scope":"stored_local_version_feedback","feedback":record.map(feedback_value)})
+            }),
         _ => unreachable!("clap grammar"),
     };
     match result {
@@ -111,7 +187,16 @@ pub(super) fn query_response(
     }
 }
 
-// Transport enums are deliberately local: no domain identity, license or contract policy.
+fn storage_outcome(failure: &StorageError) -> (i32, &'static str) {
+    match failure {
+        StorageError::Library(e) => library_outcome(e),
+        StorageError::Invalid(_) => (2, "INVALID_INPUT"),
+        StorageError::MissingPreviewSource => (3, "INPUT_INCOMPLETE"),
+        StorageError::Corrupt => (1, "FAIL"),
+        StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
+    }
+}
+
 struct PresenceInput(Presence);
 impl<'de> serde::Deserialize<'de> for PresenceInput {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -240,7 +325,6 @@ impl<'de> serde::Deserialize<'de> for ReferenceObject {
         deserializer.deserialize_map(ReferenceVisitor)
     }
 }
-/// One owning mutation; success acknowledges the submitted typed declaration without readback.
 pub(super) fn write_response(
     wire: &str,
     call_id: Option<&String>,
@@ -254,17 +338,35 @@ pub(super) fn write_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let mut app = match Application::open_existing(db) {
         Ok(app) => app,
-        Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e)]),
-                Value::Null,
-            );
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
+    let storage_error = |e: StorageError| {
+        let (code, status) = storage_outcome(&e);
+        finish(
+            code,
+            status,
+            json!([error("catalog", status, e)]),
+            Value::Null,
+        )
+    };
+    if matches!(action, "materialize-export" | "evict-export") {
+        let id = args.get_one::<String>("version-id").expect("required");
+        let result = if action == "materialize-export" {
+            app.materialize_export(id).map(
+                |path| json!({"scope":"local_version_export","version_id":id,"relative_path":path}),
+            )
+        } else {
+            app.evict_export(id).map(
+                |removed| json!({"scope":"local_version_export","version_id":id,"removed":removed}),
+            )
+        };
+        return match result {
+            Ok(value) => finish(0, "PASS", json!([]), value),
+            Err(e) => storage_error(e),
+        };
+    }
     if action == "commit-object" {
         let path = args.get_one::<PathBuf>("version").expect("required");
         let VersionObject(version) = match read_json(path, limits, "version") {
@@ -272,7 +374,6 @@ pub(super) fn write_response(
             Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
         };
         let source = args.get_one::<PathBuf>("file").expect("required");
-        // Admission is for private local files; path checks cannot prevent replacement races.
         let open = || -> std::io::Result<std::fs::File> {
             if !std::fs::metadata(source)?.is_file() {
                 return Err(std::io::Error::other("--file must name a regular file"));
@@ -302,21 +403,7 @@ pub(super) fn write_response(
                 json!([]),
                 json!({"scope":"committed_local_managed_object","version_id":version.version_id,"content_hash":stored.content_hash,"byte_length":stored.byte_length}),
             ),
-            Err(e) => {
-                use assetweft_core::storage::StorageError;
-                let (code, status) = match &e {
-                    StorageError::Library(e) => library_outcome(e),
-                    StorageError::Invalid(_) => (2, "INVALID_INPUT"),
-                    StorageError::Corrupt => (1, "FAIL"),
-                    StorageError::Busy | StorageError::Io(_) => (6, "INTERNAL"),
-                };
-                finish(
-                    code,
-                    status,
-                    json!([error("catalog", status, e)]),
-                    Value::Null,
-                )
-            }
+            Err(e) => storage_error(e),
         };
     }
     let result = match action {
@@ -338,6 +425,24 @@ pub(super) fn write_response(
             };
             app.add_component_reference(&reference).map(|()| {
                 json!({"scope":"registered_local_exact_component_reference","reference":reference_value(reference)})
+            })
+        }
+        "feedback-add" => {
+            let required = |name| args.get_one::<String>(name).expect("required");
+            let decision = match required("decision").as_str() {
+                "ACCEPT" => Decision::Accept,
+                "REJECT" => Decision::Reject,
+                _ => unreachable!("clap grammar"),
+            };
+            app.append_feedback(&Feedback {
+                feedback_id: required("feedback-id").clone(),
+                asset_id: required("asset-id").clone(),
+                version_id: required("version-id").clone(),
+                decision,
+                reason: args.get_one::<String>("reason").cloned(),
+            })
+            .map(|record| {
+                json!({"scope":"appended_local_version_feedback","feedback":feedback_value(record)})
             })
         }
         _ => unreachable!("clap grammar"),

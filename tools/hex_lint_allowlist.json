@@ -1,0 +1,130 @@
+[
+  {
+    "rule": "COMMENT-BANNER",
+    "file": ".github/workflows/native-recovery.yml",
+    "reason": "遗留文件头模板",
+    "sha256": "5537a72e712d8e2746fc1a09992e8d5d0f1b8ec0e1d785b79920f1186fe78aac",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "COMMENT-BANNER",
+    "file": ".github/workflows/native-recovery.yml",
+    "reason": "遗留文件头模板",
+    "sha256": "c072ec016d505c779374d0edb6558951c5806083ed585e9ccee5ea8f83665776",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "COMMENT-BANNER",
+    "file": ".github/workflows/native-recovery.yml",
+    "reason": "遗留文件头模板",
+    "sha256": "53575812567b564f8d77408b9d4c981811dae7abd910c86069b39462eaf5b207",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "COMMENT-BANNER",
+    "file": ".github/workflows/native-recovery.yml",
+    "reason": "遗留文件头模板",
+    "sha256": "92665f0ccf3bfce6377e8d5e307fb73ab3b51b59bc0c3e001f258422b98b3a27",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "COMMENT-BANNER",
+    "file": "tools/c1-stdout-contract.sh",
+    "reason": "遗留文件头模板",
+    "sha256": "12d2340c2b0fc9c44251a84f9f49f060f4cc3d5ecf3bc439c7e6858a427119e3",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "COMMENT-BANNER",
+    "file": "tools/c1-stdout-contract.sh",
+    "reason": "遗留文件头模板",
+    "sha256": "c3d24a902969386e69f6afb4b8d507cc557ad41af3aad7f0c9fdda9be0f0f8dc",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "COMMENT-BANNER",
+    "file": "tools/c1-stdout-contract.sh",
+    "reason": "遗留文件头模板",
+    "sha256": "7d2e255fd3bb02a222bf15453725a0457e3dddf4434f2925bf70290434ccd4a0",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "COMMENT-BANNER",
+    "file": "tools/c1-stdout-contract.sh",
+    "reason": "遗留文件头模板",
+    "sha256": "82ce77570e0897fca815dddd0d9e36afdcf30a5d4ab7c1df69566c4eb64145d1",
+    "class": "X",
+    "basis": "Wave 0 G1 §1 edit whitelist reserves this existing header for a separate scoped cleanup."
+  },
+  {
+    "rule": "HEX-CONTEXT",
+    "file": "crates/assetweft-core/src/execution/consumption_adapter.rs",
+    "reason": "execution 到 consumption 的 consumption::application 未列入契约边",
+    "sha256": "0e40979898317f9a04047852327d0d0bca21cfcbd2afb26a60b203a294ccf83d",
+    "class": "X",
+    "basis": "execution/CONTRACT.md: named assembly adapter implements Execution's BudgetOnce through Consumption's concrete ledger."
+  },
+  {
+    "rule": "HEX-CONTEXT",
+    "file": "crates/assetweft-core/src/execution/consumption_adapter.rs",
+    "reason": "execution 到 consumption 的 consumption::sqlite::SqliteBudgetLedger 未列入契约边",
+    "sha256": "0e40979898317f9a04047852327d0d0bca21cfcbd2afb26a60b203a294ccf83d",
+    "class": "X",
+    "basis": "execution/CONTRACT.md: named assembly adapter implements Execution's BudgetOnce through Consumption's concrete ledger."
+  },
+  {
+    "rule": "HEX-CONTEXT",
+    "file": "crates/assetweft-core/src/execution/consumption_adapter.rs",
+    "reason": "execution 到 consumption 的 consumption::application::reserve 未列入契约边",
+    "sha256": "059bfedac13dbefaad316963d0e91d23584ffd1007c3c5d4d7e282b5068df1aa",
+    "class": "X",
+    "basis": "execution/CONTRACT.md: named assembly adapter implements Execution's BudgetOnce through Consumption's concrete ledger."
+  },
+  {
+    "rule": "HEX-CONTEXT",
+    "file": "crates/assetweft-core/src/execution/consumption_adapter.rs",
+    "reason": "execution 到 consumption 的 consumption::application::submit_test_fixture 未列入契约边",
+    "sha256": "cbe1f99094dd3af536f3399a07afccc7447119bfcd3b2367d822d7284c0741ae",
+    "class": "X",
+    "basis": "execution/CONTRACT.md: named assembly adapter implements Execution's BudgetOnce through Consumption's concrete ledger."
+  },
+  {
+    "rule": "HEX-LAYER",
+    "file": "crates/assetweft-core/src/production/rigged_simple.rs",
+    "reason": "domain 层依赖 assurance::rig_blender::RIGGED_SIMPLE",
+    "sha256": "cc2d7e908467fbd1ddb1753e7477dbbce4c44f7e568148d599a34259e8d6669f",
+    "class": "X",
+    "basis": "production/CONTRACT.md: pinned Cesium original and derivative identities for the structural motion edit."
+  },
+  {
+    "rule": "HEX-LAYER",
+    "file": "crates/assetweft-core/src/production/rigged_simple.rs",
+    "reason": "domain 层依赖 motion::components::IDLE_STRIKE",
+    "sha256": "6bff9341bee8b37c985f388834a34ab06bbf570c6350f3cb54d63527e83fd542",
+    "class": "X",
+    "basis": "production/CONTRACT.md: pinned Cesium original and derivative identities for the structural motion edit."
+  },
+  {
+    "rule": "HEX-LAYER",
+    "file": "crates/assetweft-core/src/production/staging_application.rs",
+    "reason": "application 层依赖 assurance::rig_blender::RIGGED_SIMPLE",
+    "sha256": "4380dbd736fe8991587e0d9fe17198c18722830224fbbfe0073c047e76d06064",
+    "class": "X",
+    "basis": "production/CONTRACT.md: pinned Cesium original and derivative identities for the structural motion edit."
+  },
+  {
+    "rule": "HEX-LAYER",
+    "file": "crates/assetweft-core/src/production/staging_application.rs",
+    "reason": "application 层依赖 motion::components::IDLE_STRIKE",
+    "sha256": "ec8122a64c074933f35e35b9642fdf0e780f61fa162ff7c7cd3ad5152161f3a2",
+    "class": "X",
+    "basis": "production/CONTRACT.md: pinned Cesium original and derivative identities for the structural motion edit."
+  }
+]

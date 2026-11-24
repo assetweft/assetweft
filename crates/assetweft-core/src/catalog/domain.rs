@@ -1,12 +1,8 @@
-//! Responsibility: Catalog immutable metadata, exact references and fixture head values and their unchanged serde representation.
-//! Dependencies: serde and std only; callers: candidate compatibility facade and Catalog SQLite adapter.
-//! Invariants: fixture-only contract; no Production or persistence dependency.
 use serde::{Deserialize, Serialize};
 
-/// Predeclared fixture-only contract. Required quality items cannot be satisfied here.
+/// Predeclared local structural contract. Required quality items cannot be satisfied here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FixtureContract {
-    /// Must be TEST_FIXTURE_GLB_STRUCTURE_V1; never a production acceptance contract.
     pub contract_id: String,
     pub max_component_bytes: u64,
     pub required_quality: Vec<String>,
@@ -34,9 +30,7 @@ pub(crate) enum MetadataError {
 /// File availability known to this metadata-only repository. No ready state is issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
-    /// Presence has not been checked.
     Unknown,
-    /// The referenced file is missing.
     Missing,
 }
 impl Presence {
@@ -110,6 +104,21 @@ pub struct AssetVersion {
     pub presence: Presence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct VersionSearchMatch {
+    pub asset_id: String,
+    pub version_id: String,
+    pub source_format: String,
+}
+
+/// First 100 matching versions in asset ID, then version ID order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionSearchResult {
+    pub matches: Vec<VersionSearchMatch>,
+    /// More matches exist. Use a more specific query to narrow the result.
+    pub truncated: bool,
+}
+
 /// An explicit reference to a component version, never an implicit latest pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentReference {
@@ -161,7 +170,6 @@ pub(crate) fn validate_reference(r: &ComponentReference) -> Result<(), MetadataE
     validate_version_id(&r.component_version_id)
 }
 
-// Exact-version feedback values and pure input policy.
 pub const MAX_REASON_BYTES: usize = 2048;
 pub const MAX_HISTORY_LIMIT: u16 = 100;
 
@@ -202,15 +210,13 @@ pub struct HistoryQuery<'a> {
     pub before_sequence: Option<i64>,
     pub limit: u16,
 }
-fn identity(id: &str) -> bool {
-    !id.trim().is_empty()
-        && id.len() <= 256
-        && !id.contains(['/', '\\', '\0'])
-        && id != "."
-        && id != ".."
-}
 pub(crate) fn validate_feedback(f: &Feedback) -> Result<(), MetadataError> {
-    if !identity(&f.feedback_id) || !identity(&f.asset_id) || !identity(&f.version_id) {
+    if !valid_id(&f.feedback_id)
+        || f.feedback_id.trim().is_empty()
+        || f.feedback_id.len() > 256
+        || !valid_id(&f.asset_id)
+        || !valid_id(&f.version_id)
+    {
         return Err(MetadataError::InvalidInput("feedback identity"));
     }
     if f.reason
@@ -222,7 +228,7 @@ pub(crate) fn validate_feedback(f: &Feedback) -> Result<(), MetadataError> {
     Ok(())
 }
 pub(crate) fn validate_history(q: HistoryQuery<'_>) -> Result<(), MetadataError> {
-    if !identity(q.asset_id) || q.version_id.is_some_and(|id| !identity(id)) {
+    if !valid_id(q.asset_id) || q.version_id.is_some_and(|id| !valid_id(id)) {
         return Err(MetadataError::InvalidInput("feedback query identity"));
     }
     if q.limit == 0 || q.limit > MAX_HISTORY_LIMIT || q.before_sequence.is_some_and(|s| s <= 0) {

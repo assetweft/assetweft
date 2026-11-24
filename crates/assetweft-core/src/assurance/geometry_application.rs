@@ -1,8 +1,3 @@
-//! Responsibility: geometry bounded inspection use case.
-//! Dependencies: domain and purpose capabilities.
-//! Callers: legacy geometry composition.
-//! Invariants: read then format guard then parse then report.
-
 use super::{
     application,
     domain::{CheckStatus, RoleRequirement, SourceClass, SourceDeclaration, ValidationLimits},

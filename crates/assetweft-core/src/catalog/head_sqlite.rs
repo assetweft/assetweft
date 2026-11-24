@@ -1,6 +1,3 @@
-//! Responsibility: concrete exact head SQL and stored-contract decoding.
-//! Dependencies: rusqlite and library schema infrastructure; callers: query composition.
-//! Invariants: original SQL, schema and decode order; no write or transaction lifecycle.
 use super::{
     domain::{Current, MetadataError},
     head_ports::HeadQuery,

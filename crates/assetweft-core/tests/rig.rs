@@ -1,6 +1,3 @@
-//! Responsibility: contract/defect tests for the partial bound-skin inspector.
-//! Dependencies: public rig and validation APIs, serde_json for TEST_FIXTURE JSON.
-//! Callers: cargo test and C1. Invariant: synthetic bytes are neither F0 nor AI assets.
 use assetweft_core::{
     rig::{RigReport, inspect_bytes, inspect_file},
     validation::{CheckStatus, ValidationLimits},
@@ -346,7 +343,6 @@ fn binding_selects_each_nodes_actual_skin() {
     assert!(has(&r, "rig.weights", CheckStatus::Pass, "nodes[3].skin=1"));
 }
 
-// TEST_FIXTURE layout relocation only; values stay known and bounds stay valid.
 fn relocate_accessor(
     j: &mut Value,
     b: &mut Vec<u8>,
@@ -374,7 +370,7 @@ fn alignment_float_vertex_absolute_and_relative() {
     for (view, relative, stride, valid) in [
         (101, 0, None, false),
         (100, 2, None, false),
-        (102, 2, None, false), // aligned absolute does not excuse relative offset
+        (102, 2, None, false),
         (100, 4, Some(20), true),
         (100, 0, Some(18), false),
     ] {
@@ -439,8 +435,8 @@ fn alignment_joint_attributes_use_vertex_rules_too() {
         (5121, 4, 100, 1, None, false),
         (5123, 8, 101, 0, None, false),
         (5123, 8, 100, 0, Some(10), false),
-        (5121, 4, 101, 4, Some(8), true), // absolute component alignment is 1
-        (5123, 8, 102, 4, Some(12), true), // absolute component alignment is 2
+        (5121, 4, 101, 4, Some(8), true),
+        (5123, 8, 102, 4, Some(12), true),
     ] {
         let (mut j, mut b) = fixture();
         j["accessors"][1]["componentType"] = json!(kind);
@@ -468,8 +464,8 @@ fn alignment_ibm_uses_float_component_rules_without_mat4_alignment() {
         (101, 0, None, false),
         (100, 2, None, false),
         (102, 2, None, false),
-        (100, 4, None, true), // legal FLOAT alignment without fabricated 16-byte alignment
-        (100, 4, Some(64), false), // IBM views must not declare byteStride
+        (100, 4, None, true),
+        (100, 4, Some(64), false),
         (100, 4, Some(68), false),
     ] {
         let (mut j, mut b) = fixture();

@@ -1,14 +1,10 @@
-//! Responsibility: concrete SQLite candidate freeze/read and bounded managed-byte verification.
-//! Dependencies: Catalog concrete reads, CAS lease, rusqlite and Assurance checks; callers: Application, acceptance and initialization adapters.
-//! Invariants: encoding before lease, reference recheck under lease before IMMEDIATE, unchanged SQL/parameters, no replay;
-//! a declared contract byte bound rejects the actual managed regular file before CAS hashing or Assurance validation.
 use super::{
     domain::{AcceptanceReport, Candidate, ComponentEvidence, ComponentSnapshot},
     staging_application::FrozenProposal,
     staging_domain::check_contract,
     staging_ports::{Owners, Staging, StagingError},
 };
-use crate::catalog::domain::FixtureContract;
+use crate::catalog::domain::{AssetVersion, FixtureContract};
 use crate::{
     library::{self, LibraryError},
     storage,
@@ -18,8 +14,7 @@ use std::path::Path;
 fn invalid(s: &'static str) -> LibraryError {
     LibraryError::InvalidInput(s)
 }
-/// Existing ceiling for managed staging when no fixture contract is declared.
-const MANAGED_BYTE_CEILING: u64 = 16 * 1024 * 1024;
+const MANAGED_BYTE_CEILING: u64 = super::rigged_simple::BYTE_LIMIT;
 pub(crate) struct SqliteStaging<'a> {
     pub conn: &'a mut Connection,
     pub root: &'a Path,
@@ -48,15 +43,147 @@ impl Staging for SqliteStaging<'_> {
         freeze(self.conn, self.root, proposal.into_candidate()).map_err(Into::into)
     }
 }
+impl super::staging_ports::RiggedSimpleStaging for SqliteStaging<'_> {
+    fn rigged_simple_snapshot(
+        &mut self,
+        owner: &str,
+        expected_sha256: &str,
+    ) -> Result<Vec<ComponentSnapshot>, StagingError> {
+        rigged_simple_parts(self.conn, self.root, owner, expected_sha256).map(|owner| owner.parts)
+    }
+}
+struct RiggedSimpleParts {
+    metadata: crate::library::AssetVersion,
+    parts: Vec<ComponentSnapshot>,
+    bytes: Vec<u8>,
+}
+
+fn rigged_simple_parts(
+    conn: &mut Connection,
+    root: &Path,
+    owner: &str,
+    expected_sha256: &str,
+) -> Result<RiggedSimpleParts, StagingError> {
+    use crate::motion::digest;
+    use crate::{
+        assurance::{ValidationLimits, read_bounded},
+        motion::components::rigged_simple_components,
+    };
+    let metadata = crate::catalog::sqlite_metadata::asset_version(conn, owner)?
+        .ok_or(StagingError::InvalidInput("owner version"))?;
+    if metadata.content_hash != expected_sha256
+        || metadata.source_format != "GLB"
+        || metadata.license_id != "CC-BY-4.0"
+    {
+        return Err(StagingError::InvalidInput("Rigged Simple owner profile"));
+    }
+    let object = measured(conn, root, owner)?;
+    let bytes = read_bounded(
+        &root.join("objects").join(&object.content_hash),
+        ValidationLimits {
+            max_bytes: object.byte_length,
+        },
+    )
+    .map_err(|e| StagingError::Io(e.to_string()))?;
+    if digest(&bytes) != expected_sha256 {
+        return Err(StagingError::InvalidInput("owner byte drift"));
+    }
+    let mut parts = rigged_simple_components(&bytes).map_err(StagingError::InvalidInput)?;
+    let refs = crate::catalog::sqlite_metadata::component_references(conn, owner)?;
+    let mut snapshot = Vec::new();
+    for r in refs {
+        super::staging_domain::component_identity(
+            &snapshot,
+            r.role.as_str(),
+            &r.component_version_id,
+        )?;
+        let index = parts
+            .iter()
+            .position(|(role, _)| *role == r.role)
+            .ok_or(StagingError::InvalidInput("Rigged Simple component roles"))?;
+        let (_, expected) = parts.swap_remove(index);
+        let component =
+            crate::catalog::sqlite_metadata::asset_version(conn, &r.component_version_id)?
+                .ok_or(StagingError::InvalidInput("component version"))?;
+        if component.source == "TEST_FIXTURE"
+            || component.license_id != "CC-BY-4.0"
+            || component.source_format != "JSON"
+            || component.content_hash != digest(&expected)
+        {
+            return Err(StagingError::InvalidInput(
+                "Rigged Simple component profile",
+            ));
+        }
+        let measured = measured(conn, root, &r.component_version_id)?;
+        snapshot.push(ComponentSnapshot {
+            role: r.role.as_str().into(),
+            version: r.component_version_id,
+            measured_sha256: measured.content_hash,
+        });
+    }
+    if !parts.is_empty() {
+        return Err(StagingError::InvalidInput("Rigged Simple component roles"));
+    }
+    Ok(RiggedSimpleParts {
+        metadata,
+        parts: snapshot,
+        bytes,
+    })
+}
+
+pub(crate) fn inspect_rigged_owner(
+    conn: &mut Connection,
+    root: &Path,
+    version: &str,
+    pin: &str,
+) -> Result<super::rigged_simple::CheckedOwner, StagingError> {
+    use crate::assurance::{RoleRequirement, SourceClass, SourceDeclaration, checks};
+    let owner = rigged_simple_parts(conn, root, version, pin)?;
+    let base = pin == crate::assurance::rig_blender::RIGGED_SIMPLE;
+    if (base && owner.metadata.source == "TEST_FIXTURE")
+        || (!base && owner.metadata.source != "PROCEDURAL")
+    {
+        return Err(StagingError::InvalidInput(
+            "Rigged Simple owner source declaration",
+        ));
+    }
+    let requirement = RoleRequirement::AnimatedCharacter;
+    let checked = checks::validate_bytes(
+        &owner.bytes,
+        requirement,
+        SourceDeclaration::declared(
+            SourceClass::parse(&owner.metadata.source).unwrap_or(SourceClass::Unknown),
+        ),
+    );
+    let evidence = ComponentEvidence {
+        role: if base {
+            "base_owner"
+        } else {
+            "candidate_owner"
+        }
+        .into(),
+        version_id: version.into(),
+        sha256: checked.file_sha256,
+        checker_version: checked.checker_version.into(),
+        requirement: requirement.as_str().into(),
+        format_status: checked.format_status.as_str().into(),
+        role_status: checked.role.status.as_str().into(),
+        not_run: checked.not_run.iter().map(|s| (*s).into()).collect(),
+    };
+    Ok(super::rigged_simple::CheckedOwner {
+        asset_id: owner.metadata.asset_id,
+        parts: owner.parts,
+        structure: evidence,
+    })
+}
+
 fn freeze(
     conn: &mut Connection,
     root: &Path,
     candidate: Candidate,
 ) -> Result<Candidate, LibraryError> {
     let encoded = serde_json::to_string(&candidate).map_err(|_| invalid("descriptor encoding"))?;
-    // Existing versions retain their objects. Lease before SQLite prevents reference/GC races.
     let _guard = guard(root)?;
-    // Application's reference insertion uses this same lease. Recheck after measurement.
     for (owner, measured) in [
         (&candidate.base_version, &candidate.base),
         (&candidate.candidate_version, &candidate.proposed),
@@ -103,9 +230,6 @@ pub(crate) fn read(conn: &Connection, id: &str) -> Result<Option<Candidate>, Lib
         .map(|s| serde_json::from_str(&s).map_err(|_| invalid("stored descriptor")))
         .transpose()
 }
-/// Measure an owner's components. A declared bound is checked against the actual
-/// regular file before `measured` opens the CAS identity path, so an over-limit file
-/// is never hashed or structure-validated first. `None` keeps the staging ceiling.
 pub(crate) fn snapshot(
     conn: &mut Connection,
     root: &Path,
@@ -140,10 +264,6 @@ pub(crate) fn snapshot(
     Ok(result)
 }
 
-// Retry only lease acquisition/read-only verification before any write transaction.
-// A short fixed attempt count starved a concurrent App under fsync contention.
-// A monotonic two-second deadline accommodates a brief holder and still returns Busy
-// for an abandoned lease. Never replay a conditional UPDATE or its receipt transaction.
 fn wait_storage<T>(
     mut operation: impl FnMut() -> Result<T, LibraryError>,
 ) -> Result<T, LibraryError> {
@@ -161,20 +281,47 @@ fn wait_storage<T>(
 pub(crate) fn guard(root: &Path) -> Result<storage::Guard, LibraryError> {
     wait_storage(|| storage::reference_guard(root))
 }
-pub(crate) fn measured(
+fn measured(
     conn: &mut Connection,
     root: &Path,
     id: &str,
 ) -> Result<storage::StoredObject, LibraryError> {
     let metadata = crate::catalog::sqlite_metadata::asset_version(conn, id)?
         .ok_or_else(|| invalid("managed metadata"))?;
-    crate::catalog::domain::validate_version(&metadata).map_err(LibraryError::from)?;
+    measure_version(conn, root, &metadata, None)
+}
+
+pub(crate) fn remeasure_base_component(
+    conn: &mut Connection,
+    root: &Path,
+    snapshot: &ComponentSnapshot,
+    max_component_bytes: u64,
+) -> Result<(), LibraryError> {
+    let metadata = crate::catalog::sqlite_metadata::asset_version(conn, &snapshot.version)?
+        .ok_or_else(|| invalid("managed metadata"))?;
+    if metadata.content_hash != snapshot.measured_sha256 {
+        return Err(invalid("base byte drift"));
+    }
+    let object = measure_version(conn, root, &metadata, Some(max_component_bytes))?;
+    if object.content_hash != snapshot.measured_sha256 {
+        return Err(invalid("base byte drift"));
+    }
+    Ok(())
+}
+
+fn measure_version(
+    conn: &mut Connection,
+    root: &Path,
+    metadata: &AssetVersion,
+    max_component_bytes: Option<u64>,
+) -> Result<storage::StoredObject, LibraryError> {
+    crate::catalog::domain::validate_version(metadata).map_err(LibraryError::from)?;
     let path = root.join("objects").join(&metadata.content_hash);
-    bounded_regular(&path, None)?;
+    bounded_regular(&path, max_component_bytes)?;
     wait_storage(|| {
         match crate::catalog::objects_application::managed(
             &mut crate::catalog::objects_sqlite::SqliteObjects::new(conn, root, std::io::empty()),
-            id,
+            &metadata.version_id,
         ) {
             Err(storage::StorageError::Busy) => {
                 Err(LibraryError::Busy("storage lease deadline".into()))
@@ -185,12 +332,7 @@ pub(crate) fn measured(
         }
     })
 }
-/// Size/type gate for the actual managed file. The global ceiling and diagnostics are
-/// unchanged; a declared contract bound adds only the earlier, cheaper rejection.
-pub(crate) fn bounded_regular(
-    path: &Path,
-    max_component_bytes: Option<u64>,
-) -> Result<(), LibraryError> {
+fn bounded_regular(path: &Path, max_component_bytes: Option<u64>) -> Result<(), LibraryError> {
     let info = std::fs::symlink_metadata(path).map_err(|e| LibraryError::Io(e.to_string()))?;
     if !info.file_type().is_file() || info.len() > MANAGED_BYTE_CEILING {
         return Err(invalid("bounded managed regular file"));
@@ -238,7 +380,6 @@ pub(crate) fn validate_components(
         ],
     };
     for s in snapshots {
-        // The mature checker has no standalone material/audio/VFX role contract.
         let role = match s.role.as_str() {
             "mesh" => RoleRequirement::StaticMesh,
             "rig" => RoleRequirement::RiggedCharacter,
@@ -250,7 +391,6 @@ pub(crate) fn validate_components(
                 continue;
             }
         };
-        // Reject the actual file on its declared bound before CAS hashing/validation.
         let metadata = crate::catalog::sqlite_metadata::asset_version(conn, &s.version)?
             .ok_or_else(|| invalid("component version"))?;
         bounded_regular(
@@ -270,8 +410,6 @@ pub(crate) fn validate_components(
                 .push(format!("UNSUPPORTED_SOURCE_OR_FORMAT:{}", s.role));
             continue;
         }
-        // CAS verification supplies a safe hash/path; bounded validator re-reads and hashes
-        // the actual file. No SQL transaction spans parsing, no external URI is resolved.
         let checked = checks::validate_file(
             &root.join("objects").join(&object.content_hash),
             role,

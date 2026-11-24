@@ -1,6 +1,3 @@
-//! Responsibility: SQLite append-only exact-version feedback persistence.
-//! Dependencies: Catalog Feedback capability, rusqlite and existing schema guard.
-//! Callers: Application composition; invariant: checked transaction and frozen triggers decide binding atomically.
 use super::{
     domain::{Decision, Feedback, FeedbackRecord, HistoryQuery, MetadataError},
     ports::Feedback as FeedbackPort,

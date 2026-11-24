@@ -1,13 +1,9 @@
-//! Responsibility: acceptance ordering and policy, independent of persistence.
-//! Dependencies: Production domain/ports and stable Catalog head values.
-//! Callers: compatibility Application; invariant: only this controlled path constructs a commit decision.
 use super::{
     domain::{Acceptance, AcceptanceReport, Candidate, report_passes},
     ports::{AcceptanceError, AcceptanceInputs, CommitAcceptance},
 };
 use crate::catalog::domain::Current;
 
-/// Private fields and no serde/constructor prevent public reports from authorizing acceptance.
 pub(crate) struct VerifiedAcceptance {
     candidate: Candidate,
     decision: Decision,
@@ -27,7 +23,6 @@ impl VerifiedAcceptance {
     pub(crate) fn candidate(&self) -> &Candidate {
         &self.candidate
     }
-    /// Evaluate the current head observed inside the atomic commit boundary.
     pub(crate) fn resolve(self, head: Option<Current>) -> CommitPlan {
         let report = match self.decision {
             Decision::Terminal(result) => return CommitPlan::Terminal(*result),
@@ -59,13 +54,32 @@ pub(crate) fn attempt(
     ports: &mut (impl AcceptanceInputs + CommitAcceptance),
     id: &str,
 ) -> Result<Acceptance, AcceptanceError> {
-    // A durable receipt wins even when subsequent bytes/validation would now fail.
     if let Some(old) = ports.existing_receipt(id)? {
         return Ok(old);
     }
     let candidate = ports
         .candidate(id)?
         .ok_or(AcceptanceError::InvalidInput("missing candidate"))?;
+    let structural_contract = candidate
+        .contract
+        .as_ref()
+        .filter(|c| c.contract_id == super::rigged_simple::STRUCTURE);
+    if let Some(contract) = structural_contract {
+        super::rigged_simple::check_contract(contract)?;
+        let report = super::rigged_simple::check_pair(ports, &candidate)?;
+        let decision = if report_passes(&report, 2) {
+            Decision::Eligible(report)
+        } else {
+            Decision::Terminal(Box::new(Acceptance::Rejected {
+                candidate: candidate.clone(),
+                report,
+            }))
+        };
+        return ports.commit_acceptance(VerifiedAcceptance {
+            candidate,
+            decision,
+        });
+    }
     let pending = match &candidate.contract {
         None => Some("no predeclared GLB structure contract"),
         Some(c) if !c.required_quality.is_empty() => Some("required quality NOT_RUN"),
@@ -125,6 +139,15 @@ mod tests {
         calls: Vec<&'static str>,
         head: Option<Current>,
     }
+    impl crate::production::rigged_simple::InspectOwner for Ports {
+        fn inspect_owner(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::production::rigged_simple::CheckedOwner, AcceptanceError> {
+            panic!("fixture contract reached Rigged Simple validation")
+        }
+    }
     impl AcceptanceInputs for Ports {
         fn existing_receipt(&mut self, _: &str) -> Result<Option<Acceptance>, AcceptanceError> {
             self.calls.push("receipt");
@@ -155,7 +178,6 @@ mod tests {
             }
         }
     }
-    // This substitute proves ordering/policy only, never SQLite atomicity or CAS.
     impl CommitAcceptance for Ports {
         fn commit_acceptance(
             &mut self,

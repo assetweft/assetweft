@@ -1,12 +1,8 @@
-//! Responsibility: proposal/read use cases and sealed internally produced descriptor.
-//! Dependencies: staging domain and semantic capability only; callers: Application and the Production acceptance adapter.
-//! Invariants: input policy precedes IO, exact owner checks precede measurement, lock policy precedes freeze, a supplied id may only name its own descriptor.
 use super::{
     domain::Candidate,
     staging_domain::{self, Proposal},
     staging_ports::{Staging, StagingError},
 };
-/// Only this module produces a descriptor eligible for persistence. This is not acceptance.
 pub(crate) struct FrozenProposal {
     candidate: Candidate,
 }
@@ -16,7 +12,7 @@ impl FrozenProposal {
     }
 }
 pub(crate) fn propose(port: &mut impl Staging, p: &Proposal) -> Result<Candidate, StagingError> {
-    let editable = staging_domain::editable(p)?;
+    let editable = staging_domain::editable(p, staging_domain::check_contract)?;
     let max_component_bytes = p.contract.as_ref().map(|c| c.max_component_bytes);
     let owners = port.owners(&p.base_version, &p.candidate_version)?;
     if owners.base_source != "TEST_FIXTURE" || owners.proposed_source != "TEST_FIXTURE" {
@@ -29,7 +25,64 @@ pub(crate) fn propose(port: &mut impl Staging, p: &Proposal) -> Result<Candidate
     }
     let base = port.snapshot(&p.base_version, max_component_bytes)?;
     let proposed = port.snapshot(&p.candidate_version, max_component_bytes)?;
-    let candidate = staging_domain::descriptor(p, editable, base, proposed)?;
+    let candidate = staging_domain::descriptor(
+        p,
+        editable,
+        base,
+        proposed,
+        "TEST_FIXTURE",
+        "MANAGED_COMPONENT_BYTE_STAGING_ONLY",
+    )?;
+    port.freeze(FrozenProposal { candidate })
+}
+pub(crate) fn propose_rigged_simple(
+    port: &mut impl super::staging_ports::RiggedSimpleStaging,
+    p: &Proposal,
+) -> Result<Candidate, StagingError> {
+    let structural = p
+        .contract
+        .as_ref()
+        .is_some_and(|c| c.contract_id == super::rigged_simple::STRUCTURE);
+    let editable = staging_domain::editable(
+        p,
+        if structural {
+            super::rigged_simple::check_contract
+        } else {
+            staging_domain::check_contract
+        },
+    )?;
+    if (!structural && p.contract.is_some()) || editable != ["motion"] {
+        return Err(StagingError::InvalidInput(
+            "Rigged Simple motion-only byte proposal without fixture contract",
+        ));
+    }
+    let owners = port.owners(&p.base_version, &p.candidate_version)?;
+    if owners.base_asset != owners.proposed_asset {
+        return Err(StagingError::InvalidInput("candidate asset"));
+    }
+    if owners.base_source == "TEST_FIXTURE" || owners.proposed_source != "PROCEDURAL" {
+        return Err(StagingError::InvalidInput(
+            "Rigged Simple owner source declaration",
+        ));
+    }
+    let base = port.rigged_simple_snapshot(
+        &p.base_version,
+        crate::assurance::rig_blender::RIGGED_SIMPLE,
+    )?;
+    let proposed =
+        port.rigged_simple_snapshot(&p.candidate_version, crate::motion::components::IDLE_STRIKE)?;
+    let candidate = staging_domain::descriptor(
+        p,
+        editable,
+        base,
+        proposed,
+        &owners.proposed_source,
+        if structural {
+            super::rigged_simple::STRUCTURE
+        } else {
+            "RIGGED_SIMPLE_MOTION_BYTE_STAGING_V1"
+        },
+    )?;
     port.freeze(FrozenProposal { candidate })
 }
 pub(crate) fn read(
@@ -40,9 +93,6 @@ pub(crate) fn read(
         return Err(StagingError::InvalidInput("candidate id"));
     }
     match port.candidate(id)? {
-        // The descriptor is the only identity later used for measurement, Catalog
-        // advance and receipt rows. A restored row whose embedded id differs from its
-        // lookup key cannot be trusted, so fail before any measurement, lease or write.
         Some(candidate) if candidate.id != id => {
             Err(StagingError::InvalidInput("candidate identity"))
         }

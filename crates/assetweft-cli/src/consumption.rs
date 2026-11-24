@@ -1,55 +1,81 @@
-//! Responsibility: Consumption CLI incoming adapter for local allowance and call-intent operations.
-//! Dependencies: shared transport, existing Application and public budget value types.
-//! Callers: main command dispatch; strict wire DTOs and map visitors are private here.
-//! Invariants: exact object/duplicate/type/integer admission and one facade operation; core alone owns ledger policy, with no SQL, payment or replay here.
-
-use crate::protocol::{envelope, error, existing_database, library_outcome, read_json};
+use crate::protocol::{
+    database_open_error, envelope, error, existing_database, library_outcome, read_json,
+};
 use assetweft_core::{
     application::Application,
     assurance as val,
     budget::{Allowance, Approval, Intent, Request, State, Unit},
 };
 use clap::ArgMatches;
+use serde::{
+    Deserialize,
+    de::{self, IntoDeserializer},
+};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// Wire shape only; Consumption alone owns text, currency, integer and approval policy.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AllowanceInput {
     id: String,
-    unit: UnitInput,
+    #[serde(deserialize_with = "deserialize_unit")]
+    unit: Unit,
     capacity: u64,
+    #[serde(deserialize_with = "deserialize_approval")]
     approval: Approval,
     source: String,
 }
-#[derive(serde::Deserialize)]
-enum UnitInput {
-    Token,
-    Task,
-    Second,
-    CurrencyMinor(CurrencyObject),
+fn deserialize_approval<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Approval, D::Error> {
+    Approval::deserialize(String::deserialize(deserializer)?.into_deserializer())
 }
-impl UnitInput {
-    fn into_unit(self) -> Unit {
-        match self {
-            Self::Token => Unit::Token,
-            Self::Task => Unit::Task,
-            Self::Second => Unit::Second,
-            Self::CurrencyMinor(CurrencyObject(c)) => Unit::CurrencyMinor {
-                currency: c.currency,
-                decimals: c.decimals,
-            },
+
+fn deserialize_unit<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Unit, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct CurrencyUnit {
+        #[serde(rename = "CurrencyMinor")]
+        currency_minor: CurrencyObject,
+    }
+
+    struct UnitVisitor;
+    impl<'de> de::Visitor<'de> for UnitVisitor {
+        type Value = Unit;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Token, Task or Second as a string, or a CurrencyMinor object")
+        }
+
+        fn visit_str<E: de::Error>(self, unit: &str) -> Result<Unit, E> {
+            match unit {
+                "Token" => Ok(Unit::Token),
+                "Task" => Ok(Unit::Task),
+                "Second" => Ok(Unit::Second),
+                _ => Err(E::unknown_variant(unit, &["Token", "Task", "Second"])),
+            }
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Unit, M::Error> {
+            let CurrencyUnit {
+                currency_minor: CurrencyObject(input),
+            } = CurrencyUnit::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(Unit::CurrencyMinor {
+                currency: input.currency,
+                decimals: input.decimals,
+            })
         }
     }
+
+    deserializer.deserialize_any(UnitVisitor)
 }
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CurrencyInput {
     currency: String,
     decimals: u8,
 }
-/// A map-only boundary retains serde's duplicate/missing/type checks and rejects arrays.
 struct CurrencyObject(CurrencyInput);
 impl<'de> serde::Deserialize<'de> for CurrencyObject {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -90,7 +116,7 @@ impl<'de> serde::Deserialize<'de> for AllowanceObject {
                 )?;
                 Ok(AllowanceObject(Allowance {
                     id: input.id,
-                    unit: input.unit.into_unit(),
+                    unit: input.unit,
                     capacity: input.capacity,
                     approval: input.approval,
                     source: input.source,
@@ -106,7 +132,8 @@ struct RequestInput {
     id: String,
     account: String,
     input_fingerprint: String,
-    unit: UnitInput,
+    #[serde(deserialize_with = "deserialize_unit")]
+    unit: Unit,
     quote: Option<u64>,
     reservation: u64,
     source: String,
@@ -131,7 +158,7 @@ impl<'de> serde::Deserialize<'de> for RequestObject {
                     id: input.id,
                     account: input.account,
                     input_fingerprint: input.input_fingerprint,
-                    unit: input.unit.into_unit(),
+                    unit: input.unit,
                     quote: input.quote,
                     reservation: input.reservation,
                     source: input.source,
@@ -155,8 +182,6 @@ fn intent_result(intent: Option<Intent>) -> Value {
     });
     json!({"scope":"local_call_intent","intent":intent})
 }
-/// One facade operation only: no retry, top-up/reset, extra read after write or provider call.
-/// Balance is a local projection, not a filesystem read-only or external fee guarantee.
 pub(super) fn budget_response(
     wire: &str,
     call_id: Option<&String>,
@@ -170,9 +195,15 @@ pub(super) fn budget_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let read_only = action == "receipts";
+    let opened = if read_only {
+        Application::open_read_only(db)
+    } else {
+        Application::open_existing(db)
+    };
+    let mut app = match opened {
         Ok(app) => app,
-        Err(e) => {
+        Err(e) if read_only => {
             return finish(
                 2,
                 "INVALID_INPUT",
@@ -180,6 +211,7 @@ pub(super) fn budget_response(
                 Value::Null,
             );
         }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     let result = match action {
         "approve" => {
@@ -195,7 +227,6 @@ pub(super) fn budget_response(
             })
         }
         "balance" => {
-            // Verbatim, including empty IDs: preserve the actual query's error category.
             let id = args.get_one::<String>("budget-id").expect("required");
             app.budget_balance(id).map(|balance| {
                 json!({
@@ -216,6 +247,11 @@ pub(super) fn budget_response(
         "intent" => {
             let id = args.get_one::<String>("intent-id").expect("required");
             app.call_intent(id).map(intent_result)
+        }
+        "receipts" => {
+            let id = args.get_one::<String>("intent-id").expect("required");
+            app.call_receipts(id)
+                .map(|receipts| json!({"scope":"local_call_receipts","receipts":receipts}))
         }
         "cancel" => {
             let id = args.get_one::<String>("intent-id").expect("required");

@@ -1,8 +1,6 @@
-//! Responsibility: concrete Consumption SQLite ledger, SQL mapping and transaction lifecycle.
-//! Dependencies: rusqlite, library schema and core decisions; called only by concrete composition.
-//! Invariants: original IMMEDIATE, conditional updates, rollback and exact descriptor identities.
 use super::domain::*;
 use crate::library::{LibraryError, require_current};
+use crate::sqlite::begin_immediate_with_retry;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 type Result<T> = std::result::Result<T, LibraryError>;
@@ -82,7 +80,7 @@ pub(crate) fn intent(c: &Connection, id: &str) -> Result<Option<Intent>> {
 }
 pub(crate) fn reserve(c: &mut Connection, r: &Request) -> Result<Intent> {
     let amount = number(r.reservation)?;
-    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = begin_immediate_with_retry(c)?;
     require_current(&tx)?;
     if let Some(old) = intent(&tx, &r.id)? {
         same_request(&old, r)?;
@@ -100,14 +98,14 @@ pub(crate) fn reserve(c: &mut Connection, r: &Request) -> Result<Intent> {
     Ok(result)
 }
 pub(crate) fn claim(c: &mut Connection, id: &str) -> Result<bool> {
-    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = begin_immediate_with_retry(c)?;
     require_current(&tx)?;
     let n=tx.execute("UPDATE aw_budget_intents SET state='ATTEMPTING' WHERE id=?1 AND state='PREPARING' AND cancelled=0",[id])?;
     tx.commit()?;
     Ok(n == 1)
 }
 pub(crate) fn unknown(c: &mut Connection, id: &str) -> Result<()> {
-    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tx = begin_immediate_with_retry(c)?;
     require_current(&tx)?;
     tx.execute(
         "UPDATE aw_budget_intents SET state='UNKNOWN' WHERE id=?1 AND state='ATTEMPTING'",
@@ -120,9 +118,6 @@ pub(crate) fn cancel(c: &mut Connection, id: &str) -> Result<()> {
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_current(&tx)?;
     let i = intent(&tx, id)?.ok_or_else(|| invalid("unknown call"))?;
-    // Claim takes the same write lock: PREPARING proves no callback was submitted.
-    // This is a local release, not a synthesized provider/query receipt. Terminal
-    // states cannot release twice; ATTEMPTING/UNKNOWN still require reconciliation.
     if release_on_cancel(&i) {
         settle(&tx, &i, 0, "RELEASED")?;
     }

@@ -90,6 +90,24 @@ Existing integration tests are unchanged; pure use-case substitutes prove
 validation/delegation only, while focused real-file tests check lease/error
 ordering and facade translations.
 
+`Application::file_availability` reads one exact version and its managed binding,
+checks existing store ownership, and verifies the managed file with the CAS
+length and hash verifier. An immutable version already retains its object against
+cooperating collection, so the query needs no storage lease or filesystem
+creation. The CLI uses a read-only SQLite connection. This observation does not
+update persisted Presence and is valid only for the bytes read during the call.
+
+## Local version discovery
+
+`Application::search_versions` queries a single checked Catalog metadata
+snapshot. It matches a nonempty, case-sensitive literal substring against
+either immutable identifier. It returns one row per matching version with
+`asset_id`, `version_id`, and stored `source_format` as declared. The adapter
+reads at most 101 rows in SQLite BINARY order by asset ID then version ID.
+Only the first 100 are returned and `truncated` signals that the query needs
+refining for more specific results. The CLI opens the existing library read-only.
+The exact returned version ID can be passed to version and file-availability.
+
 ## Exact-version feedback
 
 Catalog domain owns Decision, Feedback, FeedbackRecord, HistoryQuery and their
@@ -170,3 +188,105 @@ current forwards through the same use case. initialize/advance remain concrete
 crate-private transaction APIs consumed by the Production acceptance and
 initialization use cases under their existing lease+transaction boundaries. No
 dependency/schema/SQL migration or new gate.
+
+## Disposable local version exports
+
+`Application::materialize_export(version_id)` returns a library-relative path
+under `exports/`. The corresponding `catalog materialize-export` command reports
+it as `relative_path`. `Application::evict_export(version_id)` and
+`catalog evict-export` report whether the visible copy was removed. Both require
+the exact managed version, matching immutable metadata and a size/SHA-256 verified
+local object, including on retries. The CLI takes only `--db` and `--version-id`
+as command-specific arguments. Neither operation updates SQLite or calls GC.
+
+The canonical database parent owns the store. The adapter checks the opened
+database's native identity and existing owner binding, then holds the common
+storage lease across source verification, ownership checks and publication or
+removal. The fixed export basename hashes the version ID. A private hard link in
+the library root records the producer's new file, keyed by version, database and
+file identity. This pins the inode/file ID even if someone replaces the visible
+file with byte-identical content. Both links must identify the same regular file,
+have exactly two names and contain the verified bytes. Editing the export cannot
+modify CAS. A second version with identical bytes gets a separate export.
+
+Publication stages and verifies an independent temporary copy, persists its
+witness without replacement and hard-links the visible name without replacement.
+Eviction unlinks the verified visible name first and its witness second. With a
+missing visible name, eviction reports absent. Interruption between the two names
+can strand a private witness or storage lock. After lease recovery, materializing
+an absent target creates a fresh witnessed copy. An unmatched visible file is
+preserved. Neither operation scans for orphans or breaks stale locks.
+
+As with managed storage, this protocol operates on a private local library with
+cooperating writers. The filesystem must support hard links and stable native file
+IDs. Storage parents must be real local directories on the library mount. Linux
+requires the kernel to report mount roots through statx and Windows rejects reparse points. Replacing
+paths concurrently outside the lease or forging private receipt state is outside
+that storage contract. Backup and sync do not consume export receipts.
+
+## Exact-version PNG, WAV and GLB previews
+
+`Application::preview(version_id)` and `catalog preview --db DB --version-id ID`
+resolve the immutable version and require its declared source format to be PNG, WAV or GLB
+(case-insensitive). Under the common storage lease, the adapter checks database
+identity, store ownership and the managed binding, then verifies the source file
+against the registered length and SHA-256 on every call. Unknown versions return
+CLI `INVALID_INPUT` (2). A registered managed PNG, WAV or GLB whose file is absent from its
+validated object directory returns `INPUT_INCOMPLETE` (3). Both return null results.
+
+PNG input must be a single static RGBA8 PNG, at most 16 MiB, 4096 pixels on either
+axis and 4,194,304 pixels total. Nearest-neighbour sampling fits it into 128 × 128
+without enlargement and copies all four channels, including straight alpha.
+Untagged samples stay untagged. The encoder preserves explicit gAMA and cHRM
+values and sRGB rendering intent. With sRGB, supplied fallback values must agree
+with the PNG sRGB values. ICC profiles (iCCP), video/HDR metadata (cICP, mDCV,
+cLLI), significant bits (sBIT), suggested backgrounds (bKGD) and Exif (eXIf)
+are rejected. The preview performs no profile conversion.
+
+The PNG `relative_path` is `previews/<sha256 of UTF-8 version ID>.v2.png`.
+The rendition suffix gives color-aware previews their own destination. Legacy
+`<hash>.png` files remain in place. The adapter regenerates from verified CAS
+bytes, reuses a regular local target only on matching length and SHA-256, and
+publishes a new file without replacement. Conflicting entries cause an error.
+Preview writes no source, CAS or database bytes and performs no cache cleanup.
+
+
+WAV input uses the canonical little-endian RIFF/WAVE layout with exactly a
+16-byte `fmt ` chunk followed by one `data` chunk. Only PCM format tag 1,
+signed 16-bit mono or interleaved stereo, 8,000–48,000 Hz and at most 16 MiB
+are accepted. The RIFF and data sizes must exactly cover the file, the byte
+rate and block alignment must match the format, and the data must contain
+at least two whole frames. Extra chunks and extended format headers are outside
+this rendition. Layout and alignment follow Microsoft's [RIFF description](https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff-)
+and [WAVEFORMATEX fields](https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatex).
+
+The audition clip contains the first half of the source frames (rounded down),
+capped at one second. It preserves sample values, channel order and rate and
+rewrites both size fields. The maximum output size is 192,044 bytes.
+`previews/<sha256 of UTF-8 version ID>.v1.wav` uses the same source verification,
+identical-content reuse and no-replacement publication as PNG.
+
+GLB v1 produces a 128 × 128 transparent sRGB PNG of the indexed triangle
+silhouette, filled with the material's opaque base color. It views world XY
+from +Z with +Y up. The referenced vertices' projected bounds are centered
+with a uniform scale of 112 pixels per longest extent. Coverage is tested at
+pixel centers. With a single flat color shared by all triangles, overlap has
+the same color at every depth. Empty coverage (including an edge-on mesh)
+returns an error.
+
+The 64 KiB input must be a glTF 2.0 GLB with JSON and embedded BIN chunks,
+one explicit default scene, one root mesh node using TRS, one mesh, one
+TRIANGLES primitive and one double-sided, nonemissive, opaque, fully rough
+nonmetal material. Only its base color factor is used, converted from linear
+RGB to sRGB. The primitive contains only FLOAT VEC3 POSITION and unsigned
+16-bit indices, each tightly packed in its own buffer view in the same BIN.
+Counts are capped at 768 each (256 triangles). Declared extrema must match
+the decoded positions. Hierarchies, matrix nodes, other attributes, sparse
+accessors, textures, external buffers, morphs, skins, animation, cameras and
+extensions are outside this rendition. No external resource is opened.
+Coordinate, accessor, triangle and color semantics follow the
+[Khronos glTF 2.0.1 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).
+
+The CLI returns the PNG output scope `local_version_png_preview` and
+`previews/<sha256 of UTF-8 version ID>.glb-v1.png`. Source verification,
+identical-content reuse and conflict handling follow the common preview contract.

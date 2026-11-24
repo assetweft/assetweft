@@ -1,6 +1,3 @@
-//! Responsibility: fixture bootstrap policy/orchestration and acceptance receipt read use case.
-//! Dependencies: Production policy/values and own semantic ports; callers: Application and the Production acceptance adapter.
-//! Invariants: identity→contract→quality→owner→snapshot→real validation→sealed commit; no IO types.
 use super::{
     domain::{Acceptance, ComponentSnapshot, report_passes},
     initialization_ports::{
@@ -9,8 +6,6 @@ use super::{
     staging_domain::{check_contract, id_ok},
 };
 
-/// Only this use case constructs the proof, after measured snapshot validation.
-/// It is neither cloneable nor deserializable and is consumed by the adapter once.
 pub(crate) struct VerifiedInitialization<'a> {
     asset_id: String,
     version: &'a str,
@@ -31,6 +26,16 @@ pub(crate) fn initialize(
 ) -> Result<Current, InitializationError> {
     if !id_ok(version) {
         return Err(InitializationError::InvalidInput("version identity"));
+    }
+    if contract.contract_id == super::rigged_simple::STRUCTURE {
+        super::rigged_simple::check_contract(contract)?;
+        let base = super::rigged_simple::check_base(port, version)?;
+        return port.initialize(VerifiedInitialization {
+            asset_id: base.asset_id,
+            version,
+            contract,
+            snapshots: base.parts,
+        });
     }
     check_contract(contract)?;
     if !contract.required_quality.is_empty() {
@@ -117,6 +122,15 @@ mod tests {
             version: "component".into(),
             measured_sha256: "a".repeat(64),
         }]
+    }
+    impl crate::production::rigged_simple::InspectOwner for Port {
+        fn inspect_owner(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::production::rigged_simple::CheckedOwner, InitializationError> {
+            panic!("fixture contract reached Rigged Simple validation")
+        }
     }
     impl Initialization for Port {
         fn base_owner(&mut self, version: &str) -> Result<BaseOwner, InitializationError> {

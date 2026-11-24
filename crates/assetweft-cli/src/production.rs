@@ -1,14 +1,11 @@
-//! Responsibility: Production CLI incoming adapter for plan, workflow claim/explicit outcome recording, explicit fixture initialization/staging/attempts and stored candidate queries.
-//! Dependencies: shared transport, Production specification and existing Application/candidate/workflow values.
-//! Callers: main command dispatch; DTOs and persisted-record projection remain private here.
-//! Invariants: core owns graph/state/lock/acceptance policy and atomic receipts; no execution, SQL, retry or implicit init.
-
-use crate::protocol::{envelope, error, existing_database, library_outcome, read_json, source};
+use crate::protocol::{
+    database_open_error, envelope, error, existing_database, library_outcome, read_json, source,
+};
 use assetweft_core::{
     LockMode,
     application::Application,
     assurance as val,
-    candidate::{Acceptance, FixtureContract, Proposal},
+    candidate::{Acceptance, FixtureContract, Proposal, RIGGED_SIMPLE_MOTION_STRUCTURE_V1},
     library::ComponentRole,
     production::specification as spec,
     workflow::{Outcome, State, Step, StepRecord},
@@ -17,7 +14,6 @@ use clap::ArgMatches;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// Wire shape only; Catalog/Production retain all fixture and limit policy.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContractInput {
@@ -135,7 +131,6 @@ impl<'de> serde::Deserialize<'de> for ProposalObject {
         deserializer.deserialize_map(ProposalVisitor)
     }
 }
-/// One explicit facade mutation; returned values are projected directly without readback/retry.
 pub(super) fn candidate_write_response(
     wire: &str,
     call_id: Option<&String>,
@@ -149,16 +144,9 @@ pub(super) fn candidate_write_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let mut app = match Application::open_existing(db) {
         Ok(app) => app,
-        Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e)]),
-                Value::Null,
-            );
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     let result = match action {
         "initialize" => {
@@ -168,17 +156,31 @@ pub(super) fn candidate_write_response(
                 Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
             };
             let version = args.get_one::<String>("version-id").expect("required");
-            app.initialize_candidate_current(version, &contract).map(
-                |current| json!({"scope":"initialized_local_fixture_current","current":current}),
-            )
+            let scope = if contract.contract_id == RIGGED_SIMPLE_MOTION_STRUCTURE_V1 {
+                "initialized_local_rigged_simple_current"
+            } else {
+                "initialized_local_fixture_current"
+            };
+            app.initialize_candidate_current(version, &contract)
+                .map(|current| json!({"scope":scope,"current":current}))
         }
-        "propose" => {
+        "propose" | "propose-rigged-simple-motion" | "schedule-rigged-simple-motion" => {
             let path = args.get_one::<PathBuf>("proposal").expect("required");
             let ProposalObject(proposal) = match read_json(path, limits, "proposal") {
                 Ok(input) => input,
                 Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
             };
-            app.propose_candidate(&proposal).map(|candidate| json!({"scope":"staged_local_byte_fixture_candidate","candidate":candidate}))
+            if action == "schedule-rigged-simple-motion" {
+                app.schedule_rigged_simple_motion(&proposal).map(|base| json!({
+                    "scope": "scheduled_rigged_simple_motion", "run_id": proposal.id,
+                    "base_version": proposal.base_version, "expected_revision": proposal.expected_revision,
+                    "candidate_version": proposal.candidate_version, "base": base
+                }))
+            } else if action == "propose-rigged-simple-motion" {
+                app.propose_rigged_simple_motion(&proposal).map(|candidate| json!({"scope":"staged_rigged_simple_motion_candidate","candidate":candidate}))
+            } else {
+                app.propose_candidate(&proposal).map(|candidate| json!({"scope":"staged_local_byte_fixture_candidate","candidate":candidate}))
+            }
         }
         _ => unreachable!("clap grammar"),
     };
@@ -196,7 +198,6 @@ pub(super) fn candidate_write_response(
     }
 }
 
-/// Delegate one candidate operation; only core decides and durably records acceptance.
 pub(super) fn candidate_response(
     wire: &str,
     call_id: Option<&String>,
@@ -210,16 +211,9 @@ pub(super) fn candidate_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let mut app = match Application::open_existing(db) {
         Ok(app) => app,
-        Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e)]),
-                Value::Null,
-            );
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     let result = match action {
         "show" => app.candidate(id).map(|candidate| {
@@ -239,7 +233,18 @@ pub(super) fn candidate_response(
             )
         }),
         "attempt" => app.attempt_accept_candidate(id).map(|receipt| {
-            // Exhaustive transport projection only: receipt/report/reason stay core-owned.
+            let candidate = match &receipt {
+                Acceptance::Accepted { candidate, .. }
+                | Acceptance::Conflict { candidate, .. }
+                | Acceptance::NotRun { candidate, .. }
+                | Acceptance::Rejected { candidate, .. } => candidate,
+            };
+            let scoped = candidate.scope == RIGGED_SIMPLE_MOTION_STRUCTURE_V1;
+            let scope = if scoped {
+                "local_rigged_simple_structure_attempt"
+            } else {
+                "local_fixture_candidate_acceptance_attempt"
+            };
             let (code, status, errors) = match &receipt {
                 Acceptance::Accepted { .. } => (0, "PASS", json!([])),
                 Acceptance::Rejected { .. } => (
@@ -248,7 +253,11 @@ pub(super) fn candidate_response(
                     json!([error(
                         "candidate",
                         "REJECTED",
-                        "Local fixture candidate acceptance rejected"
+                        if scoped {
+                            "Rigged Simple structure rejected"
+                        } else {
+                            "Local fixture candidate acceptance rejected"
+                        }
                     )]),
                 ),
                 Acceptance::Conflict { .. } => (
@@ -266,7 +275,11 @@ pub(super) fn candidate_response(
                     json!([error(
                         "candidate",
                         "NOT_RUN",
-                        "Local fixture candidate acceptance NOT_RUN; see exact core receipt"
+                        if scoped {
+                            "Rigged Simple structure NOT_RUN; see exact core receipt"
+                        } else {
+                            "Local fixture candidate acceptance NOT_RUN; see exact core receipt"
+                        }
                     )]),
                 ),
             };
@@ -274,7 +287,7 @@ pub(super) fn candidate_response(
                 code,
                 status,
                 errors,
-                json!({"scope":"local_fixture_candidate_acceptance_attempt","receipt":receipt}),
+                json!({"scope":scope,"receipt":receipt}),
             )
         }),
         _ => unreachable!("clap grammar"),
@@ -293,14 +306,12 @@ pub(super) fn candidate_response(
     }
 }
 
-/// Input shape only; Production owns graph, identity and count policies.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StepInput {
     id: String,
     dependencies: Vec<String>,
 }
-/// Serde structs also accept positional arrays; this wire requires JSON objects only.
 struct StepObject(StepInput);
 impl<'de> serde::Deserialize<'de> for StepObject {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -323,7 +334,6 @@ impl<'de> serde::Deserialize<'de> for StepObject {
         deserializer.deserialize_map(ObjectVisitor)
     }
 }
-/// String-first transport input; the core owns outcome byte bounds and transition policy.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OutcomeInput {
@@ -362,7 +372,6 @@ fn issue_exit(code: spec::IssueCode) -> i32 {
         spec::IssueCode::Fail => 1,
     }
 }
-/// Local wire projection of a non-Serialize persisted record; exhaustive, meaning-preserving.
 fn step_value(record: &StepRecord) -> Result<Value, String> {
     let (state, raw, evidence) = match (&record.state, record.outcome.as_ref()) {
         (State::Pending, None) => ("pending", None, None),
@@ -381,8 +390,6 @@ fn step_value(record: &StepRecord) -> Result<Value, String> {
     };
     Ok(json!({"id":record.id,"state":state,"raw":raw,"evidence":evidence}))
 }
-/// Status reads steps then cancellation sequentially (not an atomic snapshot); cancel only
-/// persists the request and never asserts process, billing or budget effects.
 pub(super) fn workflow_response(
     wire: &str,
     call_id: Option<&String>,
@@ -409,16 +416,14 @@ pub(super) fn workflow_response(
             Value::Null,
         );
     }
-    let mut app = match Application::open(db) {
+    let opened = if action == "status" {
+        Application::open_read_only(db)
+    } else {
+        Application::open_existing(db)
+    };
+    let mut app = match opened {
         Ok(app) => app,
-        Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e.to_string())]),
-                Value::Null,
-            );
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     if action == "create" {
         let path = args.get_one::<PathBuf>("steps").expect("required");
@@ -628,7 +633,6 @@ pub(super) fn plan_response(
         Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
     };
     let outcome = spec::validate(&request, &context);
-    // Deterministic priority when the core returns multiple issue categories.
     let code = [4, 2, 3, 5, 1]
         .into_iter()
         .find(|c| outcome.issues.iter().any(|i| issue_exit(i.code) == *c))

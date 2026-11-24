@@ -1,7 +1,3 @@
-# Responsibility: check analytic static fixture through Godot's importer.
-# Dependencies: Godot 4.7.2 GLTFDocument; caller: headless CLI.
-# Invariants: fixed local fixture paths, no scripts from assets, no network;
-# expected geometry is analytic, never learned from imported output.
 extends SceneTree
 
 func fail(kind: String, detail: String) -> void:

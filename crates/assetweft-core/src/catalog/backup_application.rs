@@ -1,14 +1,11 @@
-//! Responsibility: protected backup and fresh restore use-case ordering.
-//! Dependencies: pure backup policy and purpose-owned capabilities only.
-//! Callers: compatibility backup composition; invariants: publish completion last, stop on error.
-use super::backup_domain::{Limits, Manifest, validate_manifest};
+use super::backup_domain::{FORMAT_1_SCHEMA, Limits, Manifest, validate_manifest};
 use super::backup_ports::{FreshRestore, ProtectedBackup};
 pub(crate) fn create<P: ProtectedBackup>(port: &mut P) -> Result<Manifest, P::Error> {
     let (database, objects) = port.snapshot()?;
     port.copy_objects(&objects)?;
     let manifest = Manifest {
         format: 1,
-        schema: 6,
+        schema: FORMAT_1_SCHEMA,
         producer: env!("CARGO_PKG_VERSION").into(),
         database,
         objects,

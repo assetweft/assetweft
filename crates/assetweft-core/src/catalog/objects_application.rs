@@ -1,6 +1,3 @@
-//! Responsibility: managed-object commit/read/protect/collect use cases.
-//! Dependencies: Catalog domain and purpose-owned ManagedObjects only; callers: concrete composition.
-//! Invariants: metadata/limits before byte work; verified staging before atomic publication; invalid hash never calls retention.
 use super::{
     domain::{self, AssetVersion},
     objects_domain::{self as policy, Collection, ObjectPolicyError, StoredObject},

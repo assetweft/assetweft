@@ -19,6 +19,10 @@ const cases = [
   ['orphan expectation', (m) => { m.expectations.push({ id: 'TEST_FIXTURE/missing', expect: 'VALID' }); }],
   ['invalid expected outcome', (m) => { m.expectations[0].expect = 'UNDECLARED_OUTCOME'; }],
   ['missing fixture coverage', (m) => { m.expectations.pop(); }],
+  ['internal checker error expectation', (m) => { m.expectations[0].expect = 'INTERNAL'; }],
+  ['mismatched envelope versions', (m) => { m.schema = 'aw003-fixture-manifest/2.0.0'; }],
+  ['wrong envelope kind', (m) => { m.schema = 'aw003-fixture-set/1.0.0'; }],
+  ['missing versioned manifest identifier', (m) => { delete m.schema; }],
 ];
 
 for (const [name, mutate] of cases) {
@@ -43,3 +47,15 @@ for (const [name, mutate] of cases) {
     }
   });
 }
+
+test('matching versioned envelopes preserve all fourteen fixture outcomes', () => {
+  const result = spawnSync(process.execPath, [path.join(root, 'tools/contract_check.mjs')], {
+    cwd: root, encoding: 'utf8', timeout: 10000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.signal, null, result.stderr);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.gate, 'PASS');
+  assert.equal(output.matched, 14);
+});

@@ -1,6 +1,4 @@
-//! M2 local TEST_FIXTURE behavior; real file DBs, independent connections, no network.
-//! Calls Application only except migration fault setup/inspection. Retain logs externally.
-use assetweft_core::{application::Application, budget::*};
+use assetweft_core::{application::Application, budget::*, library::LibraryError};
 use std::sync::{
     Arc, Barrier,
     atomic::{AtomicUsize, Ordering},
@@ -174,7 +172,11 @@ fn independent_connections_race_capacity_and_once_claim() {
         threads.push(std::thread::spawn(move || {
             let mut a = Application::open(&p).unwrap();
             b.wait();
-            a.reserve_call(&request(id, 7)).is_ok()
+            match a.reserve_call(&request(id, 7)) {
+                Ok(_) => true,
+                Err(LibraryError::InvalidInput("approved capacity exhausted")) => false,
+                Err(error) => panic!("reserve {id}: {error:?}"),
+            }
         }));
     }
     assert_eq!(
@@ -204,14 +206,14 @@ fn independent_connections_race_capacity_and_once_claim() {
         threads.push(std::thread::spawn(move || {
             let mut a = Application::open(&p).unwrap();
             b.wait();
-            let won = a
-                .submit_test_fixture(id, || {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    wait_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                })
-                .unwrap();
+            let mut invoked = false;
+            let won = a.submit_test_fixture(id, || {
+                invoked = true;
+                count.fetch_add(1, Ordering::SeqCst);
+                wait_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
             let _ = done_tx.send(());
-            won
+            won.unwrap_or_else(|error| panic!("submit (callback invoked={invoked}): {error:?}"))
         }));
     }
     assert_eq!(
@@ -222,6 +224,8 @@ fn independent_connections_race_capacity_and_once_claim() {
         1
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(a.call_intent(id).unwrap().unwrap().state, State::Unknown);
+    assert_eq!(a.budget_balance("a").unwrap().reserved, 7);
 }
 #[test]
 fn units_unknown_zero_bounds_and_receipts_are_preserved() {
@@ -423,7 +427,6 @@ fn preparing_cancel_releases_once_across_reopen() {
 fn ordered_connections_cancel_and_claim_conserve_capacity() {
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
-    // Channels order both winners without timing assumptions; callbacks run after claim commits.
     for cancel_first in [true, false] {
         let d = tempdir().unwrap();
         let p = d.path().join("db");

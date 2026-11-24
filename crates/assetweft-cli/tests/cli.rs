@@ -1,7 +1,3 @@
-//! Responsibility: C2 actual-binary protocol and delegation regression gate.
-//! Dependencies: core fixtures/APIs, std process, tempfile; called by C1 and native CI.
-//! Invariants: synthetic evidence only; no mocks; full stdout parse, repeat stability,
-//! bounded reads, Chinese/space paths, unchanged input bytes and immutable local allowances.
 use assetweft_core::{
     application::Application,
     generation_spec as spec, validation as val,
@@ -20,6 +16,10 @@ fn invoke(args: &[&OsStr]) -> (Output, Value) {
         .args(args)
         .output()
         .unwrap();
+    parse_output(out)
+}
+
+fn parse_output(out: Output) -> (Output, Value) {
     let v: Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("stdout protocol: {e}: {:?}", out));
     assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
@@ -326,8 +326,7 @@ fn semantic_identity_plan_cannot_bypass_core() {
     }
 }
 
-// Shut down the writer itself: dropping a peer alone leaves writes possible while
-// another process holds that peer. The real child must inherit an unwritable socket.
+// POSIX shutdown(SHUT_WR) disables writes even while another process holds the peer.
 #[cfg(unix)]
 fn broken_output() -> std::process::Stdio {
     use std::{
@@ -342,8 +341,7 @@ fn broken_output() -> std::process::Stdio {
     std::process::Stdio::from(OwnedFd::from(writer))
 }
 
-// An owned read-only file handle gives the real Windows child a write failure.
-// File's default delete sharing keeps the handle valid after the temp path is removed.
+// Windows FILE_SHARE_DELETE keeps the inherited read-only handle valid after the temp path is removed.
 #[cfg(windows)]
 fn broken_output() -> std::process::Stdio {
     use std::io::Write;
@@ -436,8 +434,6 @@ fn workflow_args<'a>(action: &'a str, db: &'a OsStr, run: &'a OsStr) -> Vec<&'a 
         run,
     ]
 }
-// Seeds durable state only through the existing product API: initialize, create, then a
-// real succeeded record and a real claimed/running record left unresolved.
 fn seed_workflow(dir: &Path) -> PathBuf {
     let path = dir.join("库 状态 db.sqlite");
     let mut app = Application::open(&path).unwrap();
@@ -467,6 +463,99 @@ fn seed_workflow(dir: &Path) -> PathBuf {
     );
     app.close().unwrap();
     path
+}
+
+#[test]
+fn workflow_open_lock_reports_internal_and_does_not_cancel() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seed_workflow(dir.path());
+    let (blocker, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+    blocker
+        .execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE")
+        .unwrap();
+    let run = OsStr::new("运行-α");
+    for action in ["status", "cancel"] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("locked-open")];
+        args.extend(workflow_args(action, db.as_os_str(), run));
+        let (out, v) = invoke(&args);
+        assert!(out.stderr.is_empty());
+        assert_eq!(out.status.code(), Some(6), "{v}");
+        assert_eq!(v["status"], "INTERNAL");
+        assert_eq!(v["call_id"], "locked-open");
+        assert_eq!(v["errors"][0]["code"], "INTERNAL");
+        assert_eq!(v["errors"][0]["field_path"], "db");
+        assert!(v["errors"][0]["message"].as_str().unwrap().contains("BUSY"));
+        assert!(v["results"].is_null());
+    }
+    blocker.execute_batch("ROLLBACK").unwrap();
+    let (out, v) = invoke(&workflow_args("status", db.as_os_str(), run));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert!(
+        !Application::open_read_only(&db)
+            .unwrap()
+            .workflow_cancelled("运行-α")
+            .unwrap()
+    );
+    let (out, v) = invoke(&workflow_args("cancel", db.as_os_str(), run));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["results"]["cancellation_requested"], true);
+}
+
+#[test]
+fn existing_database_open_lock_reports_internal_and_leaves_database_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, contract, _, _) = candidate_write_fixture(dir.path());
+    app.close().unwrap();
+    let allowance = dir.path().join("allowance.json");
+    fs::write(
+        &allowance,
+        json!({"id":"locked-budget","unit":"Token","capacity":1,
+            "approval":"ExplicitBounded","source":"TEST_FIXTURE"})
+        .to_string(),
+    )
+    .unwrap();
+    let version = dir.path().join("version.json");
+    fs::write(
+        &version,
+        catalog_write_wire("locked-version", "UNKNOWN", false).to_string(),
+    )
+    .unwrap();
+    let commands = [
+        candidate_write_args("initialize", &db, &contract),
+        candidate_args("show", db.as_os_str(), OsStr::new("absent")),
+        budget_args("approve", db.as_os_str(), allowance.as_os_str()),
+        catalog_write_args("register-version", &db, &version),
+        catalog_args("version", db.as_os_str(), OsStr::new("base")),
+    ];
+    let (blocker, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+    blocker.execute_batch("PRAGMA journal_mode=DELETE").unwrap();
+    let before = sha256(&fs::read(&db).unwrap());
+    blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let locked_results: Vec<_> = commands
+        .iter()
+        .map(|command| {
+            let mut args = vec![OsStr::new("--call-id"), OsStr::new("locked-open")];
+            args.extend(command);
+            invoke(&args)
+        })
+        .collect();
+    blocker.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(sha256(&fs::read(&db).unwrap()), before);
+    for (out, v) in &locked_results {
+        assert!(out.stderr.is_empty());
+        assert_eq!(out.status.code(), Some(6), "{locked_results:?}");
+        assert_eq!(v["status"], "INTERNAL");
+        assert_eq!(v["call_id"], "locked-open");
+        assert_eq!(v["errors"][0]["code"], "INTERNAL");
+        assert_eq!(v["errors"][0]["field_path"], "db");
+        assert!(v["errors"][0]["message"].as_str().unwrap().contains("BUSY"));
+        assert!(v["results"].is_null());
+    }
+    for command in &commands {
+        let (out, v) = invoke(command);
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(v["status"], "PASS");
+    }
 }
 
 #[test]
@@ -501,7 +590,6 @@ fn workflow_status_projects_persisted_state_deterministically() {
     let (again, _) = invoke(&args);
     assert_eq!(out.stdout, again.stdout);
     assert_eq!(out.status.code(), again.status.code());
-    // A fresh process opening the same durable store sees identical values.
     let app = Application::open(&db).unwrap();
     assert_eq!(
         app.workflow_steps("运行-α").unwrap()[0].state,
@@ -509,7 +597,6 @@ fn workflow_status_projects_persisted_state_deterministically() {
     );
     assert!(!app.workflow_cancelled("运行-α").unwrap());
     drop(app);
-    // Existing product use cases advance state; status reports the new persisted facts.
     let mut app = Application::open(&db).unwrap();
     app.create_workflow("失败-运行", &[step("a", &[]), step("b", &["a"])])
         .unwrap();
@@ -567,11 +654,9 @@ fn workflow_cancel_persists_request_and_keeps_results() {
     for overclaim in ["refund", "stopped", "released", "terminated"] {
         assert!(!rendered.contains(overclaim), "{rendered}");
     }
-    // Repeating the explicit request remains a scoped success with identical output.
     let (again, v_again) = invoke(&args);
     assert_eq!(out.stdout, again.stdout);
     assert_eq!(v_again["results"]["cancellation_requested"], true);
-    // Reopen proves the durable flag and unchanged records/results.
     let mut app = Application::open(&db).unwrap();
     assert!(app.workflow_cancelled("运行-α").unwrap());
     let steps = app.workflow_steps("运行-α").unwrap();
@@ -590,7 +675,6 @@ fn workflow_cancel_persists_request_and_keeps_results() {
     let mut app = Application::open(&db).unwrap();
     assert_eq!(app.claim_workflow_step("运行-α").unwrap(), None);
     drop(app);
-    // Status of the same run reports the request, not a stopped process.
     let (out_status, v_status) = invoke(&workflow_args(
         "status",
         db.as_os_str(),
@@ -619,7 +703,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         !missing.exists(),
         "CLI must not create the supplied db path"
     );
-    // A directory (non-regular path) is rejected just as explicitly and left alone.
     let dirdb = dir.path().join("目录 db");
     fs::create_dir(&dirdb).unwrap();
     let cancel = workflow_args("cancel", dirdb.as_os_str(), run);
@@ -627,7 +710,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(v["errors"][0]["field_path"], "db");
     assert!(dirdb.is_dir());
-    // Unknown run fails truthfully with the preserved core diagnostic.
     let db = seed_workflow(dir.path());
     let (out, v) = invoke(&workflow_args(
         "status",
@@ -648,7 +730,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         OsStr::new("不存在-run"),
     ));
     assert_eq!(out.status.code(), Some(1));
-    // Empty identity is rejected verbatim, never trimmed or substituted.
     let (out, v) = invoke(&workflow_args("status", db.as_os_str(), OsStr::new("")));
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(v["status"], "INVALID_INPUT");
@@ -660,7 +741,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         State::Succeeded
     );
     drop(app);
-    // Missing required flags stay an argument error.
     for argv in [
         vec![OsStr::new("workflow"), OsStr::new("status")],
         vec![
@@ -680,7 +760,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         assert_eq!(out.status.code(), Some(2), "{argv:?}");
         assert_eq!(v["status"], "INVALID_INPUT");
     }
-    // An existing but uninitialized file is reported, never auto-initialized or migrated.
     let empty = dir.path().join("空 库.sqlite");
     fs::write(&empty, b"").unwrap();
     let (out, v) = invoke(&workflow_args("status", empty.as_os_str(), run));
@@ -693,7 +772,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
             .contains("not initialized")
     );
     assert_eq!(fs::read(&empty).unwrap(), b"", "no auto-init/migration");
-    // Execution/submission and unqualified create syntax still fail truthfully.
     for argv in [
         vec![
             OsStr::new("workflow"),
@@ -749,7 +827,6 @@ fn workflow_protocol_survives_broken_streams() {
     assert_eq!(broken_err.stdout, ordinary.stdout);
     let value: Value = serde_json::from_slice(&broken_err.stdout).unwrap();
     assert_eq!(value["call_id"], "wf-id");
-    // A closed stdout must map to the existing INTERNAL exit 6 on success and error paths.
     let mut missing = vec![OsStr::new("--call-id"), OsStr::new("wf-id")];
     let missing_db = dir.path().join("缺失 库.sqlite");
     missing.extend(workflow_args(
@@ -780,6 +857,177 @@ fn create_args<'a>(db: &'a OsStr, run: &'a OsStr, steps: &'a OsStr) -> Vec<&'a O
     let mut args = workflow_args("create", db, run);
     args.extend([OsStr::new("--steps"), steps]);
     args
+}
+
+#[cfg(unix)]
+#[test]
+fn workflow_create_rejects_steps_fifo_without_waiting_for_a_writer() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let (out, v) = invoke(&library_init_args(db.as_os_str()));
+    assert!(out.status.success(), "{v}");
+    let fifo = dir.path().join("steps.fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(create_args(
+            db.as_os_str(),
+            OsStr::new("fifo-run"),
+            fifo.as_os_str(),
+        ))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            child.wait().unwrap();
+            panic!("workflow create blocked on a writerless FIFO for 5 seconds");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let (out, v) = parse_output(child.wait_with_output().unwrap());
+    assert_eq!(out.status.code(), Some(2), "{v}");
+    assert_eq!(v["status"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["code"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["field_path"], "steps");
+    assert!(v["results"].is_null());
+    let (conn, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM aw_workflow_runs", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn failed_historical_upgrade_preserves_library_after_cli_exit() {
+    use assetweft_core::sqlite::open_and_configure;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let baseline = dir.path().join("before.sqlite");
+    let bytes = b"historical mesh";
+    let hash = sha256(bytes);
+    let objects = dir.path().join("objects");
+    fs::create_dir(&objects).unwrap();
+    fs::write(objects.join(&hash), bytes).unwrap();
+    let owner = dir.path().join(".aw-object-owner");
+    fs::write(&owner, b"library.sqlite").unwrap();
+
+    let (conn, _) = open_and_configure(&db).unwrap();
+    conn.execute_batch(include_str!(
+        "../../assetweft-core/src/library/001_initial.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../assetweft-core/src/library/002_objects.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TABLE aw_schema_version (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), version INTEGER NOT NULL CHECK(version > 0));
+         INSERT INTO aw_schema_version VALUES(1,2);
+         INSERT INTO aw_assets VALUES('character'),('mesh');"
+    ).unwrap();
+    for (asset, version) in [("character", "character-v1"), ("mesh", "mesh-v1")] {
+        conn.execute(
+            "INSERT INTO aw_asset_versions VALUES(?1,?2,?3,'input','synthetic','UNKNOWN',0,'UNKNOWN','local','BIN','1.0.0','UNKNOWN')",
+            [version, asset, &hash],
+        ).unwrap();
+    }
+    conn.execute(
+        "INSERT INTO aw_objects VALUES(?1,?2,0,1)",
+        (&hash, bytes.len() as i64),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO aw_managed_versions VALUES('mesh-v1',?1)",
+        [&hash],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "INSERT INTO aw_component_references VALUES('character-v1','mesh','mesh-v1');
+         CREATE INDEX aw_feedback_version_order ON aw_assets(asset_id);",
+    )
+    .unwrap();
+    conn.execute("VACUUM INTO ?1", [baseline.to_str().unwrap()])
+        .unwrap();
+    drop(conn);
+
+    let args = library_init_args(db.as_os_str());
+    let (failed, result) = invoke(&args);
+    assert_eq!(failed.status.code(), Some(1), "{result}");
+    assert!(
+        result["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("index aw_feedback_version_order already exists"),
+        "{result}"
+    );
+
+    let (conn, _) = open_and_configure(&db).unwrap();
+    conn.execute("ATTACH ?1 AS original", [baseline.to_str().unwrap()])
+        .unwrap();
+    for table in [
+        "sqlite_schema",
+        "aw_schema_version",
+        "aw_assets",
+        "aw_asset_versions",
+        "aw_component_references",
+        "aw_objects",
+        "aw_managed_versions",
+    ] {
+        let columns = if table == "sqlite_schema" {
+            "type,name,tbl_name,sql"
+        } else {
+            "*"
+        };
+        for (left, right) in [("original", "main"), ("main", "original")] {
+            let sql = format!(
+                "SELECT EXISTS(SELECT {columns} FROM {left}.{table}
+                EXCEPT SELECT {columns} FROM {right}.{table})"
+            );
+            let differs: bool = conn.query_row(&sql, [], |r| r.get(0)).unwrap();
+            assert!(!differs, "{left}.{table} differs from {right}.{table}");
+        }
+    }
+    assert_eq!(fs::read(&owner).unwrap(), b"library.sqlite");
+    assert_eq!(fs::read(objects.join(&hash)).unwrap(), bytes);
+
+    conn.execute_batch("DROP INDEX main.aw_feedback_version_order")
+        .unwrap();
+    drop(conn);
+    let (retried, result) = invoke(&args);
+    assert!(retried.status.success(), "{result}");
+    let (conn, _) = open_and_configure(&db).unwrap();
+    let version: i64 = conn
+        .query_row("SELECT version FROM aw_schema_version", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 6);
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(
+        app.managed_object("mesh-v1").unwrap().unwrap().content_hash,
+        hash
+    );
+    let refs = app.component_references("character-v1").unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].component_version_id, "mesh-v1");
 }
 
 #[test]
@@ -819,7 +1067,6 @@ fn library_init_create_status_cancel_durable_chain() {
     assert_eq!(v["results"]["cancellation_requested"], false);
     let mut app = Application::open(&db).unwrap();
     assert_eq!(app.workflow_steps(run.to_str().unwrap()).unwrap().len(), 2);
-    // Dependency order is retained, not topologically sorted or identities trimmed.
     assert_eq!(
         app.claim_workflow_step(run.to_str().unwrap()).unwrap(),
         Some(" seed ".into())
@@ -863,7 +1110,6 @@ fn workflow_create_rejects_wire_and_core_graph_without_partial_runs() {
         invoke(&library_init_args(db.as_os_str())).0.status.code(),
         Some(0)
     );
-    // Shape failures belong to the CLI; graph policy retains actual core Database => FAIL.
     let cases = [
         ("{", 2),
         ("{}", 2),
@@ -960,7 +1206,6 @@ fn workflow_create_rejects_wire_and_core_graph_without_partial_runs() {
             .workflow_steps("unreadable")
             .is_err()
     );
-    // Core's existing 64-step bound, not a second CLI policy.
     fs::write(
         &steps,
         serde_json::to_vec(
@@ -1146,7 +1391,6 @@ fn init_create_broken_streams_do_not_replay_mutations() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["call_id"], "stream-id");
     assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
-    // Duplicate creation errors survive broken stderr without becoming success.
     let out = Command::new(env!("CARGO_BIN_EXE_assetweft"))
         .args(&create)
         .stderr(broken_output())
@@ -1178,7 +1422,6 @@ fn init_create_broken_streams_do_not_replay_mutations() {
             .unwrap();
         assert_eq!(status.code(), Some(6), "{argv:?}");
     }
-    // Output failure does not roll back the committed operation or trigger a replay.
     let mut initialized = Application::open(&ambiguous_db).unwrap();
     initialized
         .create_workflow("core-schema-probe", &[step("a", &[])])
@@ -1191,7 +1434,6 @@ fn init_create_broken_streams_do_not_replay_mutations() {
     assert_eq!(records[0].outcome, None);
 }
 
-// Local declarations only: real CLI processes and SQLite through Application, no provider.
 fn budget_args<'a>(action: &'a str, db: &'a OsStr, value: &'a OsStr) -> Vec<&'a OsStr> {
     vec![
         OsStr::new("budget"),
@@ -1287,7 +1529,6 @@ fn budget_declarations_reopen_exactly_and_never_reset_reservations() {
             declaration
         );
     }
-    // Seed only a local reservation through the existing facade; no submit/callback.
     let id = " 预算 0 ";
     let mut app = Application::open(&db).unwrap();
     app.reserve_call(&assetweft_core::budget::Request {
@@ -1303,7 +1544,6 @@ fn budget_declarations_reopen_exactly_and_never_reset_reservations() {
     let original = app.budget_balance(id).unwrap();
     drop(app);
     let original_wire = serde_json::to_value(&original.allowance).unwrap();
-    // Deliberately different key order still yields the same typed descriptor.
     fs::write(&path, format!("{{\"source\":{},\"approval\":\"ExplicitBounded\",\"capacity\":100,\"unit\":\"Token\",\"id\":{}}}", original_wire["source"], json!(id))).unwrap();
     let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
     assert!(out.status.success(), "{v}");
@@ -1315,7 +1555,6 @@ fn budget_declarations_reopen_exactly_and_never_reset_reservations() {
     ] {
         let mut conflict = original_wire.clone();
         conflict[field] = value;
-        // Approval conflict must be valid core input to reach immutable identity check.
         if field == "approval" {
             conflict["capacity"] = json!(0);
         }
@@ -1408,6 +1647,7 @@ fn budget_wire_rejects_bad_shapes_and_core_rejections_leave_no_partial_allowance
         r#"{"CurrencyMinor":{"currency":"USD","decimals":1.5}}"#,
         r#"{"CurrencyMinor":{"currency":"USD","decimals":256}}"#,
         r#"{"CurrencyMinor":{"currency":"USD","decimals":2},"Token":null}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":2},"CurrencyMinor":{"currency":"USD","decimals":2}}"#,
     ] {
         bad.push(format!(r#"{{"id":"shape-rejected","unit":{unit},"capacity":0,"approval":"ExplicitBounded","source":"s"}}"#));
     }
@@ -1498,6 +1738,57 @@ fn budget_wire_rejects_bad_shapes_and_core_rejections_leave_no_partial_allowance
 }
 
 #[test]
+fn budget_approve_rejects_null_tagged_unit_and_approval_without_persisting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, good) = budget_fixture(dir.path());
+    let args = budget_args("approve", db.as_os_str(), path.as_os_str());
+    for (field, alias) in [
+        ("unit", "Token"),
+        ("unit", "Task"),
+        ("unit", "Second"),
+        ("approval", "ExplicitBounded"),
+        ("approval", "ZeroAdditionalCost"),
+    ] {
+        let mut input = good.clone();
+        input["capacity"] = json!(0);
+        input[field] = json!({(alias): null});
+        fs::write(&path, input.to_string()).unwrap();
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{field} {alias}: {v}");
+        assert_eq!(v["status"], "INVALID_INPUT");
+        assert_eq!(v["errors"][0]["code"], "INVALID_INPUT");
+        assert_eq!(v["errors"][0]["field_path"], "allowance");
+        assert!(v["results"].is_null());
+        let (conn, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM aw_budget_accounts", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+#[test]
+fn budget_reserve_rejects_null_tagged_unit_without_persisting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, mut request) = intent_fixture(dir.path());
+    request["unit"] = json!({"Token":null});
+    fs::write(&path, request.to_string()).unwrap();
+    let (out, v) = invoke(&budget_args("reserve", db.as_os_str(), path.as_os_str()));
+    assert_eq!(out.status.code(), Some(2), "{v}");
+    assert_eq!(v["status"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["code"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["field_path"], "request");
+    assert!(v["results"].is_null());
+    assert!(local_intent(&db, request["id"].as_str().unwrap()).is_null());
+    assert_eq!(
+        declared_balance(&db, request["account"].as_str().unwrap())["reserved"],
+        0
+    );
+}
+
+#[test]
 fn budget_database_admission_and_missing_identity_are_truthful() {
     let dir = tempfile::tempdir().unwrap();
     let (db, path, good) = budget_fixture(dir.path());
@@ -1530,7 +1821,7 @@ fn budget_database_admission_and_missing_identity_are_truthful() {
         let (out, v) = invoke(&budget_args("balance", db.as_os_str(), OsStr::new(id)));
         assert_eq!(out.status.code(), Some(1), "{v}");
         assert_eq!(v["status"], "FAIL");
-        assert_eq!(v["errors"][0]["message"], expected); // empty query ID stays verbatim; core does not validate it.
+        assert_eq!(v["errors"][0]["message"], expected);
     }
     let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
     assert!(out.status.success(), "{v}");
@@ -1617,7 +1908,6 @@ fn budget_protocol_broken_streams_keep_committed_local_declaration() {
             .unwrap();
         assert_eq!(status.code(), Some(6));
     }
-    // First declaration commits even when the real child cannot report it; no retry occurs.
     let mut committed = good.clone();
     committed["id"] = json!("committed-output-lost");
     fs::write(&path, committed.to_string()).unwrap();
@@ -1652,7 +1942,6 @@ fn budget_protocol_broken_streams_keep_committed_local_declaration() {
     assert_eq!(status.code(), Some(6));
 }
 
-// Local TEST_FIXTURE setup uses only public Application capabilities, never SQL.
 fn intent_fixture(dir: &Path) -> (PathBuf, PathBuf, Value) {
     let (db, path, allowance) = budget_fixture(dir);
     let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
@@ -1670,6 +1959,128 @@ fn local_intent(db: &Path, id: &str) -> Value {
     assert_eq!(v["results"]["scope"], "local_call_intent");
     v["results"]["intent"].clone()
 }
+#[test]
+fn budget_receipts_preserve_persisted_usage_without_writing() {
+    use assetweft_core::budget::{Receipt, Request, Resolution, Unit, Usage};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _, request) = intent_fixture(dir.path());
+    let mut request: Request = serde_json::from_value(request).unwrap();
+    let id = request.id.clone();
+    let other_id = "intent α";
+    let empty_id = "no receipts yet";
+    let early = Receipt {
+        id: " a α ".into(),
+        source: " TEST_FIXTURE unresolved ".into(),
+        resolution: Resolution::Unresolved,
+        usage: vec![Usage {
+            unit: Unit::Second,
+            amount: None,
+            source: " TEST_FIXTURE unknown seconds ".into(),
+        }],
+    };
+    let late = Receipt {
+        id: " z α ".into(),
+        source: " TEST_FIXTURE confirmed ".into(),
+        resolution: Resolution::Confirmed { charge: 3 },
+        usage: vec![
+            Usage {
+                unit: Unit::Token,
+                amount: Some(3),
+                source: " tokens ".into(),
+            },
+            Usage {
+                unit: Unit::Task,
+                amount: Some(0),
+                source: " tasks ".into(),
+            },
+            Usage {
+                unit: Unit::Second,
+                amount: Some(8),
+                source: " seconds ".into(),
+            },
+            Usage {
+                unit: Unit::CurrencyMinor {
+                    currency: "USD".into(),
+                    decimals: 2,
+                },
+                amount: Some(17),
+                source: " currency ".into(),
+            },
+        ],
+    };
+    let other = Receipt {
+        id: early.id.clone(),
+        source: " TEST_FIXTURE other intent ".into(),
+        resolution: Resolution::AuthoritativeNoCharge,
+        usage: vec![],
+    };
+
+    let mut app = Application::open(&db).unwrap();
+    for call in [&id[..], other_id, empty_id] {
+        request.id = call.into();
+        app.reserve_call(&request).unwrap();
+    }
+    assert!(app.submit_test_fixture(&id, || {}).unwrap());
+    app.reconcile_call(&id, &early).unwrap();
+    app.reconcile_call(&id, &late).unwrap();
+    assert!(app.submit_test_fixture(other_id, || {}).unwrap());
+    app.reconcile_call(other_id, &other).unwrap();
+    app.close().unwrap();
+
+    let bytes = fs::read(&db).unwrap();
+    let expected = json!([
+        {"id":" a α ","source":" TEST_FIXTURE unresolved ","resolution":"Unresolved",
+         "usage":[{"unit":"Second","amount":null,"source":" TEST_FIXTURE unknown seconds "}]},
+        {"id":" z α ","source":" TEST_FIXTURE confirmed ","resolution":{"Confirmed":{"charge":3}},
+         "usage":[{"unit":"Token","amount":3,"source":" tokens "},
+                  {"unit":"Task","amount":0,"source":" tasks "},
+                  {"unit":"Second","amount":8,"source":" seconds "},
+                  {"unit":{"CurrencyMinor":{"currency":"USD","decimals":2}},
+                   "amount":17,"source":" currency "}]}
+    ]);
+    for (call, receipts) in [
+        (&id[..], expected),
+        (other_id, json!([other])),
+        (empty_id, json!([])),
+        ("absent", json!([])),
+        ("", json!([])),
+    ] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new(other_id)];
+        args.extend(budget_args("receipts", db.as_os_str(), OsStr::new(call)));
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert!(out.stderr.is_empty());
+        assert_eq!(
+            v,
+            json!({"schema_version":1,"command":"budget receipts","call_id":other_id,
+                   "status":"PASS","errors":[],
+                   "results":{"scope":"local_call_receipts","receipts":receipts}})
+        );
+    }
+    assert!(
+        fs::read(&db).unwrap() == bytes,
+        "receipt queries changed the database bytes"
+    );
+    let app = Application::open_read_only(&db).unwrap();
+    assert_eq!(app.call_receipts(&id).unwrap(), vec![early, late]);
+    assert_eq!(app.call_receipts(other_id).unwrap(), vec![other]);
+
+    let missing = dir.path().join("missing.sqlite");
+    let invalid = dir.path().join("invalid.sqlite");
+    fs::write(&invalid, b"invalid database").unwrap();
+    for path in [&missing, &invalid, dir.path()] {
+        let (out, v) = invoke(&budget_args("receipts", path.as_os_str(), OsStr::new(&id)));
+        assert_eq!(out.status.code(), Some(2), "{v}");
+        assert_eq!(v["command"], "budget receipts");
+        assert_eq!(v["status"], "INVALID_INPUT");
+        assert_eq!(v["errors"][0]["field_path"], "db");
+        assert_eq!(v["results"], Value::Null);
+    }
+    assert!(!missing.exists());
+    assert_eq!(fs::read(&invalid).unwrap(), b"invalid database");
+}
+
 #[test]
 fn intent_reserve_reopen_exact_identity_and_quote_semantics() {
     use assetweft_core::budget::{Allowance, Approval, Unit};
@@ -1756,7 +2167,6 @@ fn intent_reserve_reopen_exact_identity_and_quote_semantics() {
             assert_eq!(local_intent(&db, "zero-intent"), Value::Null);
         }
     }
-    // Omitted and explicit-null quotes remain unknown on an ordinary allowance.
     let mut r = request.clone();
     r["id"] = json!("omitted-quote");
     r.as_object_mut().unwrap().remove("quote");
@@ -2185,7 +2595,6 @@ fn intent_mutating_stdout_failure_retains_commit_without_replay() {
     );
 }
 
-// Retain each real child receipt when the author run supplies an owned evidence directory.
 fn candidate_invoke(args: &[&OsStr]) -> (Output, Value) {
     let utc = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2204,7 +2613,6 @@ fn candidate_invoke(args: &[&OsStr]) -> (Output, Value) {
     }
     (out, value)
 }
-// Public Application/CAS fixture only; pinned hashes name exact static synthetic bytes.
 fn candidate_fixture(
     dir: &Path,
     bad_proposed: bool,
@@ -2370,7 +2778,6 @@ fn candidate_queries_preserve_all_terminal_receipts_and_historical_bytes() {
                 | (Acceptance::Conflict { .. }, "Conflict")
         ));
         let mut records = vec![(proposal.id.clone(), descriptor, Some(receipt.clone()))];
-        // Advance the actual head once more: an Accepted receipt must keep its older Current.
         if mode == "Accepted" {
             let mut next = proposal.clone();
             next.id = "candidate-next".into();
@@ -2391,7 +2798,6 @@ fn candidate_queries_preserve_all_terminal_receipts_and_historical_bytes() {
             candidate_query(&db, "show", id, &serde_json::to_value(descriptor).unwrap());
             candidate_query(&db, "receipt", id, &serde_json::to_value(receipt).unwrap());
         }
-        // Only our tempfile's synthetic CAS object is removed, after genuine persistence.
         let owned_object = dir.path().join("objects").join(&managed.content_hash);
         assert!(owned_object.is_file(), "{owned_object:?}");
         fs::remove_file(&owned_object).unwrap();
@@ -2549,7 +2955,6 @@ fn candidate_query_protocol_survives_broken_streams() {
     );
 }
 
-// Catalog uses public persisted metadata/head fixtures; expected wire values are explicit.
 fn catalog_args<'a>(action: &'a str, db: &'a OsStr, id: &'a OsStr) -> Vec<&'a OsStr> {
     vec![
         OsStr::new("catalog"),
@@ -2930,7 +3335,6 @@ fn catalog_query_protocol_preserves_broken_stream_exit_and_json() {
     assert_eq!(reopened.component_references("base").unwrap().len(), 1);
 }
 
-// Candidate writes are transport-only, real public Application/SQLite/CAS fixtures.
 fn candidate_write_args<'a>(action: &'a str, db: &'a Path, input: &'a Path) -> Vec<&'a OsStr> {
     let mut args = vec![
         OsStr::new("candidate"),
@@ -3435,7 +3839,6 @@ fn candidate_write_database_paths_help_grammar_and_input_precedence() {
 fn candidate_write_broken_streams_preserve_durable_commits_and_errors() {
     let dir = tempfile::tempdir().unwrap();
     let (db, _, contract, path, _) = candidate_write_fixture(dir.path());
-    // First successful writes lose stdout, yet remain visible via existing public queries.
     for (action, input) in [("initialize", &contract), ("propose", &path)] {
         let args = candidate_write_args(action, &db, input);
         let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
@@ -3497,7 +3900,6 @@ fn candidate_write_broken_streams_preserve_durable_commits_and_errors() {
     assert_eq!(app.candidate("not-written").unwrap(), None);
 }
 
-// Attempt transport uses genuine first writes; controls run in independent libraries.
 fn candidate_attempt_fixture(dir: &Path, mode: &str) -> (PathBuf, Application, String) {
     let (db, mut app, mut proposal) = candidate_fixture(dir, mode == "Rejected");
     match mode {
@@ -3613,7 +4015,6 @@ fn candidate_attempt_first_write_exact_receipts_and_historical_replay() {
         } else {
             assert_eq!(after, before, "nonaccepted attempt must not advance {mode}");
         }
-        // A genuinely later head must not refresh the tested historic receipt.
         let head = after.unwrap();
         let mut next = core.candidate(&control_id).unwrap().unwrap();
         next.id = "later-head".into();
@@ -3819,7 +4220,6 @@ fn candidate_attempt_broken_streams_retain_first_commits_and_domain_outcomes() {
     }
     assert_eq!(app.candidate_attempt(&id).unwrap(), None);
 }
-// Catalog writes exercise the real process and public facade; no raw SQL or private hooks.
 fn catalog_write_args<'a>(action: &'a str, db: &'a Path, input: &'a Path) -> Vec<&'a OsStr> {
     vec![
         OsStr::new("catalog"),
@@ -4310,7 +4710,6 @@ fn catalog_write_database_grammar_paths_and_admission_precedence() {
         let mut raw = dir.path().as_os_str().as_encoded_bytes().to_vec();
         raw.extend_from_slice(b"/wire-\xff.json");
         let unusual = PathBuf::from(std::ffi::OsString::from_vec(raw));
-        // Test only when this filesystem supports a non-UTF8 name (Darwin may reject it).
         let unusual_write = fs::write(
             &unusual,
             catalog_write_wire("os-path", "UNKNOWN", false).to_string(),
@@ -4429,7 +4828,6 @@ fn catalog_write_first_commits_survive_broken_streams_without_duplicate_success(
     }
 }
 
-// Managed commits use real files, process output and only public Application observations.
 fn object_args<'a>(
     db: &'a Path,
     version: &'a Path,
@@ -4512,7 +4910,7 @@ fn object_commit_rejects_inputs_without_registration() {
         ("hash", "3", "16777216", 1),
         ("short", "2", "16777216", 2),
         ("long", "4", "16777216", 2),
-        ("cap", "3", "2", 2),
+        ("json-cap", "3", "2", 2),
         ("array", "3", "16777216", 2),
         ("presence", "3", "16777216", 2),
         ("unknown", "3", "16777216", 2),
@@ -4535,6 +4933,9 @@ fn object_commit_rejects_inputs_without_registration() {
         args.extend([OsStr::new("--max-bytes"), OsStr::new(cap)]);
         let (out, value) = catalog_write_invoke(&args);
         assert_eq!(out.status.code(), Some(code), "{case}: {value}");
+        if case == "json-cap" {
+            assert_eq!(value["errors"][0]["field_path"], "version", "{value}");
+        }
         assert_eq!(
             Application::open(&db).unwrap().asset_version(case).unwrap(),
             None
@@ -4583,6 +4984,54 @@ fn object_commit_rejects_inputs_without_registration() {
         None
     );
 }
+
+#[test]
+fn object_commit_enforces_source_cap_after_admitting_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let version = dir.path().join("version.json");
+    let file = dir.path().join("bytes");
+    let bytes = [b'a'; 1024];
+    let hash = "2edc986847e209b4016e141a6dc8716d3207350f416969382d431539bf292e4a";
+    let id = "source-cap";
+    let mut wire = object_wire(id);
+    wire["content_hash"] = json!(hash);
+    let metadata = wire.to_string();
+    assert!(metadata.len() < bytes.len());
+    fs::write(&version, &metadata).unwrap();
+    fs::write(&file, bytes).unwrap();
+
+    let expected_len = bytes.len().to_string();
+    let cap = metadata.len().to_string();
+    let mut args = object_args(&db, &version, &file, &expected_len);
+    args.extend([OsStr::new("--max-bytes"), OsStr::new(&cap)]);
+    let (out, value) = catalog_write_invoke(&args);
+    assert_eq!(out.status.code(), Some(2), "{value}");
+    assert_eq!(value["status"], "INVALID_INPUT");
+    assert_eq!(value["errors"][0]["field_path"], "catalog", "{value}");
+    {
+        let mut app = Application::open(&db).unwrap();
+        assert_eq!(app.asset_version(id).unwrap(), None);
+        assert_eq!(app.managed_object(id).unwrap(), None);
+    }
+
+    *args.last_mut().unwrap() = OsStr::new(&expected_len);
+    let (out, value) = catalog_write_invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    assert_eq!(value["status"], "PASS");
+    assert_eq!(value["results"]["version_id"], id);
+    assert_eq!(value["results"]["content_hash"], hash);
+    assert_eq!(value["results"]["byte_length"], bytes.len());
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(app.asset_version(id).unwrap().unwrap().content_hash, hash);
+    let object = app.managed_object(id).unwrap().unwrap();
+    assert_eq!(object.content_hash, hash);
+    assert_eq!(object.byte_length, bytes.len() as u64);
+}
 #[test]
 fn object_commit_first_write_survives_broken_stream() {
     for stdout in [true, false] {
@@ -4613,7 +5062,6 @@ fn object_commit_first_write_survives_broken_stream() {
     }
 }
 
-// Claim/finish use real independent CLI processes and owned SQLite, never raw SQL.
 fn progress_call(db: &Path, run: &str, action: &str, extra: &[&OsStr]) -> (Output, Value) {
     let mut args = workflow_args(action, db.as_os_str(), OsStr::new(run));
     args.extend_from_slice(extra);
@@ -4935,3 +5383,1227 @@ fn progress_first_mutations_survive_broken_streams() {
         }
     }
 }
+
+#[test]
+fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
+    use assetweft_core::history::HistoryQuery;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut app, _) = candidate_fixture(dir.path(), false);
+    let head = app.candidate_current("character").unwrap().unwrap();
+    let original_version = app.asset_version("base").unwrap().unwrap();
+    let original = dir
+        .path()
+        .join("objects")
+        .join(&original_version.content_hash);
+    let bytes = fs::read(&original).unwrap();
+    let long_id = "v".repeat(257);
+    let mut long_version = original_version.clone();
+    long_version.version_id = long_id.clone();
+    app.add_asset_version(&long_version).unwrap();
+    app.close().unwrap();
+
+    let run = |action: &str, db: &Path, extra: &[&str]| {
+        let mut args = vec![
+            OsStr::new("--call-id"),
+            OsStr::new("feedback α"),
+            OsStr::new("catalog"),
+            OsStr::new(action),
+            OsStr::new("--db"),
+            db.as_os_str(),
+        ];
+        args.extend(extra.iter().map(OsStr::new));
+        catalog_write_invoke(&args)
+    };
+    let success = |action: &str, extra: &[&str], scope: &str, record: &Value| {
+        let (out, value) = run(action, &db, extra);
+        assert_eq!(out.status.code(), Some(0), "{value}");
+        assert!(out.stderr.is_empty());
+        assert_eq!(
+            value,
+            json!({
+                "schema_version":1,"command":format!("catalog {action}"),"call_id":"feedback α",
+                "status":"PASS","errors":[],"results":{"scope":scope,"feedback":record}
+            })
+        );
+    };
+    let latest = |extra: &[&str], record: &Value| {
+        success(
+            "feedback-latest",
+            extra,
+            "stored_local_version_feedback",
+            record,
+        );
+    };
+    let asset = ["--asset-id", "character"];
+    let base = ["--asset-id", "character", "--version-id", "base"];
+    let proposed = ["--asset-id", "character", "--version-id", "proposed"];
+    latest(&asset, &Value::Null);
+    let first = json!({"sequence":1,"feedback_id":"first","asset_id":"character",
+        "version_id":"base","decision":"REJECT","reason":"原样 reason"});
+    let second = json!({"sequence":2,"feedback_id":"second","asset_id":"character",
+        "version_id":"proposed","decision":"ACCEPT","reason":null});
+    fn add<'a>(
+        target: &[&'a str],
+        id: &'a str,
+        decision: &'a str,
+        reason: &[&'a str],
+    ) -> Vec<&'a str> {
+        let mut args = target.to_vec();
+        args.extend(["--feedback-id", id, "--decision", decision]);
+        args.extend_from_slice(reason);
+        args
+    }
+    success(
+        "feedback-add",
+        &add(&base, "first", "REJECT", &["--reason", "原样 reason"]),
+        "appended_local_version_feedback",
+        &first,
+    );
+    latest(&proposed, &Value::Null);
+    success(
+        "feedback-add",
+        &add(&proposed, "second", "ACCEPT", &[]),
+        "appended_local_version_feedback",
+        &second,
+    );
+    let mismatch = ["--asset-id", "character", "--version-id", "mesh0"];
+    let long = ["--asset-id", "character", "--version-id", long_id.as_str()];
+    for (args, message) in [
+        (
+            add(&mismatch, "wrong", "ACCEPT", &[]),
+            "feedback version/asset mismatch",
+        ),
+        (
+            add(&proposed, "first", "ACCEPT", &[]),
+            "UNIQUE constraint failed: aw_feedback.feedback_id",
+        ),
+        (add(&base, &long_id, "ACCEPT", &[]), "feedback identity"),
+        (
+            add(&base, "blank", "ACCEPT", &["--reason", " "]),
+            "feedback reason",
+        ),
+    ] {
+        let (out, value) = run("feedback-add", &db, &args);
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert_eq!(value["status"], "INVALID_INPUT");
+        assert_eq!(value["results"], Value::Null);
+        assert_eq!(value["errors"].as_array().unwrap().len(), 1);
+        let error = &value["errors"][0];
+        assert_eq!(error["field_path"], "catalog");
+        assert_eq!(error["code"], "INVALID_INPUT");
+        assert!(
+            error["message"].as_str().unwrap().contains(message),
+            "{value}"
+        );
+    }
+    latest(&long, &Value::Null);
+    latest(&mismatch, &Value::Null);
+    latest(&asset, &second);
+    latest(&base, &first);
+    latest(&proposed, &second);
+    let third = json!({"sequence":3,"feedback_id":"long","asset_id":"character",
+        "version_id":long_id,"decision":"ACCEPT","reason":null});
+    success(
+        "feedback-add",
+        &add(&long, "long", "ACCEPT", &[]),
+        "appended_local_version_feedback",
+        &third,
+    );
+    latest(&long, &third);
+    latest(&asset, &third);
+
+    let missing = dir.path().join("missing.sqlite");
+    for (action, args) in [
+        ("feedback-latest", asset.to_vec()),
+        ("feedback-add", add(&base, "missing", "ACCEPT", &[])),
+    ] {
+        let (out, value) = run(action, &missing, &args);
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert_eq!(value["errors"][0]["field_path"], "db");
+        assert!(!missing.exists());
+    }
+
+    let mut app = Application::open(&db).unwrap();
+    for (asset_id, count) in [("character", 3), ("mesh0", 0)] {
+        let history = app
+            .feedback_history(HistoryQuery {
+                asset_id,
+                version_id: None,
+                before_sequence: None,
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(history.len(), count);
+    }
+    assert_eq!(app.candidate_current("character").unwrap(), Some(head));
+    assert_eq!(app.asset_version("base").unwrap(), Some(original_version));
+    assert_eq!(app.asset_version(&long_id).unwrap(), Some(long_version));
+    assert_eq!(fs::read(original).unwrap(), bytes);
+}
+
+fn export_fixture(parent: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let root = parent.join("library");
+    fs::create_dir(&root).unwrap();
+    let db = root.join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let file = parent.join("original");
+    let version = parent.join("version.json");
+    fs::write(&file, b"abc").unwrap();
+    for id in ["first", "second"] {
+        fs::write(&version, object_wire(id).to_string()).unwrap();
+        let (out, value) = catalog_write_invoke(&object_args(&db, &version, &file, "3"));
+        assert_eq!(out.status.code(), Some(0), "{value}");
+    }
+    let cas = root
+        .join("objects")
+        .join(object_wire("first")["content_hash"].as_str().unwrap());
+    (db, file, cas)
+}
+
+fn export_call(db: &Path, action: &str, id: &str) -> Value {
+    let (out, v) = catalog_write_invoke(&[
+        OsStr::new("catalog"),
+        OsStr::new(action),
+        OsStr::new("--db"),
+        db.as_os_str(),
+        OsStr::new("--version-id"),
+        OsStr::new(id),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["command"], format!("catalog {action}"));
+    assert_eq!(v["results"]["version_id"], id);
+    v["results"].clone()
+}
+
+#[test]
+fn catalog_export_roundtrip_preserves_library() {
+    use assetweft_core::{
+        history::{Decision, Feedback},
+        library::{ComponentReference, ComponentRole},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (db, file, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let mut app = Application::open(&db).unwrap();
+    let version = app.asset_version("first").unwrap().unwrap();
+    let reference = ComponentReference {
+        owner_version_id: "first".into(),
+        role: ComponentRole::Mesh,
+        component_version_id: "second".into(),
+    };
+    app.add_component_reference(&reference).unwrap();
+    let feedback = app
+        .append_feedback(&Feedback {
+            feedback_id: "review".into(),
+            asset_id: version.asset_id.clone(),
+            version_id: version.version_id.clone(),
+            decision: Decision::Reject,
+            reason: Some("keep history".into()),
+        })
+        .unwrap();
+    app.close().unwrap();
+    let database_before = fs::read(&db).unwrap();
+    let export = |id| {
+        root.join(
+            export_call(&db, "materialize-export", id)["relative_path"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    let evict = || {
+        export_call(&db, "evict-export", "first")["removed"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(!evict());
+    let target = export("first");
+    assert_eq!(target.parent(), Some(root.join("exports").as_path()));
+    assert_eq!(export("first"), target);
+    let other = export("second");
+    assert_ne!(target, other);
+    let unknown = root.join("exports/user-notes");
+    fs::write(&unknown, b"keep").unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"abc");
+    assert!(evict());
+    assert!(!target.try_exists().unwrap());
+    assert!(!evict());
+    for keep in [&other, &file, &cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+    assert_eq!(fs::read(&unknown).unwrap(), b"keep");
+    assert_eq!(export("first"), target);
+    assert_eq!(fs::read(&target).unwrap(), fs::read(&cas).unwrap());
+    assert_eq!(fs::read(&db).unwrap(), database_before);
+    let mut app = Application::open(&db).unwrap();
+    assert_eq!(app.asset_version("first").unwrap(), Some(version.clone()));
+    assert_eq!(app.component_references("first").unwrap(), [reference]);
+    assert_eq!(
+        app.latest_feedback(&version.asset_id, Some("first"))
+            .unwrap(),
+        Some(feedback)
+    );
+    assert_eq!(
+        app.managed_object("first").unwrap().unwrap().content_hash,
+        version.content_hash
+    );
+}
+
+#[test]
+fn catalog_export_refuses_changed_unowned_and_unrecoverable_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, source, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let mut app = Application::open(&db).unwrap();
+    let target = root.join(app.materialize_export("first").unwrap());
+    let refuse = |app: &Application| {
+        assert!(app.evict_export("first").is_err());
+        assert!(app.materialize_export("first").is_err());
+    };
+    fs::write(&target, b"xyz").unwrap();
+    refuse(&app);
+    assert_eq!(fs::read(&target).unwrap(), b"xyz");
+    for keep in [&source, &cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+    fs::write(&target, b"abc").unwrap();
+    for corrupt in [true, false] {
+        if corrupt {
+            fs::write(&cas, b"bad").unwrap();
+        } else {
+            fs::remove_file(&cas).unwrap();
+        }
+        refuse(&app);
+        assert_eq!(fs::read(&target).unwrap(), b"abc");
+    }
+    fs::write(&cas, b"abc").unwrap();
+    let lock = root.join(".aw-storage.lock");
+    fs::write(&lock, b"in use").unwrap();
+    refuse(&app);
+    assert_eq!(fs::read(&lock).unwrap(), b"in use");
+    fs::remove_file(lock).unwrap();
+
+    let moved = root.join("retained-export");
+    fs::rename(&target, &moved).unwrap();
+    fs::hard_link(&source, &target).unwrap();
+    refuse(&app);
+    for keep in [&moved, &target, &source, &cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+    let mut metadata = app.asset_version("first").unwrap().unwrap();
+    metadata.version_id = "metadata-only".into();
+    app.add_asset_version(&metadata).unwrap();
+    assert!(app.materialize_export("metadata-only").is_err());
+    assert!(app.evict_export("metadata-only").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_export_refuses_redirected_parents() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let (db, source, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let app = Application::open(&db).unwrap();
+    let relative = app.materialize_export("first").unwrap();
+    for name in ["exports", "objects"] {
+        let inside = root.join(name);
+        let outside = dir.path().join("moved");
+        fs::rename(&inside, &outside).unwrap();
+        symlink(&outside, &inside).unwrap();
+        assert!(app.evict_export("first").is_err());
+        assert!(app.materialize_export("second").is_err());
+        fs::remove_file(&inside).unwrap();
+        fs::rename(outside, inside).unwrap();
+    }
+    let alias = dir.path().join("alias.sqlite");
+    symlink(&db, &alias).unwrap();
+    assert!(
+        Application::open(&alias)
+            .unwrap()
+            .evict_export("first")
+            .is_err()
+    );
+    assert_eq!(fs::read(root.join(&relative)).unwrap(), b"abc");
+    assert_eq!(fs::read(cas).unwrap(), fs::read(source).unwrap());
+}
+
+#[test]
+fn catalog_export_partial_publication_never_adopts_or_sweeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, source, cas) = export_fixture(dir.path());
+    let root = db.parent().unwrap();
+    let app = Application::open(&db).unwrap();
+    let target = root.join(app.materialize_export("first").unwrap());
+    let witness = fs::read_dir(root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".aw-export-")
+        })
+        .unwrap();
+
+    let retained = root.join("retained");
+    fs::rename(&witness, &retained).unwrap();
+    assert!(app.evict_export("first").is_err());
+    assert!(app.materialize_export("first").is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"abc");
+    fs::rename(retained, &witness).unwrap();
+
+    fs::remove_file(&target).unwrap();
+    assert!(!app.evict_export("first").unwrap());
+    assert_eq!(root.join(app.materialize_export("first").unwrap()), target);
+    assert!(app.evict_export("first").unwrap());
+    assert!(!target.try_exists().unwrap());
+    for keep in [witness, source, cas] {
+        assert_eq!(fs::read(keep).unwrap(), b"abc");
+    }
+}
+
+#[test]
+fn catalog_file_availability_observes_exact_local_bytes_without_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let query = |id: &str| {
+        invoke(&catalog_args(
+            "file-availability",
+            db.as_os_str(),
+            OsStr::new(id),
+        ))
+    };
+    let observe = |id: &str, expected: &str| {
+        catalog_query(
+            &db,
+            "file-availability",
+            id,
+            json!({"scope":"local_managed_version_bytes","version_id":id,"availability":expected}),
+        );
+    };
+    let (out, value) = query("absent");
+    assert_eq!(out.status.code(), Some(2), "{value}");
+    assert_eq!(value["command"], "catalog file-availability");
+    assert_eq!(value["errors"][0]["field_path"], "db");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+
+    fs::write(&db, []).unwrap();
+    let (out, value) = query("absent");
+    assert_eq!(out.status.code(), Some(3), "{value}");
+    assert!(fs::read(&db).unwrap().is_empty());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+
+    let (out, value) = invoke(&[
+        OsStr::new("library"),
+        OsStr::new("init"),
+        OsStr::new("--db"),
+        db.as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    let source_fixture = fixture("mesh_only.glb");
+    let bytes = fs::read(&source_fixture).unwrap();
+    let original = dir.path().join("original.glb");
+    fs::write(&original, &bytes).unwrap();
+    let version = dir.path().join("version.json");
+    let mut wire = catalog_write_wire("metadata", "MISSING", false);
+    let hash = "4658deaae78fb1ae6050baca75a8c098db6ccad311c74ba02097fceac01e45a5";
+    wire["content_hash"] = json!(hash);
+    wire["source_format"] = json!("GLB");
+    fs::write(&version, wire.to_string()).unwrap();
+    let (out, value) = invoke(&catalog_write_args("register-version", &db, &version));
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    let owner = dir.path().join(".aw-object-owner");
+    let objects = dir.path().join("objects");
+    observe("metadata", "METADATA_ONLY");
+    observe("absent", "UNKNOWN_VERSION");
+    assert!(!owner.exists());
+    assert!(!objects.exists());
+
+    wire["version_id"] = json!("managed");
+    wire["presence"] = json!("UNKNOWN");
+    fs::write(&version, wire.to_string()).unwrap();
+    let (out, value) = invoke(&object_args(
+        &db,
+        &version,
+        &original,
+        &bytes.len().to_string(),
+    ));
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    let db_bytes = fs::read(&db).unwrap();
+    let owner_bytes = fs::read(&owner).unwrap();
+    let cas = objects.join(hash);
+    observe("managed", "AVAILABLE");
+    observe("metadata", "METADATA_ONLY");
+    assert_eq!(fs::read(&cas).unwrap(), bytes);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = fs::metadata(&cas).unwrap().permissions();
+        fs::set_permissions(&cas, fs::Permissions::from_mode(0o000)).unwrap();
+        let read_probe = fs::File::open(&cas);
+        let (out, value) = query("managed");
+        fs::set_permissions(&cas, permissions).unwrap();
+        if let Err(error) = read_probe {
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(out.status.code(), Some(6), "{value}");
+            assert!(value["results"].is_null());
+            assert!(
+                value["errors"][0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("PermissionDenied")
+            );
+        }
+    }
+
+    let mut corrupted = bytes.clone();
+    corrupted[0] ^= 1;
+    fs::write(&cas, &corrupted).unwrap();
+    let (out, value) = query("managed");
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert_eq!(value["errors"][0]["message"], "Corrupt");
+    assert!(value["results"].is_null());
+    assert_eq!(fs::read(&cas).unwrap(), corrupted);
+
+    fs::remove_file(&cas).unwrap();
+    observe("managed", "MISSING");
+    fs::create_dir(&cas).unwrap();
+    let (out, value) = query("managed");
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert!(value["results"].is_null());
+    fs::remove_dir(&cas).unwrap();
+    fs::remove_dir(&objects).unwrap();
+    observe("managed", "MISSING");
+    assert!(!objects.exists());
+
+    fs::remove_file(&owner).unwrap();
+    let (out, value) = query("managed");
+    assert_eq!(out.status.code(), Some(6), "{value}");
+    assert!(value["results"].is_null());
+    assert!(
+        value["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("NotFound")
+    );
+    assert!(!owner.exists());
+    fs::write(&owner, &owner_bytes).unwrap();
+
+    catalog_query(
+        &db,
+        "version",
+        "managed",
+        json!({"scope":"stored_local_asset_version_metadata","version":wire}),
+    );
+    assert_eq!(fs::read(&db).unwrap(), db_bytes);
+    assert_eq!(fs::read(&owner).unwrap(), owner_bytes);
+    assert_eq!(fs::read(&original).unwrap(), bytes);
+    assert_eq!(fs::read(&source_fixture).unwrap(), bytes);
+    assert!(!dir.path().join(".aw-storage.lock").exists());
+}
+
+#[test]
+fn catalog_search_finds_literal_version_matches_without_writes() {
+    use assetweft_core::library::Presence;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let search = |query: &str| {
+        let query_arg = format!("--query={query}");
+        invoke(&[
+            OsStr::new("--call-id"),
+            OsStr::new("discovery"),
+            OsStr::new("catalog"),
+            OsStr::new("search"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+            OsStr::new(&query_arg),
+        ])
+    };
+    let (out, result) = search("mesh");
+    assert_eq!(result["command"], "catalog search");
+    assert_eq!(out.status.code(), Some(2), "{result}");
+    assert_eq!(result["errors"][0]["field_path"], "db");
+    assert!(result["results"].is_null());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+
+    fs::write(&db, []).unwrap();
+    let (out, result) = search("mesh");
+    assert_eq!(out.status.code(), Some(3), "{result}");
+    assert!(result["results"].is_null());
+    assert!(fs::read(&db).unwrap().is_empty());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    let mut app = Application::open(&db).unwrap();
+    app.initialize_library().unwrap();
+
+    let original = dir.path().join("original.glb");
+    let bytes = fs::read(fixture("mesh_only.glb")).unwrap();
+    fs::write(&original, &bytes).unwrap();
+    let mut managed = catalog_version("part-雪%_' v2", Presence::Unknown);
+    managed.asset_id = "a-mesh".into();
+    managed.source_format = "GLB".into();
+    managed.content_hash =
+        "4658deaae78fb1ae6050baca75a8c098db6ccad311c74ba02097fceac01e45a5".into();
+    app.commit_object(
+        &managed,
+        &mut bytes.as_slice(),
+        bytes.len() as u64,
+        bytes.len() as u64,
+    )
+    .unwrap();
+    for (asset, id, format) in [
+        ("a-mesh", "mesh-part雪%_' v1", "OBJ"),
+        ("z-prop", "mesh-雪%_' v1", " WAV "),
+        ("z-prop", "mesh-雪xx' v1", "PNG"),
+    ] {
+        let mut row = catalog_version(id, Presence::Missing);
+        row.asset_id = asset.into();
+        row.source_format = format.into();
+        app.add_asset_version(&row).unwrap();
+    }
+    for n in (0..101).rev() {
+        let mut row = catalog_version(&format!("batch-{n:03}"), Presence::Unknown);
+        row.asset_id = "another".into();
+        app.add_asset_version(&row).unwrap();
+    }
+    app.close().unwrap();
+    let db_bytes = fs::read(&db).unwrap();
+    let cas = dir.path().join("objects").join(&managed.content_hash);
+    let entries = || {
+        let mut paths = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
+    let initial_entries = entries();
+    let hit = |asset: &str, version: &str, format: &str| json!({"asset_id":asset,"version_id":version,"source_format":format});
+    let first = hit("a-mesh", "mesh-part雪%_' v1", "OBJ");
+    let second = hit("a-mesh", &managed.version_id, "GLB");
+    let third = hit("z-prop", "mesh-雪%_' v1", " WAV ");
+    let fourth = hit("z-prop", "mesh-雪xx' v1", "PNG");
+    let check = |query: &str, matches: Value, truncated: bool| {
+        let (out, result) = search(query);
+        assert_eq!(out.status.code(), Some(0), "{result}");
+        assert_eq!(
+            result,
+            json!({
+                "schema_version":1,"command":"catalog search","call_id":"discovery",
+                "status":"PASS","errors":[],"results":{
+                    "scope":"stored_local_asset_version_search","matches":matches,"truncated":truncated
+                }
+            })
+        );
+        assert!(out.stderr.is_empty());
+        result
+    };
+    check("mesh", json!([first, second, third, fourth]), false);
+    let literal = check("-雪%_' ", json!([second, third]), false);
+    check("MESH", json!([]), false);
+    check("雪%_'  ", json!([]), false);
+    check(
+        "batch",
+        json!(
+            (0..100)
+                .map(|n| { hit("another", &format!("batch-{n:03}"), "declared-format") })
+                .collect::<Vec<_>>()
+        ),
+        true,
+    );
+    check(
+        "batch-0",
+        json!(
+            (0..100)
+                .map(|n| { hit("another", &format!("batch-{n:03}"), "declared-format") })
+                .collect::<Vec<_>>()
+        ),
+        false,
+    );
+    let (out, result) = search("");
+    assert_eq!(out.status.code(), Some(2), "{result}");
+    assert!(result["results"].is_null());
+
+    let id = literal["results"]["matches"][0]["version_id"]
+        .as_str()
+        .unwrap();
+    let (out, result) = invoke(&catalog_args("version", db.as_os_str(), OsStr::new(id)));
+    assert_eq!(out.status.code(), Some(0), "{result}");
+    assert_eq!(result["results"]["version"]["source_format"], "GLB");
+    catalog_query(
+        &db,
+        "file-availability",
+        id,
+        json!({"scope":"local_managed_version_bytes","version_id":id,"availability":"AVAILABLE"}),
+    );
+    assert_eq!(fs::read(&db).unwrap(), db_bytes);
+    assert_eq!(fs::read(&original).unwrap(), bytes);
+    assert_eq!(fs::read(&cas).unwrap(), bytes);
+    assert_eq!(entries(), initial_entries);
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn add_preview_source(db: &Path, id: &str, bytes: &[u8], format: &str) -> std::path::PathBuf {
+    let root = db.parent().unwrap();
+    let file = root.join(format!("{id}.source"));
+    fs::write(&file, bytes).unwrap();
+    let hash = sha256(bytes);
+    let mut wire = object_wire(id);
+    wire["content_hash"] = json!(hash);
+    wire["source_format"] = json!(format);
+    let version = root.join("version.json");
+    fs::write(&version, wire.to_string()).unwrap();
+    let (out, value) =
+        catalog_write_invoke(&object_args(db, &version, &file, &bytes.len().to_string()));
+    assert!(out.status.success(), "{value}");
+    root.join("objects").join(hash)
+}
+
+#[test]
+fn catalog_preview_decodes_exact_versions_and_preserves_library() {
+    use png::{BitDepth, ColorType, Decoder, Encoder};
+    use std::io::Cursor;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let db = root.join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let add = |id: &str, bytes: &[u8], format: &str| add_preview_source(&db, id, bytes, format);
+    let make = |blue, animated, gamma| {
+        let mut bytes = Vec::new();
+        let mut encoder = Encoder::new(&mut bytes, 256, 64);
+        encoder.set_color(ColorType::Rgba);
+        encoder.set_depth(BitDepth::Eight);
+        if let Some(gamma) = gamma {
+            encoder.set_source_gamma(png::ScaledFloat::from_scaled(gamma));
+        }
+        if animated {
+            encoder.set_animated(1, 0).unwrap();
+        }
+        let mut writer = encoder.write_header().unwrap();
+        let mut pixels = Vec::new();
+        for y in 0..64 {
+            for x in 0..256 {
+                pixels.extend_from_slice(&[x as u8, y, blue, x as u8]);
+            }
+        }
+        writer.write_image_data(&pixels).unwrap();
+        writer.finish().unwrap();
+        bytes
+    };
+    let query = |id: &str| invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(id)));
+    let fail = |id: &str| {
+        let (out, result) = query(id);
+        assert!(!out.status.success(), "{id} {result}");
+        assert!(result["results"].is_null());
+    };
+    let expect_error = |id, exit, status, diagnostic: &str| {
+        let (out, result) = query(id);
+        assert_eq!(out.status.code(), Some(exit), "{id} {result}");
+        assert_eq!(result["status"], status);
+        assert_eq!(result["errors"][0]["code"], status);
+        assert_eq!(result["errors"][0]["field_path"], "catalog");
+        assert!(
+            result["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(diagnostic),
+            "{id} {result}"
+        );
+        assert!(result["results"].is_null());
+    };
+    let first = make(27, false, None);
+    let cas = add("first", &first, "PNG");
+    add("second", &make(91, false, Some(100_000)), "PNG");
+    add("animated", &make(0, true, None), "PNG");
+    add("short", &first[..first.len() - 6], "PNG");
+    let mut corrupt = first.clone();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    add("crc", &corrupt, "PNG");
+    add("unsupported", &first, "GLB");
+    add("fake", b"not an image", "PNG");
+    let mut wide = Vec::new();
+    let mut encoder = Encoder::new(&mut wide, 4097, 1);
+    encoder.set_color(ColorType::Rgba);
+    encoder.set_depth(BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&vec![0; 4097 * 4]).unwrap();
+    writer.finish().unwrap();
+    add("wide", &wide, "PNG");
+    let db_before = fs::read(&db).unwrap();
+    expect_error("unknown", 2, "INVALID_INPUT", "unknown version");
+    fs::remove_file(&cas).unwrap();
+    expect_error(
+        "first",
+        3,
+        "INPUT_INCOMPLETE",
+        "managed source file is missing",
+    );
+    assert!(!cas.exists());
+    assert!(!root.join("previews").exists());
+    fs::write(&cas, &first).unwrap();
+    for id in ["animated", "short", "crc", "unsupported", "fake", "wide"] {
+        fail(id);
+    }
+    assert!(!root.join("previews").exists());
+    let preview_dir = root.join("previews");
+    fs::create_dir(&preview_dir).unwrap();
+    let legacy = preview_dir.join(format!("{}.png", sha256(b"second")));
+    fs::write(&legacy, b"legacy or user-owned").unwrap();
+    let mut targets = Vec::new();
+    for (id, blue) in [("first", 27), ("second", 91)] {
+        let result = export_call(&db, "preview", id);
+        let target = root.join(result["relative_path"].as_str().unwrap());
+        assert_eq!(target.parent(), Some(root.join("previews").as_path()));
+        assert_eq!(
+            target,
+            preview_dir.join(format!("{}.v2.png", sha256(id.as_bytes())))
+        );
+        let encoded = fs::read(&target).unwrap();
+        let mut reader = Decoder::new(Cursor::new(&encoded)).read_info().unwrap();
+        assert_eq!(
+            reader.info().gama_chunk.map(|v| v.into_scaled()),
+            (id == "second").then_some(100_000)
+        );
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (128, 32));
+        for y in 0..32 {
+            for x in 0..128 {
+                let i = (y * 128 + x) * 4;
+                assert_eq!(
+                    pixels[i..i + 4],
+                    [(x * 2) as u8, (y * 2) as u8, blue, (x * 2) as u8]
+                );
+            }
+        }
+        assert_eq!(export_call(&db, "preview", id), result);
+        targets.push(target);
+    }
+    let thumbnail = fs::read(&targets[0]).unwrap();
+    let other_thumbnail = fs::read(&targets[1]).unwrap();
+    assert_eq!(fs::read(legacy).unwrap(), b"legacy or user-owned");
+    fs::write(&targets[0], b"user file").unwrap();
+    expect_error("first", 1, "FAIL", "Corrupt");
+    fs::remove_file(&cas).unwrap();
+    expect_error(
+        "first",
+        3,
+        "INPUT_INCOMPLETE",
+        "managed source file is missing",
+    );
+    assert!(!cas.exists());
+    assert_eq!(fs::read(&targets[0]).unwrap(), b"user file");
+    fs::remove_file(&targets[0]).unwrap();
+    fs::write(&cas, &corrupt).unwrap();
+    expect_error("first", 1, "FAIL", "Corrupt");
+    assert_eq!(fs::read(&cas).unwrap(), corrupt);
+    assert!(!targets[0].exists());
+
+    fs::remove_file(&cas).unwrap();
+    let owner = root.join(".aw-object-owner");
+    let owner_bytes = fs::read(&owner).unwrap();
+    fs::remove_file(&owner).unwrap();
+    expect_error("first", 6, "INTERNAL", "NotFound");
+    assert!(!targets[0].exists());
+    assert!(!owner.exists());
+    fs::write(&owner, owner_bytes).unwrap();
+
+    let objects = cas.parent().unwrap();
+    let displaced = root.join("displaced-objects");
+    fs::rename(objects, &displaced).unwrap();
+    expect_error("first", 6, "INTERNAL", "NotFound");
+    assert!(!objects.exists());
+    fs::rename(&displaced, objects).unwrap();
+
+    fs::write(&cas, &first).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::metadata(&cas).unwrap().permissions();
+        fs::set_permissions(&cas, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&cas).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied) {
+            expect_error("first", 6, "INTERNAL", "PermissionDenied");
+        }
+        fs::set_permissions(&cas, permissions).unwrap();
+        assert!(!targets[0].exists());
+    }
+    export_call(&db, "preview", "first");
+    assert_eq!(fs::read(&targets[0]).unwrap(), thumbnail);
+    assert_eq!(fs::read(&targets[1]).unwrap(), other_thumbnail);
+    assert_eq!(fs::read(&cas).unwrap(), first);
+    assert_eq!(fs::read(root.join("first.source")).unwrap(), first);
+    assert_eq!(fs::read(db).unwrap(), db_before);
+}
+
+#[test]
+fn catalog_preview_wav_uses_complete_frames_of_the_requested_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let wave = |channels: u16, samples: &[i16]| {
+        let size = (samples.len() * 2) as u32;
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + size).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend(channels.to_le_bytes());
+        bytes.extend(8000u32.to_le_bytes());
+        bytes.extend((16000 * u32::from(channels)).to_le_bytes());
+        bytes.extend((2 * channels).to_le_bytes());
+        bytes.extend(16u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend(size.to_le_bytes());
+        bytes.extend(samples.iter().flat_map(|s| s.to_le_bytes()));
+        bytes
+    };
+    let source = wave(1, &[-107, 17, 85]);
+    let stereo = (0..24000)
+        .flat_map(|i| {
+            [
+                if i % 20 < 10 { 8000 } else { -8000 },
+                if i % 40 < 20 { 5000 } else { -5000 },
+            ]
+        })
+        .collect::<Vec<_>>();
+    let other = wave(2, &stereo);
+    let cas = add_preview_source(&db, "one", &source, "WAV");
+    add_preview_source(&db, "two", &other, "wav");
+    for offset in [4, 16, 20, 22, 26, 28, 32, 34, 36, 40] {
+        let mut invalid = source.clone();
+        invalid[offset] ^= 0x10;
+        let id = format!("invalid-{offset}");
+        add_preview_source(&db, &id, &invalid, "WAV");
+        let (out, result) = invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(&id)));
+        assert_eq!(out.status.code(), Some(2), "{result}");
+        assert!(result["results"].is_null());
+    }
+    assert!(!dir.path().join("previews").exists());
+    let before = fs::read(&db).unwrap();
+    for (id, expected) in [
+        ("two", wave(2, &stereo[..16000])),
+        ("one", wave(1, &[-107])),
+    ] {
+        let result = export_call(&db, "preview", id);
+        assert_eq!(result["scope"], "local_version_wav_preview");
+        let path = dir.path().join(result["relative_path"].as_str().unwrap());
+        assert_eq!(
+            path,
+            dir.path()
+                .join("previews")
+                .join(format!("{}.v1.wav", sha256(id.as_bytes())))
+        );
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        assert_eq!(export_call(&db, "preview", id), result);
+    }
+    assert_eq!(fs::read(cas).unwrap(), source);
+    assert_eq!(fs::read(dir.path().join("one.source")).unwrap(), source);
+    assert_eq!(fs::read(db).unwrap(), before);
+}
+
+#[test]
+fn catalog_preview_glb_draws_transformed_geometry_for_each_version() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("library.sqlite");
+    Application::open(&db)
+        .unwrap()
+        .initialize_library()
+        .unwrap();
+    let original = include_bytes!("../../../examples/godot-static/triangle.glb");
+    let mut changed = original.to_vec();
+    let json_len = u32::from_le_bytes(original[12..16].try_into().unwrap()) as usize;
+    let x = 28 + json_len + 24;
+    changed[x..x + 4].copy_from_slice(&1.0f32.to_le_bytes());
+    let a = add_preview_source(&db, "left", original, "GLB");
+    let b = add_preview_source(&db, "right", &changed, "glb");
+    let mut invalid = original.to_vec();
+    invalid[x + 12..x + 14].copy_from_slice(&9u16.to_le_bytes());
+    add_preview_source(&db, "bad-index", &invalid, "GLB");
+    let mut unsupported = original.to_vec();
+    let scene = original
+        .windows(10)
+        .position(|w| w == br#""scene":0,"#)
+        .unwrap();
+    unsupported[scene..scene + 10].fill(b' ');
+    add_preview_source(&db, "no-scene", &unsupported, "GLB");
+    let db_before = fs::read(&db).unwrap();
+    for id in ["bad-index", "no-scene"] {
+        let (out, value) = invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert!(value["results"].is_null());
+        assert!(!root.path().join("previews").exists());
+    }
+    for (id, bytes, cas) in [("left", original.as_slice(), a), ("right", &changed[..], b)] {
+        let value = export_call(&db, "preview", id);
+        assert_eq!(value["scope"], "local_version_png_preview");
+        let target = root.path().join(value["relative_path"].as_str().unwrap());
+        assert_eq!(
+            target,
+            root.path()
+                .join("previews")
+                .join(format!("{}.glb-v1.png", sha256(id.as_bytes())))
+        );
+        let image = fs::read(&target).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&image))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(
+            (info.width, info.height, info.color_type),
+            (128, 128, png::ColorType::Rgba)
+        );
+        for y in 0..128 {
+            for x in 0..128 {
+                let u = 224 + 3 * (2 * x + 1 - 128);
+                let v = 2 * (240 - 2 * y - 1);
+                let inside = (0..=448).contains(&u)
+                    && (0..=448).contains(&v)
+                    && if id == "left" { u + v <= 448 } else { u >= v };
+                let i = ((y * 128 + x) * 4) as usize;
+                assert_eq!(
+                    pixels[i..i + 4],
+                    if inside { [0, 255, 0, 255] } else { [0; 4] },
+                    "{id} {x},{y}"
+                );
+            }
+        }
+        assert_eq!(export_call(&db, "preview", id), value);
+        fs::write(&target, b"conflict").unwrap();
+        let (out, _) = invoke(&catalog_args("preview", db.as_os_str(), OsStr::new(id)));
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(fs::read(target).unwrap(), b"conflict");
+        assert_eq!(fs::read(cas).unwrap(), bytes);
+        assert_eq!(
+            fs::read(root.path().join(format!("{id}.source"))).unwrap(),
+            bytes
+        );
+    }
+    assert_eq!(fs::read(db).unwrap(), db_before);
+}
+
+#[test]
+fn rig_bend_rejects_other_bytes_before_launch_or_staging() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("new-evidence");
+    let (process, reply) = invoke(&[
+        OsStr::new("rig-bend"),
+        fixture("mesh_only.glb").as_os_str(),
+        OsStr::new("--blender"),
+        dir.path().join("absent-blender").as_os_str(),
+        OsStr::new("--out"),
+        out.as_os_str(),
+    ]);
+    assert_eq!(process.status.code(), Some(1));
+    assert_eq!(reply["status"], "NOT_RUN");
+    assert!(
+        reply["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("SHA-256")
+    );
+    assert!(!out.exists());
+}
+
+#[test]
+fn motion_strike_writes_only_a_new_supported_glb() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let input =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/rigged-simple/RiggedSimple.glb");
+    let output = dir.path().join("strike.glb");
+    let run = |file: &Path, out: &Path| {
+        invoke(&[
+            OsStr::new("motion-strike"),
+            file.as_os_str(),
+            OsStr::new("--out"),
+            out.as_os_str(),
+        ])
+    };
+    let (p, r) = run(&input, &output);
+    assert!(p.status.success(), "{r}");
+    assert_eq!(r["results"]["clip"], "AssetWeft_InPlaceStrike");
+    let bytes = fs::read(&output).unwrap();
+    let hash: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect();
+    assert_eq!(r["results"]["output_sha256"], hash);
+    assert_eq!(
+        hash,
+        "20f7e1596107d9b875ea6b276c1d79aeb5c98c3a9ca3ec9054bc2cd57d4eb90b"
+    );
+    let (p, r) = invoke(&[
+        OsStr::new("validate"),
+        output.as_os_str(),
+        OsStr::new("--role"),
+        OsStr::new("animated-character"),
+    ]);
+    assert!(p.status.success(), "{r}");
+    fs::write(&output, b"existing").unwrap();
+    assert!(!run(&input, &output).0.status.success());
+    assert_eq!(fs::read(&output).unwrap(), b"existing");
+    let rejected = dir.path().join("rejected.glb");
+    assert_eq!(run(&output, &rejected).1["status"], "NOT_RUN");
+    assert!(!rejected.exists());
+}
+
+#[test]
+fn motion_idle_checks_chain_structure_before_source_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/rigged-simple/RiggedSimple.glb");
+    let output = dir.path().join("clips.glb");
+    let run = |input: &Path| {
+        invoke(&[
+            OsStr::new("motion-strike"),
+            input.as_os_str(),
+            OsStr::new("--with-idle"),
+            OsStr::new("--out"),
+            output.as_os_str(),
+        ])
+    };
+    let (p, r) = run(&source);
+    assert!(p.status.success(), "{r}");
+    assert_eq!(r["results"]["constraint"], "fixed-root distal sway");
+    assert_eq!(r["results"]["idle_clip"], "AssetWeft_Idle");
+    fs::remove_file(&output).unwrap();
+
+    let bytes = fs::read(&source).unwrap();
+    for (old, new, reason) in [
+        ("[3,4]", "[4,3]", "topology matched"),
+        (
+            "\"skeleton\":3,\"joints\":[3,4]",
+            "\"skeleton\":1,\"joints\":[1,4]",
+            "direct parent",
+        ),
+    ] {
+        let mut changed = bytes.clone();
+        let at = changed
+            .windows(old.len())
+            .position(|s| s == old.as_bytes())
+            .unwrap();
+        changed[at..at + old.len()].copy_from_slice(new.as_bytes());
+        let other = dir.path().join("other.glb");
+        fs::write(&other, changed).unwrap();
+        let (p, r) = run(&other);
+        assert_eq!(p.status.code(), Some(1));
+        assert_eq!(r["status"], "NOT_RUN");
+        assert!(
+            r["errors"][0]["message"].as_str().unwrap().contains(reason),
+            "{r}"
+        );
+        assert!(!output.exists());
+    }
+}
+
+#[test]
+fn motion_stance_uses_declared_role_and_sampled_world_contact() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("motion.json");
+    let run = |samples: &Value, role: &str, code, status| {
+        let bytes = serde_json::to_vec(samples).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let (process, reply) = invoke(&[
+            OsStr::new("motion-stance"),
+            path.as_os_str(),
+            OsStr::new("--role"),
+            OsStr::new(role),
+        ]);
+        assert_eq!(process.status.code(), Some(code), "{reply}");
+        assert_eq!(reply["status"], status, "{reply}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        reply["results"].clone()
+    };
+
+    let animation = |planted| {
+        let root = [0.5, 0.0, 0.125, 0.0, 0.5];
+        let foot: Vec<_> = root
+            .iter()
+            .enumerate()
+            .map(|(frame, x)| {
+                let local_x = if planted && (1..=3).contains(&frame) {
+                    -x
+                } else {
+                    0.0
+                };
+                [x + local_x, 0.0, 0.0]
+            })
+            .collect();
+        json!({"stance":{"contact":"left_sole","frames":[1,3]},
+            "tracks":[{"marker":"hips","world_y_up_m":root.map(|x| [x,1.0,0.0])},
+                      {"marker":"left_sole","world_y_up_m":foot}]})
+    };
+    let slip = animation(false);
+    let grounded = run(&slip, "grounded-humanoid", 1, "FAIL");
+    assert_eq!(grounded["max_slip_m"], 0.125);
+    assert_eq!(grounded["samples_evaluated"], 3);
+    let hover = run(&slip, "hovering", 5, "INAPPLICABLE");
+    assert_eq!(hover["input_sha256"], grounded["input_sha256"]);
+    assert!(
+        hover["input_sha256"]
+            .as_str()
+            .is_some_and(|s| s.len() == 64)
+    );
+    assert_eq!(hover["samples_evaluated"], 0);
+    assert!(hover["reason"].as_str().unwrap().contains("hover"));
+    let planted = animation(true);
+    assert_eq!(
+        run(&planted, "grounded-humanoid", 0, "PASS")["max_slip_m"],
+        0.0
+    );
+
+    let mut z_axis = planted.clone();
+    z_axis["tracks"][1]["world_y_up_m"][2] = json!([0, 1, 0.01]);
+    run(&z_axis, "grounded-humanoid", 0, "PASS");
+    z_axis["tracks"][1]["world_y_up_m"][2] = json!([0, 1, 0.011]);
+    run(&z_axis, "grounded-humanoid", 1, "FAIL");
+
+    let mut undeclared = planted.clone();
+    undeclared.as_object_mut().unwrap().remove("stance");
+    run(&undeclared, "grounded-humanoid", 3, "NOT_RUN");
+    run(&undeclared, "hovering", 5, "INAPPLICABLE");
+    let mut ambiguous = planted.clone();
+    ambiguous["tracks"][0]["marker"] = "left_sole".into();
+    run(&ambiguous, "grounded-humanoid", 3, "NOT_RUN");
+    let mut wrong_space = planted.clone();
+    wrong_space["tracks"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("world_y_up_m");
+    wrong_space["tracks"][1]["local_m"] = json!([[0, 0, 0]]);
+    run(&wrong_space, "grounded-humanoid", 2, "INVALID_INPUT");
+
+    let mut missing = planted.clone();
+    missing["stance"]["contact"] = "missing_foot".into();
+    run(&missing, "grounded-humanoid", 3, "NOT_RUN");
+    let mut gap = planted.clone();
+    gap["tracks"][1]["world_y_up_m"][2] = Value::Null;
+    run(&gap, "grounded-humanoid", 3, "NOT_RUN");
+    let mut out_of_range = planted;
+    out_of_range["stance"]["frames"] = json!([0, 8]);
+    run(&out_of_range, "grounded-humanoid", 3, "NOT_RUN");
+}
+
+#[path = "candidate/rigged_simple.rs"]
+mod rigged_simple;

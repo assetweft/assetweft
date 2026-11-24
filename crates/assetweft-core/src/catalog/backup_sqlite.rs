@@ -1,7 +1,4 @@
-//! Responsibility: concrete SQLite snapshot/CAS copy, protected lifetime and filesystem publication.
-//! Dependencies: SQLite Backup API, existing storage lease, filesystem, clock and hashing.
-//! Callers: backup composition; invariants: original IO/error order, lease before DB through publish.
-use super::backup_domain::{Limits, Manifest, Object, Progress};
+use super::backup_domain::{FORMAT_1_SCHEMA, Limits, Manifest, Object, Progress};
 use super::backup_domain::{account_bytes, hash_ok, object_identity};
 use super::backup_ports::{FreshRestore, ProtectedBackup};
 use crate::backup::BackupError;
@@ -24,10 +21,14 @@ struct Run<'a> {
     progress: &'a mut dyn FnMut(Progress) -> bool,
 }
 impl Run<'_> {
-    fn check(&mut self, progress: Progress) -> Result<(), BackupError> {
+    fn check_deadline(&self) -> Result<(), BackupError> {
         if self.start.elapsed() >= self.limits.timeout {
             return Err(BackupError::Limit);
         }
+        Ok(())
+    }
+    fn check(&mut self, progress: Progress) -> Result<(), BackupError> {
+        self.check_deadline()?;
         if !(self.progress)(progress) {
             return Err(BackupError::Cancelled);
         }
@@ -93,8 +94,16 @@ fn fresh(path: &Path) -> Result<(), BackupError> {
 fn new_file(path: &Path) -> Result<File, BackupError> {
     Ok(FileOptions::new().write(true).create_new(true).open(path)?)
 }
-fn inspect(conn: &Connection, max: usize) -> Result<Vec<Object>, BackupError> {
+fn require_format_1_schema(conn: &Connection) -> Result<(), BackupError> {
     library::require_current(conn)?;
+    if library::CURRENT_SCHEMA != FORMAT_1_SCHEMA {
+        return Err(BackupError::Invalid("unsupported format/schema or count"));
+    }
+    Ok(())
+}
+
+fn inspect(conn: &Connection, max: usize) -> Result<Vec<Object>, BackupError> {
+    require_format_1_schema(conn)?;
     let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
     if integrity != "ok"
         || conn
@@ -187,22 +196,22 @@ impl ProtectedBackup for BackupSession<'_> {
         let (conn, root, dest, limits) = (self.conn, self.root, self.dest, self.run.limits);
         self.guard = Some(storage::reference_guard(root)?);
         storage::bind(conn, root)?;
-        library::require_current(conn)?;
+        require_format_1_schema(conn)?;
         fresh(dest)?;
         let db = dest.join("library.sqlite");
         new_file(&db)?;
         let mut snapshot = Connection::open(&db)?;
         snapshot.busy_timeout(Duration::ZERO)?;
-        {
-            self.run.check(Progress::Snapshot)?;
-            // Pin a read snapshot before measuring it. Without this transaction an
-            // external writer can restart Backup::step with a larger source, and
-            // progress().pagecount is only updated AFTER that step has written.
-            // WAL writers may continue; rollback-journal writers wait for this read.
+        self.run.check(Progress::Snapshot)?;
+        let wal = {
+            // #38: An unpinned backup can restart on a writer's commit and outgrow its byte budget.
             let source = conn.unchecked_transaction()?;
             source.query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
                 r.get::<_, i64>(0)
             })?;
+            let journal_mode: String =
+                source.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+            let wal = journal_mode.eq_ignore_ascii_case("wal");
             let page_size: u32 = source.query_row("PRAGMA page_size", [], |r| r.get(0))?;
             let pages: u32 = source.query_row("PRAGMA page_count", [], |r| r.get(0))?;
             account_bytes(0, u64::from(pages) * u64::from(page_size), limits.max_bytes)?;
@@ -214,11 +223,19 @@ impl ProtectedBackup for BackupSession<'_> {
                     StepResult::Busy | StepResult::Locked => return Err(BackupError::Busy),
                     _ => return Err(BackupError::Invalid("backup step")),
                 }
-                self.run.check(Progress::Snapshot)?;
+                if wal {
+                    self.run.check(Progress::Snapshot)?;
+                } else {
+                    self.run.check_deadline()?;
+                }
             }
+            wal
+        };
+        // #76: Rollback-journal writers need the source read lock released to commit.
+        if !wal {
+            self.run.check(Progress::Snapshot)?;
         }
         let objects = inspect(&snapshot, limits.max_objects)?;
-        // Close/checkpoint before hashing: the snapshot package never depends on a sidecar.
         snapshot.close().map_err(|(_, e)| BackupError::Sql(e))?;
         let database = self.run.stream(&db, None)?;
         Ok((database, objects))
@@ -288,7 +305,6 @@ impl FreshRestore for RestoreSession<'_> {
         if self.run.stream(&source_db, None)? != manifest.database {
             return Err(BackupError::Invalid("database hash/length"));
         }
-        // Refuse sidecars: only a closed single-file snapshot is a valid package.
         for suffix in ["-wal", "-journal", "-shm"] {
             if fs::symlink_metadata(source.join(format!("library.sqlite{suffix}"))).is_ok() {
                 return Err(BackupError::Invalid("snapshot sidecar"));
@@ -321,7 +337,6 @@ impl FreshRestore for RestoreSession<'_> {
     }
     fn publish_restored(&mut self) -> Result<(), BackupError> {
         let dest = self.dest;
-        // Bind the existing relative database filename contract without inheriting a lease.
         let mut owner = new_file(&dest.join(".aw-object-owner"))?;
         owner.write_all(b"library.sqlite")?;
         owner.sync_all()?;
@@ -329,7 +344,6 @@ impl FreshRestore for RestoreSession<'_> {
         Ok(())
     }
 }
-// Atomic no-clobber completion marker: partial writes never look like a completed package.
 fn publish_manifest(dest: &Path, bytes: &[u8]) -> Result<(), BackupError> {
     let mut temp = tempfile::NamedTempFile::new_in(dest)?;
     temp.write_all(bytes)?;

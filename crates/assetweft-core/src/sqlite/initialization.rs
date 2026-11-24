@@ -1,6 +1,3 @@
-//! Responsibility: real SQLite/CAS fixture initialization and persisted receipt query.
-//! Dependencies: Production semantic ports, bounded staging IO, Catalog borrowed head adapter.
-//! Callers: Application and acceptance adapter; invariants: validation outside transaction, lease→refs→IMMEDIATE→commit; no replay.
 use crate::{
     library::{self, LibraryError},
     production::{
@@ -18,6 +15,15 @@ use std::path::Path;
 pub(crate) struct SqliteInitialization<'a> {
     pub conn: &'a mut Connection,
     pub root: &'a Path,
+}
+impl crate::production::rigged_simple::InspectOwner for SqliteInitialization<'_> {
+    fn inspect_owner(
+        &mut self,
+        version: &str,
+        pin: &str,
+    ) -> Result<crate::production::rigged_simple::CheckedOwner, InitializationError> {
+        crate::production::staging_sqlite::inspect_rigged_owner(self.conn, self.root, version, pin)
+    }
 }
 impl Initialization for SqliteInitialization<'_> {
     fn base_owner(&mut self, version: &str) -> Result<BaseOwner, InitializationError> {

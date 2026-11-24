@@ -1,10 +1,3 @@
-//! Responsibility: shared application entry and SQLite connection lifecycle.
-//! Dependencies: the SQLite configuration, Assurance checks and owning context composition.
-//! Callers: future CLI and desktop adapters; integration tests exercise the public API.
-//! Invariants: no SQL or transaction escapes this module or the library repository;
-//! validation is bounded, and no transaction is held while validation runs.
-//! Hash-reference insertion takes the storage lease before SQLite, like object collection.
-
 use crate::assurance::{
     RoleRequirement, SourceDeclaration, ValidationError, ValidationLimits, ValidationReport,
 };
@@ -13,18 +6,15 @@ use crate::sqlite::{self, ConnectionConfig, ProtoError};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
-/// One independently configured local application connection. Dropping it closes it;
-/// explicit `close` reports SQLite close errors. No network or task executor exists yet.
 pub struct Application {
     connection: Connection,
     library_root: PathBuf,
     config: ConnectionConfig,
+    export_database: Option<crate::catalog::exports::FileId>,
 }
 
 impl Application {
     /// Creates an exclusive new SQLite/CAS backup, retaining objects until completion.
-    /// # Errors
-    /// Reports lease, schema, integrity, cancellation, limits and filesystem failures.
     pub fn backup_library(
         &self,
         destination: &Path,
@@ -42,8 +32,6 @@ impl Application {
         )
     }
     /// Restores a supported snapshot into an exclusively new directory.
-    /// # Errors
-    /// Reports unsupported or corrupt packages, existing destinations and IO failures.
     pub fn restore_library(
         source: &Path,
         destination: &Path,
@@ -60,17 +48,30 @@ impl Application {
     }
 
     /// Opens a local file database, creating it if necessary. Parent directories must exist.
-    ///
-    /// # Errors
-    /// Rejects SQLite memory/URI paths and returns configuration or filesystem errors.
     pub fn open(path: &Path) -> Result<Self, ProtoError> {
+        Self::open_with(path, sqlite::open_and_configure)
+    }
+
+    /// Opens an existing local database for reads and writes.
+    pub fn open_existing(path: &Path) -> Result<Self, ProtoError> {
+        Self::open_with(path, sqlite::open_existing)
+    }
+
+    pub fn open_read_only(path: &Path) -> Result<Self, ProtoError> {
+        Self::open_with(path, sqlite::open_read_only)
+    }
+
+    fn open_with(
+        path: &Path,
+        connect: fn(&Path) -> Result<(Connection, ConnectionConfig), ProtoError>,
+    ) -> Result<Self, ProtoError> {
         let raw = path.as_os_str();
         if raw.is_empty() || raw == ":memory:" || raw.to_string_lossy().starts_with("file:") {
             return Err(ProtoError::Other(
                 "a local SQLite file path is required".to_owned(),
             ));
         }
-        let (connection, config) = sqlite::open_and_configure(path)?;
+        let (connection, config) = connect(path)?;
         library::check_open(&connection).map_err(LibraryError::into_open_error)?;
         let library_root = path
             .canonicalize()
@@ -79,6 +80,7 @@ impl Application {
             .ok_or_else(|| ProtoError::Other("database parent required".into()))?
             .to_path_buf();
         Ok(Self {
+            export_database: crate::catalog::exports::database_id(path),
             connection,
             config,
             library_root,
@@ -104,8 +106,6 @@ impl Application {
         crate::catalog::objects_application::commit(&mut adapter, version, expected_len, max_bytes)
     }
     /// Resolves and rechecks managed bytes; metadata-only versions return None.
-    /// # Errors
-    /// Reports a missing/corrupt object, lock or database error.
     pub fn managed_object(
         &mut self,
         id: &str,
@@ -117,9 +117,73 @@ impl Application {
         );
         crate::catalog::objects_application::managed(&mut adapter, id)
     }
-    /// Sets real object retention constraints; clearing them requires caller evidence.
+    pub fn file_availability(
+        &mut self,
+        version_id: &str,
+    ) -> Result<crate::storage::FileAvailability, crate::storage::StorageError> {
+        crate::catalog::objects_sqlite::file_availability(
+            &mut self.connection,
+            &self.library_root,
+            version_id,
+        )
+    }
+    /// Builds a PNG thumbnail or PCM WAVE audition clip from this immutable version's managed bytes.
+    pub fn preview(&mut self, id: &str) -> Result<PathBuf, crate::storage::StorageError> {
+        use crate::catalog::exports::PreviewFormat;
+        use crate::storage::StorageError;
+        let version = self
+            .asset_version(id)?
+            .ok_or(StorageError::Invalid("unknown version"))?;
+        let format = if version.source_format.eq_ignore_ascii_case("png") {
+            PreviewFormat::Png
+        } else if version.source_format.eq_ignore_ascii_case("wav") {
+            PreviewFormat::Wav
+        } else if version.source_format.eq_ignore_ascii_case("glb") {
+            PreviewFormat::Glb
+        } else {
+            return Err(StorageError::Invalid(
+                "unsupported source format; PNG, WAV or GLB required",
+            ));
+        };
+        crate::catalog::exports::Export::open_bound(
+            &self.connection,
+            &self.library_root,
+            self.export_database,
+            id,
+        )?
+        .preview(format)
+    }
+
+    /// Materializes one independently writable copy; returns its library-relative path.
     /// # Errors
-    /// Rejects invalid/unknown hash, lock or database failure.
+    /// Requires verified managed bytes and an absent or provably owned destination.
+    pub fn materialize_export(
+        &self,
+        version_id: &str,
+    ) -> Result<PathBuf, crate::storage::StorageError> {
+        self.export_session(version_id)?.materialize()
+    }
+
+    /// Evicts this version's verified export. Returns false if the target is absent.
+    /// # Errors
+    /// Refuses ambiguous ownership, changed bytes, or an unavailable managed source.
+    pub fn evict_export(&self, version_id: &str) -> Result<bool, crate::storage::StorageError> {
+        self.export_session(version_id)?.evict()
+    }
+
+    fn export_session(
+        &self,
+        id: &str,
+    ) -> Result<crate::catalog::exports::Export, crate::storage::StorageError> {
+        crate::catalog::exports::Export::open(
+            &self.connection,
+            &self.library_root,
+            self.export_database,
+            id,
+        )
+    }
+
+    /// Sets real object retention constraints; clearing them requires caller evidence.
     pub fn protect_object(
         &mut self,
         hash: &str,
@@ -139,8 +203,6 @@ impl Application {
         )
     }
     /// Explicitly collects one unreferenced, unpinned, non-unique object; no sweep.
-    /// # Errors
-    /// Rejects unsafe paths/content, lock or database failure.
     pub fn collect_object(
         &mut self,
         hash: &str,
@@ -153,7 +215,6 @@ impl Application {
         crate::catalog::objects_application::collect(&mut adapter, hash)
     }
 
-    /// Configuration read back when this connection was opened.
     #[must_use]
     pub const fn connection_config(&self) -> &ConnectionConfig {
         &self.config
@@ -167,9 +228,6 @@ impl Application {
         library::initialize(&mut self.connection)
     }
 
-    /// Validates and persists a bounded local workflow before any step runs.
-    /// # Errors
-    /// Returns invalid dependencies, schema, or database errors.
     pub fn create_workflow(
         &mut self,
         run: &str,
@@ -182,17 +240,12 @@ impl Application {
         )
     }
     /// Atomically claims a ready step. A running step blocks further claims until reconciled.
-    /// # Errors
-    /// Returns schema, unknown run, or database errors.
     pub fn claim_workflow_step(&mut self, run: &str) -> Result<Option<String>, LibraryError> {
         crate::production::workflow_application::claim(
             &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
             run,
         )
     }
-    /// Explicitly records the actual outcome of a claimed step, including after restart.
-    /// # Errors
-    /// Returns invalid state, oversized result, schema, or database errors.
     pub fn finish_workflow_step(
         &mut self,
         run: &str,
@@ -221,8 +274,6 @@ impl Application {
         )
     }
     /// Prevents future claims; does not stop a running callback or assert remote billing stopped.
-    /// # Errors
-    /// Returns unknown run, schema, or database errors.
     pub fn cancel_workflow(&mut self, run: &str) -> Result<(), LibraryError> {
         crate::production::workflow_application::cancel(
             &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
@@ -230,17 +281,12 @@ impl Application {
         )
     }
     /// Reads whether cancellation was requested, without asserting remote work stopped.
-    /// # Errors
-    /// Returns unknown run, invalid state, schema, or database errors.
     pub fn workflow_cancelled(&self, run: &str) -> Result<bool, LibraryError> {
         crate::production::workflow_application::is_cancelled(
             &crate::production::workflow_sqlite::SqliteWorkflowRuns(&self.connection),
             run,
         )
     }
-    /// Reads persisted step states and exact outcomes.
-    /// # Errors
-    /// Returns invalid persisted state, unknown run, schema, or database errors.
     pub fn workflow_steps(
         &self,
         run: &str,
@@ -251,10 +297,6 @@ impl Application {
         )
     }
 
-    /// Records an asset identity and one metadata-only version in a short transaction.
-    ///
-    /// # Errors
-    /// Rejects invalid fields, unsupported schema, duplicates, storage-lease Busy/IO and database errors.
     pub fn add_asset_version(&mut self, version: &AssetVersion) -> Result<(), LibraryError> {
         let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::new(
             &mut self.connection,
@@ -263,10 +305,6 @@ impl Application {
         crate::catalog::application::register_version(&mut metadata, version).map_err(Into::into)
     }
 
-    /// Reads a version by stable identity.
-    ///
-    /// # Errors
-    /// Returns schema, unknown state, or database errors.
     pub fn asset_version(&mut self, id: &str) -> Result<Option<AssetVersion>, LibraryError> {
         let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::new(
             &mut self.connection,
@@ -275,10 +313,18 @@ impl Application {
         crate::catalog::application::exact_version(&mut metadata, id).map_err(Into::into)
     }
 
-    /// Associates a component role with an existing version.
+    /// Finds registered versions by a nonempty, case-sensitive literal substring
+    /// of asset ID or version ID. Reads metadata in a single snapshot.
     ///
     /// # Errors
-    /// Returns invalid input, foreign key, duplicate, schema or database errors.
+    /// Returns invalid input for an empty query, or a schema or database error.
+    pub fn search_versions(
+        &mut self,
+        query: &str,
+    ) -> Result<crate::catalog::domain::VersionSearchResult, LibraryError> {
+        crate::catalog::sqlite_metadata::search_versions(&mut self.connection, query)
+    }
+
     pub fn add_component_reference(
         &mut self,
         reference: &ComponentReference,
@@ -291,10 +337,6 @@ impl Application {
             .map_err(Into::into)
     }
 
-    /// Reads explicitly versioned component references for an asset version.
-    ///
-    /// # Errors
-    /// Returns schema, unknown role, or database errors.
     pub fn component_references(
         &mut self,
         version_id: &str,
@@ -317,9 +359,6 @@ impl Application {
     }
 
     /// Runs existing bounded file validation without starting a database transaction.
-    ///
-    /// # Errors
-    /// Propagates file access and size-limit errors from the validation module.
     pub fn validate_file(
         &self,
         path: &Path,
@@ -342,7 +381,6 @@ impl Application {
     }
 }
 
-// M2 typed policy entry; callbacks below are explicitly local TEST_FIXTURE only.
 impl Application {
     /// Records immutable caller-declared capacity; not authenticated consent.
     pub fn approve_budget(&mut self, a: &crate::budget::Allowance) -> Result<(), LibraryError> {
@@ -437,9 +475,65 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Reads the immutable staged descriptor and its explicit validation scope.
+    /// Schedule the pinned idle/strike edit against its initialized BYTE-locked base.
+    /// Returns the measured input versions; the proposal ID names the new workflow.
     /// # Errors
-    /// Returns schema, database or malformed identity errors.
+    /// Rejects unsupported edits, stale planning inputs, drifted bytes and duplicate runs.
+    pub fn schedule_rigged_simple_motion(
+        &mut self,
+        proposal: &crate::candidate::Proposal,
+    ) -> Result<Vec<crate::candidate::ComponentSnapshot>, LibraryError> {
+        use crate::production::{
+            rigged_simple, staging_domain, staging_ports::RiggedSimpleStaging,
+        };
+        let editable = staging_domain::editable(proposal, rigged_simple::check_contract)?;
+        if editable != ["motion"] || proposal.contract.is_none() {
+            return Err(LibraryError::InvalidInput(
+                "expected structural motion-only BYTE edit",
+            ));
+        }
+        let owner = self
+            .asset_version(&proposal.base_version)?
+            .ok_or(LibraryError::InvalidInput("base version"))?;
+        let head = self
+            .candidate_current(&owner.asset_id)?
+            .ok_or(LibraryError::InvalidInput("missing initialized head"))?;
+        if head.version_id != proposal.base_version
+            || head.revision != proposal.expected_revision
+            || Some(&head.contract) != proposal.contract.as_ref()
+        {
+            return Err(LibraryError::InvalidInput(
+                "base revision or contract mismatch",
+            ));
+        }
+        let base = crate::production::staging_sqlite::SqliteStaging {
+            conn: &mut self.connection,
+            root: &self.library_root,
+        }
+        .rigged_simple_snapshot(
+            &head.version_id,
+            crate::assurance::rig_blender::RIGGED_SIMPLE,
+        )?;
+        let steps = rigged_simple::affected_steps(&base, &editable)?;
+        self.create_workflow(&proposal.id, &steps)?;
+        Ok(base)
+    }
+    /// Freeze the motion-only BYTE proposal for the pinned Cesium original and its idle/strike derivative.
+    /// # Errors
+    /// Returns a policy or storage error if owners, managed component bytes or locked versions differ.
+    pub fn propose_rigged_simple_motion(
+        &mut self,
+        proposal: &crate::candidate::Proposal,
+    ) -> Result<crate::candidate::Candidate, LibraryError> {
+        crate::production::staging_application::propose_rigged_simple(
+            &mut crate::production::staging_sqlite::SqliteStaging {
+                conn: &mut self.connection,
+                root: &self.library_root,
+            },
+            proposal,
+        )
+        .map_err(Into::into)
+    }
     pub fn candidate(&self, id: &str) -> Result<Option<crate::candidate::Candidate>, LibraryError> {
         crate::production::staging_application::read(
             &mut crate::production::staging_sqlite::SqliteCandidateRead {
@@ -449,7 +543,7 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Runs the predeclared fixture structure contract and conditionally advances current.
+    /// Runs the predeclared local structure contract and conditionally advances current.
     /// Returns an immutable historic receipt on replay, not a fresh validation claim.
     /// # Errors
     /// Returns missing/corrupt bytes, schema, lease or transaction errors.
@@ -466,9 +560,6 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Reads the durable terminal receipt, including conflicts and its candidate-bound report.
-    /// # Errors
-    /// Returns schema, identity or stored encoding errors.
     pub fn candidate_attempt(
         &self,
         id: &str,
@@ -481,7 +572,7 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Initializes an absent fixture-only current head at revision zero after GLB checks.
+    /// Initializes an absent local current head at revision zero after GLB checks.
     /// # Errors
     /// Rejects required unimplemented quality, unsupported roles, existing head and IO/DB errors.
     pub fn initialize_candidate_current(
@@ -499,9 +590,6 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Reads the local fixture current version, revision, and immutable declared contract.
-    /// # Errors
-    /// Returns schema, identity or database errors.
     pub fn candidate_current(
         &self,
         asset: &str,
@@ -514,11 +602,8 @@ impl Application {
     }
 }
 
-// M1 opinions remain separate from M2 candidate acceptance.
 impl Application {
     /// Appends an exact-version opinion; duplicate feedback IDs fail without overwriting.
-    /// # Errors
-    /// Rejects invalid bounds, missing/mismatched versions, duplicates and database failures.
     pub fn append_feedback(
         &mut self,
         feedback: &crate::history::Feedback,
@@ -530,8 +615,6 @@ impl Application {
         .map_err(Into::into)
     }
     /// Returns bounded newest-first history; absent assets/versions yield an empty list.
-    /// # Errors
-    /// Rejects invalid bounds, schema errors and unknown stored decisions.
     pub fn feedback_history(
         &mut self,
         query: crate::history::HistoryQuery<'_>,
@@ -543,8 +626,6 @@ impl Application {
         .map_err(Into::into)
     }
     /// Latest opinion for an asset or exact version, independent of candidate/current status.
-    /// # Errors
-    /// Returns invalid identity, schema or database errors.
     pub fn latest_feedback(
         &mut self,
         asset_id: &str,
@@ -560,6 +641,91 @@ impl Application {
 }
 
 impl Application {
+    pub fn run_byo_gpu(
+        &mut self,
+        run: &crate::execution::byo_gpu::Run,
+    ) -> Result<crate::execution::byo_gpu::Report, crate::execution::byo_gpu::RunError<LibraryError>>
+    {
+        use crate::budget::State;
+        use crate::execution::{
+            byo_gpu::{self, Outcome, Profile, Report, RunError},
+            consumption_adapter::ConsumptionBudgetOnce,
+            ports::BudgetOnce,
+        };
+
+        let prepared = byo_gpu::process::prepare(run).map_err(RunError::Invalid)?;
+        let request = prepared.request();
+        let id = &request.id;
+        let previous = self.call_intent(id).map_err(RunError::Ledger)?;
+        let staged = if previous
+            .as_ref()
+            .is_none_or(|i| i.state == State::Preparing)
+        {
+            if run.profile == Profile::KaggleCli && !byo_gpu::process::kaggle_credentials_present()
+            {
+                return Err(RunError::Credentials);
+            }
+            prepared.check_destination().map_err(RunError::Invalid)?;
+            Some(prepared.stage().map_err(RunError::Invalid)?)
+        } else {
+            None
+        };
+        self.reserve_call(&request).map_err(RunError::Ledger)?;
+
+        let mut invocation = None;
+        let recorded = if let Some(staged) = staged {
+            ConsumptionBudgetOnce(&mut self.connection)
+                .submit_once(id, || invocation = Some(staged.invoke()))
+        } else {
+            Ok(false)
+        };
+        let attempted = invocation.is_some();
+        let outcome = match invocation {
+            Some(_) if recorded.is_err() => Outcome::Unknown {
+                diagnostic: "attempt finished but the ledger could not record its outcome",
+            },
+            Some(Err(diagnostic)) => Outcome::Unknown { diagnostic },
+            Some(Ok(sha256)) => {
+                if self.reconcile_call(id, &byo_gpu::receipt(&sha256)).is_ok() {
+                    Outcome::Succeeded { sha256 }
+                } else {
+                    Outcome::Unknown {
+                        diagnostic: "artifact produced but local task settlement is unresolved",
+                    }
+                }
+            }
+            None => {
+                recorded.map_err(RunError::Ledger)?;
+                match self
+                    .call_intent(id)
+                    .map_err(RunError::Ledger)?
+                    .map(|i| i.state)
+                {
+                    Some(State::Confirmed) => {
+                        let receipts = self.call_receipts(id).map_err(RunError::Ledger)?;
+                        receipts.iter().find_map(byo_gpu::receipt_hash).map_or(
+                            Outcome::Unknown {
+                                diagnostic: "no BYO GPU success receipt is recorded",
+                            },
+                            |hash| Outcome::Succeeded {
+                                sha256: hash.into(),
+                            },
+                        )
+                    }
+                    Some(State::Released) => Outcome::Released,
+                    _ => Outcome::Unknown {
+                        diagnostic: "prior attempt is unresolved",
+                    },
+                }
+            }
+        };
+        Ok(Report {
+            attempted,
+            artifact: prepared.artifact,
+            outcome,
+        })
+    }
+
     /// Typed LOCAL TEST_FIXTURE engineering only; not authenticated provider admission.
     /// # Errors
     /// Returns preflight failures; post-invocation recording errors retain the backend result.
@@ -578,8 +744,10 @@ impl Application {
             budget,
             request,
         )
-        // Assembling the legacy boundary: generic core results become its concrete enums.
         .map(Into::into)
         .map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod budget_contention;

@@ -33,10 +33,17 @@ reimports from source in each verifier process, independently of editor caches.
 Repeat in a second fresh scratch copy to check reproducibility.
 
 No network is used by this project. Use only these constructed fixtures.
-On macOS keep the signed app bundle intact; Godot's documented self-contained
-`._sc_` marker keeps editor settings/data beside the executable. That marker
-changes bundle sealing, so verify the original app signature first. Never
-remove quarantine or disable Gatekeeper. Keep runtime/cache/logs in scratch.
+On macOS, compare the official download archive with the published checksum
+and verify the signature of the untouched extracted `Godot.app`. Keep that app
+as the verification copy. Create a separate, writable copy of the full bundle
+in scratch for execution.
+
+The trial ran Godot `4.7.2.stable.official.ed1daf0bf` via the scratch copy's
+`Godot.app/Contents/MacOS/Godot`. Place the self-contained marker at
+`Godot.app/Contents/MacOS/._sc_` inside that copy to keep editor settings and
+data there. The original bundle passed `codesign` verification. With the marker
+present, verification returned a sealed-resource error. Keep the runtime,
+cache and logs in scratch.
 The verified engine is MIT licensed; retain its LICENSE.txt and COPYRIGHT.txt
 for third-party notices when redistributing it. No engine binary is shipped here.
 

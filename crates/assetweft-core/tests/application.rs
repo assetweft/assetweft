@@ -1,11 +1,9 @@
-//! Shared application lifecycle over real SQLite files; no product schema is assumed.
 use assetweft_core::application::Application;
 use assetweft_core::validation::{
     RoleRequirement, SourceClass, SourceDeclaration, ValidationError, ValidationLimits,
 };
 use std::{fs, path::PathBuf};
 
-// Exclusive allocation and owned cleanup; timestamps do not provide uniqueness.
 struct Dir(PathBuf, Option<tempfile::TempDir>);
 impl Dir {
     fn new() -> Self {

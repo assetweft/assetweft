@@ -1,4 +1,3 @@
-//! AW010 real-disk C2 fixtures; only tempfile-owned directories are removed.
 use assetweft_core::{
     application::Application,
     library::{AssetVersion, ComponentReference, ComponentRole, Presence},
@@ -144,13 +143,12 @@ fn backup_and_unsynced_retention_are_actual_constraints_and_unprotected_orphan_c
     let v = sample("v", b);
     app.commit_object(&v, &mut &b[..], b.len() as u64, 100)
         .unwrap();
-    // Fixture simulates later version retirement; production currently exposes no version deletion.
     let raw = Connection::open(&db).unwrap();
     raw.execute_batch("PRAGMA foreign_keys=ON; DELETE FROM aw_managed_versions; DELETE FROM aw_asset_versions; DELETE FROM aw_assets;").unwrap();
     assert_eq!(
         app.collect_object(&v.content_hash).unwrap(),
         Collection::Protected
-    ); // default unsynced unique
+    );
     app.protect_object(&v.content_hash, true, false).unwrap();
     assert_eq!(
         app.collect_object(&v.content_hash).unwrap(),
@@ -303,9 +301,6 @@ fn metadata_reference_obeys_collection_lease_and_preserves_typed_errors() {
     let object = d.path().join("objects").join(&v.content_hash);
     fs::write(&object, bytes).unwrap();
 
-    // Hold the exact exclusive file lease that collect keeps across SQLite commit
-    // and unlink. No SQLite lock is held: this deterministically targets the gap
-    // from P1-AW010-01, rather than getting Busy from unrelated SQL contention.
     let lock_path = d.path().join(".aw-storage.lock");
     let lease = OpenOptions::new()
         .write(true)
@@ -326,8 +321,6 @@ fn metadata_reference_obeys_collection_lease_and_preserves_typed_errors() {
     drop(lease);
     fs::remove_file(&lock_path).unwrap();
 
-    // Once the collector lease is released, ordinary metadata still inserts and
-    // its hash protects an existing unregistered object against actual collect.
     writer.add_asset_version(&v).unwrap();
     assert_eq!(
         writer.collect_object(&v.content_hash).unwrap(),
@@ -341,7 +334,6 @@ fn metadata_reference_obeys_collection_lease_and_preserves_typed_errors() {
     ));
     assert!(!lock_path.exists(), "SQL failure must release writer lease");
 
-    // Metadata-only insertion still permits absent bytes; it never claims managed.
     let absent = sample("absent", b"bytes are not stored");
     writer.add_asset_version(&absent).unwrap();
     assert_eq!(writer.managed_object("absent").unwrap(), None);

@@ -1,6 +1,3 @@
-//! Responsibility: managed object values and pure bounded-input/retention policy.
-//! Dependencies: Catalog metadata domain only; callers: object use cases and CAS adapter.
-//! Invariants: hash is exact lowercase SHA256; any retained reference prevents collection.
 use super::domain::MetadataError;
 
 /// A verified managed object, independent of source/license metadata.
@@ -8,6 +5,13 @@ use super::domain::MetadataError;
 pub struct StoredObject {
     pub content_hash: String,
     pub byte_length: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAvailability {
+    UnknownVersion,
+    MetadataOnly,
+    Missing,
+    Available,
 }
 /// Explicit result of a requested single-object collection; no background deletion exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +54,6 @@ pub(crate) fn matching_hash(actual: &str, expected: &str) -> Result<(), ObjectPo
     }
     Ok(())
 }
-/// Called with the current retained-reference snapshot inside the leased transaction.
 pub(crate) fn collection_policy(protected: bool) -> Option<Collection> {
     protected.then_some(Collection::Protected)
 }

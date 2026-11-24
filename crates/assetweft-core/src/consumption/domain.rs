@@ -1,6 +1,3 @@
-//! Responsibility: Consumption exact local declarations and pure budget decisions.
-//! Dependencies: serde/std only; called by Consumption use cases and SQLite adapter.
-//! Invariants: integer scale, immutable identities, UNKNOWN retains reservations; declarations are not rights proof.
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Unit {

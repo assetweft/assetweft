@@ -1,6 +1,3 @@
-//! Responsibility: legacy concrete LOCAL TEST_FIXTURE composition boundary.
-//! Dependencies: root Application assembly and Execution core; callers: legacy clients.
-//! Invariants: no business policy here; original LibraryError payloads preserved.
 pub use crate::execution::{
     consumption_adapter::{PreflightError, Submission},
     runtime_application::UsageSupport,

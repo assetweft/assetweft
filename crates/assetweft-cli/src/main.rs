@@ -1,11 +1,7 @@
-//! Responsibility: CLI process entry, argument grammar/dispatch and explicit library bootstrap.
-//! Dependencies: clap, shared transport, business incoming adapters and existing Application init.
-//! Callers: humans, automation and unchanged C1 black-box tests.
-//! Invariants: one compact v1 JSON line; stderr is best effort, stdout failure exits 6. Only explicit library init initializes/migrates; no generation, shell, network or replay.
-
 mod assurance;
 mod catalog;
 mod consumption;
+mod execution;
 mod production;
 mod protocol;
 
@@ -51,6 +47,20 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
+        .subcommand(Command::new("motion-stance")
+            .about("Check a declared support foot using sampled world-space motion")
+            .arg(file())
+            .arg(Arg::new("role").long("role").required(true).value_parser(["grounded-humanoid", "hovering"])))
+        .subcommand(Command::new("motion-strike")
+            .about("Append the in-place strike clip to Cesium Rigged Simple")
+            .arg(Arg::new("with-idle").long("with-idle").help("Include a looping fixed-root distal sway").action(clap::ArgAction::SetTrue))
+            .arg(file())
+            .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf))))
+        .subcommand(Command::new("rig-bend")
+            .about("Measure the pinned Cesium Rigged Simple bend using optional Blender 5.1.2")
+            .arg(file())
+            .arg(Arg::new("blender").long("blender").required(true).value_parser(value_parser!(PathBuf)))
+            .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf))))
         .subcommand(
             Command::new("library")
                 .about("Explicit local library initialization; may apply existing product migrations")
@@ -71,7 +81,7 @@ fn grammar() -> Command {
         )
         .subcommand(
             Command::new("catalog")
-                .about("Register declarations/exact references or query stored metadata/head; no readiness check")
+                .about("Search and manage local Catalog metadata, references, version exports and feedback")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("commit-object")
@@ -81,6 +91,11 @@ fn grammar() -> Command {
                         .arg(Arg::new("file").long("file").required(true).value_parser(value_parser!(PathBuf)))
                         .arg(Arg::new("expected-len").long("expected-len").required(true).value_parser(value_parser!(u64))),
                 )
+                .subcommands([
+                    ("materialize-export", "Create or verify one writable local copy of this managed version"),
+                    ("evict-export", "Remove this version's verified, library-produced export copy"),
+                ].map(|(name, help)| Command::new(name).about(help).arg(db())
+                    .arg(Arg::new("version-id").long("version-id").required(true))))
                 .subcommand(
                     Command::new("register-version")
                         .about("Register immutable declared metadata; no managed bytes or rights verification")
@@ -95,12 +110,17 @@ fn grammar() -> Command {
                         .arg(Arg::new("reference").long("reference").required(true)
                             .value_parser(value_parser!(PathBuf))),
                 )
+                .subcommands([
+                    ("preview", "Generate a PNG thumbnail or WAV audition clip for one exact managed version"),
+                    ("version", "Read stored exact version metadata; no byte validation"),
+                    ("file-availability", "Check local managed bytes for one exact version"),
+                ].map(|(name, help)| Command::new(name).about(help).arg(db())
+                    .arg(Arg::new("version-id").long("version-id").required(true))))
                 .subcommand(
-                    Command::new("version")
-                        .about("Read stored exact version metadata; no byte validation")
+                    Command::new("search")
+                        .about("Find up to 100 registered versions by a literal asset or version ID substring")
                         .arg(db())
-                        .arg(Arg::new("version-id").long("version-id").required(true)
-                            .value_parser(value_parser!(String))),
+                        .arg(Arg::new("query").long("query").required(true)),
                 )
                 .subcommand(
                     Command::new("references")
@@ -111,19 +131,37 @@ fn grammar() -> Command {
                 )
                 .subcommand(
                     Command::new("current")
-                        .about("Read stored local fixture head and contract; no fresh validation")
+                        .about("Read stored local head and contract; no fresh validation")
                         .arg(db())
                         .arg(Arg::new("asset-id").long("asset-id").required(true)
                             .value_parser(value_parser!(String))),
+                )
+                .subcommand(
+                    Command::new("feedback-add")
+                        .about("Append an opinion for an exact registered version")
+                        .arg(db())
+                        .arg(Arg::new("feedback-id").long("feedback-id").required(true))
+                        .arg(Arg::new("asset-id").long("asset-id").required(true))
+                        .arg(Arg::new("version-id").long("version-id").required(true))
+                        .arg(Arg::new("decision").long("decision").required(true)
+                            .value_parser(["ACCEPT", "REJECT"]))
+                        .arg(Arg::new("reason").long("reason")),
+                )
+                .subcommand(
+                    Command::new("feedback-latest")
+                        .about("Read the newest opinion for an asset or an exact version")
+                        .arg(db())
+                        .arg(Arg::new("asset-id").long("asset-id").required(true))
+                        .arg(Arg::new("version-id").long("version-id")),
                 ),
         )
         .subcommand(
             Command::new("candidate")
-                .about("Initialize/stage/attempt local fixtures or query stored records; no generation")
+                .about("Stage local candidates, attempt declared contracts or query stored records")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("initialize")
-                        .about("Initialize an absent local fixture head under a declared contract")
+                        .about("Initialize an absent local head under a declared contract")
                         .arg(db())
                         .arg(Arg::new("version-id").long("version-id").required(true)
                             .value_parser(value_parser!(String)))
@@ -138,8 +176,20 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(PathBuf))),
                 )
                 .subcommand(
+                    Command::new("schedule-rigged-simple-motion")
+                        .about("Schedule affected steps for a pinned motion edit on an initialized head")
+                        .arg(db())
+                        .arg(Arg::new("proposal").long("proposal").required(true).value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("propose-rigged-simple-motion")
+                        .about("Freeze an exact Cesium Rigged Simple motion-only byte candidate")
+                        .arg(db())
+                        .arg(Arg::new("proposal").long("proposal").required(true).value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
                     Command::new("attempt")
-                        .about("Attempt a local fixture acceptance contract; may commit a receipt and head")
+                        .about("Attempt a declared local structural contract; may commit a receipt and head")
                         .arg(db())
                         .arg(Arg::new("candidate-id").long("candidate-id").required(true)
                             .value_parser(value_parser!(String))),
@@ -235,6 +285,13 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(String))),
                 )
                 .subcommand(
+                    Command::new("receipts")
+                        .about("Read persisted LOCAL usage receipts for an exact call intent ID")
+                        .arg(db())
+                        .arg(Arg::new("intent-id").long("intent-id").required(true)
+                            .value_parser(value_parser!(String))),
+                )
+                .subcommand(
                     Command::new("cancel")
                         .about("Request LOCAL call cancellation; remote work and fees may continue")
                         .arg(db())
@@ -242,6 +299,7 @@ fn grammar() -> Command {
                             .value_parser(value_parser!(String))),
                 ),
         )
+        .subcommand(execution::grammar())
         .subcommand(
             Command::new("plan")
                 .arg(
@@ -258,7 +316,6 @@ fn grammar() -> Command {
                 ),
         )
 }
-/// The only CLI path authorized to create/initialize a library, using existing migrations.
 fn library_init_response(call_id: Option<&String>, args: &ArgMatches) -> (i32, Value) {
     let db = args.get_one::<PathBuf>("db").expect("required");
     let finish = |code, status, errors, results| {
@@ -267,7 +324,6 @@ fn library_init_response(call_id: Option<&String>, args: &ArgMatches) -> (i32, V
             envelope("library init", call_id, status, errors, results),
         )
     };
-    // New files are allowed; existing directories/special files are not SQLite inputs.
     match std::fs::metadata(db) {
         Ok(metadata) if !metadata.is_file() => {
             return finish(
@@ -373,6 +429,9 @@ fn run() -> (i32, Value) {
     let limits = val::ValidationLimits {
         max_bytes: *matches.get_one::<u64>("max-bytes").expect("default"),
     };
+    if command == "byo-gpu" {
+        return execution::response(args, call_id, limits.max_bytes);
+    }
     if command == "library" {
         let (_, init_args) = args.subcommand().expect("clap requires library init");
         return library_init_response(call_id, init_args);
@@ -384,6 +443,7 @@ fn run() -> (i32, Value) {
             "balance" => "budget balance",
             "reserve" => "budget reserve",
             "intent" => "budget intent",
+            "receipts" => "budget receipts",
             "cancel" => "budget cancel",
             _ => unreachable!("clap grammar"),
         };
@@ -392,17 +452,29 @@ fn run() -> (i32, Value) {
     if command == "catalog" {
         let (action, query_args) = args.subcommand().expect("clap requires a catalog action");
         let wire = match action {
+            "materialize-export" => "catalog materialize-export",
+            "evict-export" => "catalog evict-export",
             "commit-object" => "catalog commit-object",
             "register-version" => "catalog register-version",
             "add-reference" => "catalog add-reference",
             "version" => "catalog version",
+            "search" => "catalog search",
+            "preview" => "catalog preview",
+            "file-availability" => "catalog file-availability",
             "references" => "catalog references",
             "current" => "catalog current",
+            "feedback-add" => "catalog feedback-add",
+            "feedback-latest" => "catalog feedback-latest",
             _ => unreachable!("clap grammar"),
         };
         if matches!(
             action,
-            "commit-object" | "register-version" | "add-reference"
+            "materialize-export"
+                | "evict-export"
+                | "commit-object"
+                | "register-version"
+                | "add-reference"
+                | "feedback-add"
         ) {
             return catalog::write_response(wire, call_id, action, query_args, limits);
         }
@@ -413,12 +485,20 @@ fn run() -> (i32, Value) {
         let wire = match action {
             "initialize" => "candidate initialize",
             "propose" => "candidate propose",
+            "schedule-rigged-simple-motion" => "candidate schedule-rigged-simple-motion",
+            "propose-rigged-simple-motion" => "candidate propose-rigged-simple-motion",
             "attempt" => "candidate attempt",
             "show" => "candidate show",
             "receipt" => "candidate receipt",
             _ => unreachable!("clap grammar"),
         };
-        if matches!(action, "initialize" | "propose") {
+        if matches!(
+            action,
+            "initialize"
+                | "propose"
+                | "propose-rigged-simple-motion"
+                | "schedule-rigged-simple-motion"
+        ) {
             return production::candidate_write_response(wire, call_id, action, query_args, limits);
         }
         return production::candidate_response(wire, call_id, action, query_args);
@@ -436,6 +516,10 @@ fn run() -> (i32, Value) {
         return production::workflow_response(wire, call_id, action, workflow_args, limits);
     }
     match command {
+        "motion-strike" | "rig-bend" => {
+            assurance::rig_profile_response(command, call_id, args, limits)
+        }
+        "motion-stance" => assurance::stance_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),
         "plan" => production::plan_response(call_id, args, limits),

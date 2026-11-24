@@ -1,8 +1,3 @@
-//! Responsibility: bounded Rig inspection orchestration.
-//! Dependencies: domain and purpose capabilities.
-//! Callers: legacy Rig composition.
-//! Invariants: invalid format never implies numeric PASS.
-
 use super::{
     application,
     domain::{CheckStatus, RoleRequirement, SourceClass, SourceDeclaration, ValidationLimits},

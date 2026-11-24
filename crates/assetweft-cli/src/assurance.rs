@@ -1,8 +1,3 @@
-//! Responsibility: Assurance CLI incoming adapter for bounded inspect/validate reports.
-//! Dependencies: shared transport and existing public Assurance checks/report types.
-//! Callers: main command dispatch.
-//! Invariants: unchanged bounds, role/source/check diagnostics and NOT_RUN scope; projection adds no validation policy or production acceptance claim.
-
 use crate::protocol::{envelope, error, source};
 use assetweft_core::assurance as val;
 use clap::ArgMatches;
@@ -85,4 +80,90 @@ pub(super) fn validate_response(
         "checks":report.checks.iter().map(|c|json!({"id":c.id,"status":c.status.as_str(),"detail":c.detail})).collect::<Vec<_>>(),
         "not_run":report.not_run}),
     )
+}
+
+pub(super) fn rig_profile_response(
+    command: &str,
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let path = |id| args.get_one::<PathBuf>(id).expect("required").as_path();
+    let result = match command {
+        "rig-bend" => val::rig_blender::measure_rigged_simple(
+            path("blender"),
+            path("file"),
+            path("out"),
+            limits,
+        ),
+        "motion-strike" if args.get_flag("with-idle") => {
+            assetweft_core::motion::add_strike_with_idle(path("file"), path("out"), limits)
+        }
+        "motion-strike" => assetweft_core::motion::add_strike(path("file"), path("out"), limits),
+        _ => unreachable!("clap grammar"),
+    };
+    match result {
+        Ok(report) => (0, envelope(command, call_id, "PASS", json!([]), report)),
+        Err(e) => {
+            let message = e.to_string();
+            let (code, status) = if e.is::<val::ValidationError>() {
+                (2, "INVALID_INPUT")
+            } else if message.starts_with("UNSUPPORTED") {
+                (1, "NOT_RUN")
+            } else {
+                (1, "FAIL")
+            };
+            (
+                code,
+                envelope(
+                    command,
+                    call_id,
+                    status,
+                    json!([error(command, status, message)]),
+                    Value::Null,
+                ),
+            )
+        }
+    }
+}
+
+pub(super) fn stance_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    use assetweft_core::motion::stance::{MotionRole, Status, assess};
+    let role = match args.get_one::<String>("role").expect("required").as_str() {
+        "grounded-humanoid" => MotionRole::GroundedHumanoid,
+        "hovering" => MotionRole::Hovering,
+        _ => unreachable!("clap grammar"),
+    };
+    match assess(
+        args.get_one::<PathBuf>("file").expect("required"),
+        role,
+        limits,
+    ) {
+        Ok(report) => {
+            let (code, status) = match report.status {
+                Status::Pass => (0, "PASS"),
+                Status::Fail => (1, "FAIL"),
+                Status::Inapplicable => (5, "INAPPLICABLE"),
+                Status::NotRun => (3, "NOT_RUN"),
+            };
+            (
+                code,
+                envelope("motion-stance", call_id, status, json!([]), json!(report)),
+            )
+        }
+        Err(e) => (
+            2,
+            envelope(
+                "motion-stance",
+                call_id,
+                "INVALID_INPUT",
+                json!([error("file", "INVALID_INPUT", e)]),
+                Value::Null,
+            ),
+        ),
+    }
 }

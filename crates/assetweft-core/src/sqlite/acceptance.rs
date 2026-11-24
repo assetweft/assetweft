@@ -1,6 +1,3 @@
-//! Responsibility: single-database atomic Production acceptance adapter.
-//! Dependencies: Production byte/receipt IO, Catalog SQLite adapter, storage lease and rusqlite.
-//! Callers: compatibility Application; invariant: lease before IMMEDIATE, CAS and receipt in one commit, no replay.
 use crate::catalog::domain::FixtureContract;
 use crate::{
     catalog::sqlite_store,
@@ -30,6 +27,15 @@ fn record(conn: &Connection, id: &str, result: &Acceptance) -> Result<(), Librar
     Ok(())
 }
 
+impl crate::production::rigged_simple::InspectOwner for SqliteAcceptance<'_> {
+    fn inspect_owner(
+        &mut self,
+        version: &str,
+        pin: &str,
+    ) -> Result<crate::production::rigged_simple::CheckedOwner, AcceptanceError> {
+        crate::production::staging_sqlite::inspect_rigged_owner(self.conn, self.root, version, pin)
+    }
+}
 impl AcceptanceInputs for SqliteAcceptance<'_> {
     fn existing_receipt(&mut self, id: &str) -> Result<Option<Acceptance>, AcceptanceError> {
         crate::production::initialization_application::read(
@@ -63,18 +69,12 @@ impl AcceptanceInputs for SqliteAcceptance<'_> {
         max_component_bytes: u64,
     ) -> Result<(), AcceptanceError> {
         for s in snapshots {
-            // The frozen base is re-checked against the candidate's declared bound
-            // on the actual file before Catalog managed CAS hashing.
-            crate::production::staging_sqlite::bounded_regular(
-                &self.root.join("objects").join(&s.measured_sha256),
-                Some(max_component_bytes),
+            crate::production::staging_sqlite::remeasure_base_component(
+                self.conn,
+                self.root,
+                s,
+                max_component_bytes,
             )?;
-            if crate::production::staging_sqlite::measured(self.conn, self.root, &s.version)?
-                .content_hash
-                != s.measured_sha256
-            {
-                return Err(AcceptanceError::InvalidInput("base byte drift"));
-            }
         }
         Ok(())
     }

@@ -1,14 +1,13 @@
-//! Responsibility: concrete bounded CAS streaming and SQLite managed-object persistence.
-//! Dependencies: Catalog semantic capability/policy, existing storage lease/binding, library schema guard.
-//! Callers: storage compatibility composition; invariants: lease before IMMEDIATE, publish before registration.
 use super::{
     domain::AssetVersion,
-    objects_domain::{self as policy, Collection, ObjectPolicyError, StoredObject, hash_ok},
+    objects_domain::{
+        self as policy, Collection, FileAvailability, ObjectPolicyError, StoredObject, hash_ok,
+    },
     objects_ports::ManagedObjects,
 };
 use crate::{
     library,
-    storage::{StorageError, bind, lock},
+    storage::{StorageError, bind, check_binding, lock, redirected},
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -74,8 +73,9 @@ fn digest(reader: &mut impl Read) -> Result<(String, u64), StorageError> {
         n,
     ))
 }
-fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageError> {
-    if !fs::symlink_metadata(path)?.file_type().is_file() {
+pub(super) fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || redirected(&metadata) {
         return Err(StorageError::Corrupt);
     }
     let mut file = File::open(path)?;
@@ -83,6 +83,72 @@ fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageError> {
         return Err(StorageError::Corrupt);
     }
     Ok(())
+}
+
+pub(super) fn managed_record(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<StoredObject>, StorageError> {
+    use rusqlite::OptionalExtension;
+    library::require_current(conn)?;
+    let found = conn
+        .query_row(
+            "SELECT o.content_hash, o.byte_length, a.content_hash
+         FROM aw_managed_versions v LEFT JOIN aw_objects o ON o.content_hash=v.content_hash
+         LEFT JOIN aw_asset_versions a ON a.version_id=v.version_id WHERE v.version_id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    match found {
+        Some((hash, size, expected)) if hash == expected && hash_ok(&hash) && size >= 0 => {
+            Ok(Some(StoredObject {
+                content_hash: hash,
+                byte_length: size as u64,
+            }))
+        }
+        Some(_) => Err(StorageError::Corrupt),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn file_availability(
+    conn: &mut Connection,
+    root: &Path,
+    id: &str,
+) -> Result<FileAvailability, StorageError> {
+    if super::sqlite_metadata::asset_version(conn, id)?.is_none() {
+        return Ok(FileAvailability::UnknownVersion);
+    }
+    let Some(object) = managed_record(conn, id)? else {
+        return Ok(FileAvailability::MetadataOnly);
+    };
+    check_binding(conn, root)?;
+    let directory = root.join("objects");
+    let verify_managed = || {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir() || redirected(&metadata) {
+            return Err(StorageError::Invalid("objects must be a real directory"));
+        }
+        verify(
+            &directory.join(&object.content_hash),
+            &object.content_hash,
+            object.byte_length,
+        )
+    };
+    match verify_managed() {
+        Ok(()) => Ok(FileAvailability::Available),
+        Err(StorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(FileAvailability::Missing)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
@@ -100,7 +166,6 @@ impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
         let mut h = Sha256::new();
         let mut written = 0u64;
         let mut buf = [0; 65536];
-        // Read at most expected length + 1: catches both incomplete and excess input.
         let mut bounded = (&mut self.reader).take(expected_len + 1);
         loop {
             let n = bounded.read(&mut buf)?;
@@ -170,19 +235,14 @@ impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
     fn managed(&mut self, id: &str) -> Result<Option<StoredObject>, StorageError> {
         let conn = &mut *self.conn;
         let root = self.root;
-        use rusqlite::OptionalExtension;
         let _guard = lock(root)?;
         bind(conn, root)?;
-        library::require_current(conn)?;
-        let found=conn.query_row("SELECT o.content_hash,o.byte_length FROM aw_managed_versions v JOIN aw_objects o USING(content_hash) WHERE v.version_id=?1",[id],|r|Ok(StoredObject{content_hash:r.get(0)?,byte_length:r.get::<_,i64>(1)? as u64})).optional()?;
-        if let Some(o) = &found {
-            if !hash_ok(&o.content_hash) {
-                return Err(StorageError::Corrupt);
-            }
+        let found = managed_record(conn, id)?;
+        if let Some(object) = &found {
             verify(
-                &objects(root)?.join(&o.content_hash),
-                &o.content_hash,
-                o.byte_length,
+                &objects(root)?.join(&object.content_hash),
+                &object.content_hash,
+                object.byte_length,
             )?;
         }
         Ok(found)
@@ -221,14 +281,13 @@ impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
             return Ok(outcome);
         }
         let path = objects(root)?.join(hash);
-        // Validate before deleting a candidate; no symlink or wrong-content cleanup.
         match fs::symlink_metadata(&path) {
             Ok(meta) => verify(&path, hash, meta.len())?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
         tx.execute("DELETE FROM aw_objects WHERE content_hash=?1", [hash])?;
-        tx.commit()?; // Failure after this point leaves only an explainable file orphan.
+        tx.commit()?;
         match fs::remove_file(path) {
             Ok(()) => Ok(Collection::Removed),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Collection::Absent),

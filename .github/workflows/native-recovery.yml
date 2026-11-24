@@ -58,11 +58,17 @@ jobs:
             --test library \
             --test native_recovery
 
+      - name: Overlapping budget writer transactions
+        run: cargo test --locked -p assetweft-core --lib application::budget_contention::overlapping_claim_and_cancel -- --exact
+
       - name: Focused native CLI protocol tests
         shell: bash
         run: |
           set -eu
           cargo test --locked -p assetweft-cli --test cli
+
+      - name: Default SQLite busy wait on the budget writer
+        run: python3 tools/default-busy-wait.py
 
       # Isolated M6 app is not a member of the root Rust workspace.
       - name: Detect isolated viewport changes

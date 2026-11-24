@@ -1,18 +1,21 @@
 # assetweft CLI v1 (AW-033:A/B)
 
 Build with `cargo build -p assetweft-cli --locked`; run `target/debug/assetweft`.
-No daemon, Python, model, shell, external resource resolution, network or remote execution.
+The optional `rig-bend` command runs a local Blender executable. Other commands run without Blender.
 `inspect`/`validate`/`plan` never touch a database. Explicit `library init` initializes
 a named local library; `workflow create` persists a graph, `workflow status` reads state,
 and `workflow cancel` persists a cancellation request. `budget approve` stores an immutable local allowance declaration and `budget balance`
 reads its local ledger. `budget reserve` stores a local call intent, `budget intent`
-reads it and `budget cancel` requests local cancellation. These commands never execute
+reads it, `budget receipts` reads its stored usage receipts, and `budget cancel` requests local cancellation. These commands never execute
 steps or call providers. `candidate show/receipt` query stored local descriptors and
 historical acceptance receipts through Production. `candidate initialize` explicitly creates a local fixture head and `candidate propose` stages a managed byte fixture descriptor. `catalog version/references/current`
 query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
+assetweft [--call-id ID] motion-stance SAMPLES.json --role grounded-humanoid|hovering
+assetweft [--call-id ID] motion-strike RiggedSimple.glb [--with-idle] --out NEW_FILE.glb
+assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
 assetweft [--call-id ID] validate FILE.glb [--role static-mesh|rigged-character|animated-character]
 assetweft [--call-id ID] plan --request request.json --trusted-context context.json
 assetweft [--call-id ID] library init --db PATH
@@ -23,31 +26,42 @@ assetweft [--call-id ID] budget approve --db EXISTING_DB --allowance FILE
 assetweft [--call-id ID] budget balance --db EXISTING_DB --budget-id ID
 assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
 assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] budget receipts --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] byo-gpu profiles
+assetweft [--call-id ID] byo-gpu kaggle-validate --bundle DIR
+assetweft [--call-id ID] byo-gpu run --db EXISTING_DB --budget-id ID --intent-id ID --profile PROFILE --model MODEL --out-dir DIR [--image FILE] [--prompt TEXT] [--bundle DIR] [--adapter-bin CMD] [--allow-remote-upload]
 assetweft [--call-id ID] candidate initialize --db EXISTING_DB --version-id ID --contract FILE
 assetweft [--call-id ID] candidate propose --db EXISTING_DB --proposal FILE
+assetweft [--call-id ID] candidate propose-rigged-simple-motion --db EXISTING_DB --proposal FILE
 assetweft [--call-id ID] candidate show --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] candidate receipt --db EXISTING_DB --candidate-id ID
 assetweft [--call-id ID] catalog version --db EXISTING_DB --version-id ID
+assetweft [--call-id ID] catalog search --db EXISTING_DB --query TEXT
+assetweft [--call-id ID] catalog file-availability --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog references --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog current --db EXISTING_DB --asset-id ID
+assetweft [--call-id ID] catalog feedback-add --db EXISTING_DB --feedback-id ID --asset-id ID --version-id ID --decision ACCEPT|REJECT [--reason TEXT]
+assetweft [--call-id ID] catalog feedback-latest --db EXISTING_DB --asset-id ID [--version-id ID]
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
 16777216, minimum 1), including `workflow create --steps`, `budget approve --allowance`
 and `budget reserve --request`, `candidate initialize --contract` and `candidate propose --proposal`; it never bounds database size or query result sizes and
-has no effect on library init/status/cancel/balance/intent/candidate/catalog queries.
+has no effect on library init/status/cancel/balance/intent/receipts/candidate/catalog queries or feedback-add.
 Its existing numeric parser validation still applies to every command.
+The optional [Rigged Simple motion profile](../../examples/rigged-simple/README.md) appends a reproducible, in-place strike to a new GLB. It uses the same bounded input reader.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-`library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
+`motion-strike`, `rig-bend`, `library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `validate`, `plan`, `library init`, `workflow create`,
+`command` is `inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
-`budget reserve`, `budget intent`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
-`catalog version`, `catalog references`, `catalog current`, `arguments`,
+`budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
+`catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
+`catalog feedback-latest`, `byo-gpu profiles`, `byo-gpu kaggle-validate`, `byo-gpu run`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
@@ -62,6 +76,28 @@ cross-platform canonical digest.
 `inspect` delegates static GLB structure inspection to core geometry. PASS means
 only that inspection returned a report; unknown units stay UNKNOWN and the
 report lists unexecuted checks. It does not render or read linked URIs.
+
+### Sampled foot slip
+
+`motion-stance` reads one clip's sampled marker tracks. The caller declares the motion
+role, support-foot marker and inclusive stance interval. Supply consecutive frames
+starting at index 0, in world metres with Y up. A null position means missing evidence.
+For example, this programmatic left-sole track slides out 0.125 m and returns:
+
+```json
+{"stance":{"contact":"left_sole","frames":[0,2]},"tracks":[{"marker":"left_sole","world_y_up_m":[[0,0,0],[0.125,0,0],[0,0,0]]}]}
+```
+
+For `grounded-humanoid`, the check measures the largest horizontal (XZ) distance
+from the first stance sample. Up to and including 0.01 m is PASS/0; the example
+returns FAIL/1. The same bytes with `--role hovering` return INAPPLICABLE/5
+with a reason and zero evaluated samples. Only PASS returns zero for this command.
+Missing, ambiguous or incomplete stance evidence returns NOT_RUN/3. Malformed
+track data returns INVALID_INPUT/2. Reports include the sample file SHA-256.
+
+Contact identity, units and role come from the author. The result covers one declared
+contact at the supplied frames. Floor height, motion between frames, clip extraction
+and character classification are outside this check.
 
 `validate` delegates core bounded file and role checks (default static mesh).
 PASS/0 covers these implemented checks only. Full semantics, provenance,
@@ -85,14 +121,62 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 |---|---|---|
 | `production.rs` | plan DTO/result projection; workflow create/status/cancel; explicit fixture initialization/staging; stored candidate queries | [Production](../assetweft-core/src/production/CONTRACT.md) |
 | `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
-| `catalog.rs` | strict declared metadata/exact-reference writes, stored projections and fixture-head query | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
+| `catalog.rs` | declared metadata, exact references, version feedback and fixture-head queries | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
+| `execution.rs` | BYO GPU profiles, bundle validation and run receipts | [Execution](../assetweft-core/src/execution/CONTRACT.md) |
 | `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
 
 Adapters depend inward on these public capabilities and share only transport helpers;
 core `Application` retains composition, persistence and business policy. Catalog now has a
 real incoming consumer in `catalog.rs`; its legacy `candidate_current` facade is Catalog-owned.
-No empty Execution module or additional domain/port/registry layer is introduced.
+
+## BYO GPU
+
+`profiles` reports the supported model IDs, licenses, expected artifact names, and
+optional external runtimes. `kaggle-validate` checks the bundle on disk and returns
+`credential_present` as a boolean. A valid private GPU bundle can pass validation
+with the boolean false. Use a real `owner/kernel-slug`, a kernel title, Python
+script or notebook, `is_private: true`, `enable_gpu: true`, and an in-bundle code file.
+The JSON object accepts boolean flags and the Kaggle CLI 2.2.5 template strings
+`"true"` and `"false"`. Duplicate policy fields and numeric kernel ID overrides are
+rejected.
+Absolute paths, traversal and symlinked code paths are rejected. The accelerator
+defaults to `NvidiaTeslaT4` (T4 ×2). A `machine_shape` of `NvidiaL4` is also accepted.
+
+Initialize the library explicitly, then use `budget approve` with `unit: "Task"`,
+`approval: "ExplicitBounded"` and positive capacity. The `run` command requires
+`--allow-remote-upload` whenever a local image or bundle is supplied. HF 3D models
+require an image and HF 2D models require a prompt. Kaggle requires a private
+bundle and credential presence for a new attempt. Configure credentials using
+`HF_TOKEN`, `KAGGLE_API_TOKEN`, `KAGGLE_USERNAME` with `KAGGLE_KEY`, or a standard
+Kaggle credential file such as `~/.kaggle/access_token` or `~/.kaggle/kaggle.json`.
+AssetWeft checks file presence without reading the contents.
+
+Set `--adapter-bin` or `ASSETWEFT_BYO_GPU_ADAPTER` to a trusted local executable.
+AssetWeft runs it without a shell and with the inherited environment. Use a
+runner that keeps credentials in the environment or provider configuration and
+sets its own provider deadlines. HF Spaces clients and Kaggle CLI are external
+processes. Python is optional for these runners and unnecessary for AssetWeft.
+The runner receives `--profile PROFILE --model MODEL --out-dir STAGING_DIR`
+plus the supplied inputs as `--image FILE`, `--prompt=TEXT`, or
+`--bundle DIR --accelerator ACCELERATOR`. Local file arguments point to private
+snapshots. A Kaggle runner should push the staged private kernel with the supplied
+accelerator, query that run's status, and download that run's output. PyPI
+`kaggle==2.2.5` needs `--with six` when using `uvx`. The runner exits zero only
+after writing the expected artifact into its staging output directory.
+
+AssetWeft publishes the artifact under `--out-dir` without replacing an existing
+file. Supply an existing directory or a new directory under an existing parent.
+The global `--max-bytes` restricts each input file and the output file. On PASS/0,
+`results.state` is `SUCCEEDED` and `results.artifact` gives the file name and
+SHA-256. Read `budget receipts` for the stored digest. Repeating a settled intent
+with the same inputs returns that receipt with `invoked: false` even after
+removing the current Kaggle credential. Local staging precedes reservation and
+can create a new output directory. A staging failure returns INVALID_INPUT/2 and
+leaves the ledger unchanged. An uncertain attempt returns UNKNOWN/1, retains
+the reservation, and never launches the runner again for that intent.
+`invoked` indicates entry into the claimed runner path, and does not prove a
+remote submission. The local unit is `Task` and `cash_cost` stays null.
 
 ## Explicit library initialization and workflow commands (AW-033:B bounded slice)
 
@@ -234,12 +318,13 @@ not complete full AW-033:B, real provider or product acceptance.
 ```text
 assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
 assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] budget receipts --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
 ```
 
-These commands use the same existing-file guard and `Application::open` described above.
-They never initialize/create a database implicitly; the inherited check/open race and
-connection pragmas still apply. `--call-id` is envelope correlation only, separate from
+These commands use the existing-file guard. `reserve`, `intent`, and `cancel` use
+`Application::open` with the inherited check/open race and connection pragmas.
+`receipts` uses `Application::open_read_only`. `--call-id` is envelope correlation only, separate from
 `request.id` and the verbatim `--intent-id`.
 
 `reserve` reads one bounded, strict JSON **object** through the existing `--max-bytes` reader:
@@ -273,6 +358,16 @@ uses the same result shape, including `intent:null` when the API returns None (a
 absent/empty ID). State is explicitly one of `PREPARING`, `ATTEMPTING`, `UNKNOWN`,
 `CONFIRMED`, `RELEASED`; charge is the returned integer or null, never an inferred fee zero.
 
+`receipts` passes the exact `--intent-id` to `Application::call_receipts` once.
+PASS/0 returns `results.scope` = `local_call_receipts` and `results.receipts`, an array of
+persisted receipts in receipt-ID order. An unknown or empty ID, or an intent with no
+receipts, returns an empty array. Each receipt includes `id`, `source`, `resolution`,
+and `usage`. Each usage entry preserves its `source`, `unit`, and `amount`.
+Units are `"Token"`, `"Task"`, `"Second"`, or
+`{"CurrencyMinor":{"currency":"USD","decimals":2}}` (example currency and scale).
+`amount: null` is unknown and `amount: 0` is a recorded zero. This command reads
+local evidence through SQLite and makes no provider request.
+
 `cancel` calls `Application::cancel_call` once. Its success result is only
 `{"scope":"stored_local_call_cancellation_request","intent_id":"intent-1"}`.
 There is no extra read after the write, claimed release/refund/stop, or synthesized receipt.
@@ -291,7 +386,7 @@ intent/balance separately. This slice is not full AW-033:B or product acceptance
 
 Exit mapping (CONTRACTS §10.5): 0 scoped checks pass / declaration consistent /
 library initialized / workflow created / status read / cancellation request persisted /
-local allowance stored, balance/intent or Catalog metadata/head read, or local intent reserved/cancellation requested /
+local allowance stored, balance/intent/receipts or Catalog metadata/head read, or local intent reserved/cancellation requested /
 help/version; 1 core validation
 or other contract FAIL (including persisted workflow Database diagnostics); 2 malformed
 arguments, unreadable/oversized files, malformed JSON/GLB inspection, invalid or non-regular
@@ -379,6 +474,33 @@ concurrent business writes can change what separate invocations observe. Full AW
 product acceptance, providers, paid execution, F0, AI and engines remain outside this slice.
 
 
+## Local version feedback
+
+`catalog feedback-add` requires an existing initialized library and an exact
+registered asset/version pair. Decisions are case-sensitive `ACCEPT` or `REJECT`.
+The optional reason is passed verbatim. Catalog validates IDs and reasons and
+appends one opinion through `Application::append_feedback`. Success returns
+PASS/0 with `results.scope: "appended_local_version_feedback"` and a
+`results.feedback` record:
+
+```json
+{"sequence":1,"feedback_id":"opinion-1","asset_id":"asset","version_id":"v1","decision":"REJECT","reason":"Needs revision"}
+```
+
+`catalog feedback-latest` uses `Application::latest_feedback` and returns
+PASS/0 with `results.scope: "stored_local_version_feedback"`. It returns the
+same record shape, ordered by the persisted local sequence. With `--version-id`
+it matches that exact asset/version pair. Without it, it selects the newest
+opinion across the asset's versions. No match yields `results.feedback: null`.
+An omitted reason is represented as `reason: null` within a record.
+
+Both commands use regular-file database admission and the v1 JSON envelope.
+Duplicate feedback IDs and write-time version/asset mismatches return
+INVALID_INPUT/2 at `catalog`. An uninitialized library returns
+INPUT_INCOMPLETE/3. Feedback is independent of candidate acceptance and the
+current head. A stdout failure can return exit 6 after an append commits.
+Inspect persisted feedback before deciding how to proceed.
+
 ## Stored Catalog queries (AW-033:B bounded slice)
 
 All three commands use the same `existing_database` regular-file admission and
@@ -405,6 +527,45 @@ The stored object preserves every AssetVersion field: `asset_id`, `version_id`,
 Presence is exactly `UNKNOWN` or `MISSING`; there is no READY state. Authorization,
 authorized and license fields are stored declarations, never a new authentication,
 rights or availability guarantee. A valid absent identity returns `version:null`.
+
+`catalog search --db EXISTING_DB --query TEXT` opens an existing library read-only.
+It matches the case-sensitive literal substring against either the asset ID or the
+version ID. It preserves spaces and treats characters such as `%` and `_` literally.
+Use `--query='-part'` when the value starts with a dash. An empty query is invalid.
+
+A successful v1 response exits 0 with status `PASS` and `results` containing
+`scope:"stored_local_asset_version_search"`, `matches`, and `truncated`.
+Each match contains exactly `asset_id`, `version_id`, and `source_format` as stored.
+Format is a metadata declaration. Matches use SQLite BINARY order by asset ID,
+then version ID, with one row per matching registered version. No match yields
+`matches:[]` and `truncated:false`. When more than 100 versions match, only the
+first 100 are returned and `truncated:true`. Refine the substring to narrow the
+results. This command has no continuation token.
+Pass a returned `version_id` as `--version-id` to `catalog version` or
+`catalog file-availability`.
+
+`catalog file-availability --db EXISTING_DB --version-id ID` opens SQLite in
+read-only mode. A successful query exits 0 with outer status `PASS` and returns
+`{"scope":"local_managed_version_bytes","version_id":"ID","availability":"STATE"}`.
+
+| State | Meaning |
+|---|---|
+| `UNKNOWN_VERSION` | The exact version ID has no local Catalog record. |
+| `METADATA_ONLY` | The version has a record without a managed-object binding, even if another version shares its content hash. |
+| `MISSING` | The version has a managed-object binding and valid store ownership, but the object file or directory is absent. |
+| `AVAILABLE` | The local managed file was readable and matched the bound byte length and SHA-256 during this call. |
+
+Missing or unreadable databases fail at `db` with `INVALID_INPUT`/2. An
+uninitialized database returns `INPUT_INCOMPLETE`/3. Corrupt bytes fail with
+`FAIL`/1, invalid storage entries or ownership with the existing typed error,
+and storage I/O errors such as denied access or a missing owner file with
+`INTERNAL`/6. Errors retain a diagnostic and return `results:null`. The query
+does not create a library, claim store ownership, or repair missing files.
+
+The observation applies to one version in a private, cooperating local library.
+It streams the managed file and is independent of the stored `presence` and
+`--max-bytes`. It provides no guarantee about later reads, external references,
+preview rendering, format validity, search, or usage rights.
 
 `catalog references` returns
 `{"scope":"stored_local_exact_component_references","references":[...]}`.
@@ -507,6 +668,56 @@ not an idempotency token. Fixtures and programmatic GLB checks are synthetic evi
 not real generated assets, authorization, budget approval, provider access or production
 acceptance. Full AW-033:B, product, real-data, paid/provider, F0, AI and engines are NOT_RUN.
 
+
+## Stage a Rigged Simple motion edit
+
+`candidate propose-rigged-simple-motion` takes the proposal JSON shown above with
+`editable: ["motion"]`, `lock_mode: "BYTE"` and an omitted or null contract.
+It measures two managed GLB versions of one asset: the original Cesium Rigged
+Simple and the pinned derivative with the added strike and idle clips. Both
+owners declare CC-BY-4.0 and the derivative declares a procedural edit.
+
+For each owner, use `assetweft_core::motion::components::rigged_simple_components`
+on its GLB bytes. Commit the four returned JSON payloads as managed Catalog
+versions and attach them with exact role references. The derivative reuses the
+original mesh, materials and rig version IDs and attaches its own motion version.
+Keep Cesium's attribution with these derivatives. Version and rights fields
+record the caller's declarations.
+
+A successful command freezes the measured descriptor under
+`RIGGED_SIMPLE_MOTION_BYTE_STAGING_V1`. Read it after reopening with
+`candidate show`, and retrieve individual selected objects with
+`catalog materialize-export`. Staging creates no current head. The fixture
+`candidate attempt` records `NotRun` for the absent contract. Read that
+historical result with `candidate receipt`.
+
+### Advance a local Rigged Simple head
+
+Use the following contract JSON with `candidate initialize --db DB --version-id ORIGINAL --contract FILE`.
+Include the same object in the proposal's `contract` field and use a fresh candidate ID.
+
+```json
+{"contract_id":"RIGGED_SIMPLE_MOTION_STRUCTURE_V1","max_component_bytes":16777216,"required_quality":[]}
+```
+
+To generate the derivative from an initialized original, first use
+`candidate schedule-rigged-simple-motion --db DB --proposal FILE`. Supply the same
+structural BYTE proposal used for staging. Its ID becomes the workflow run ID.
+The response includes the measured base component versions and hashes. Read
+`workflow status`, then `workflow claim`. For the claimed motion step, materialize
+the exact base version and run `motion-strike SOURCE --with-idle --out NEW_FILE`.
+Record the driver's actual outcome with `workflow finish`. An unresolved claim
+blocks further claims after restart. Register the generated GLB and motion bytes
+and reuse the three locked component versions as references before staging.
+
+Stage with `candidate propose-rigged-simple-motion`, then run
+`candidate attempt --db DB --candidate-id ID`. The durable receipt identifies
+the two structurally validated GLBs, their managed mesh/material/rig/motion
+references, and the local head. A stale expected version or revision yields
+Conflict and preserves both candidates. Retry returns the original receipt.
+GLB structure and exact locked dependencies are the extent of this decision.
+The structural receipt records visual quality, Blender playback, engine import and
+workflow scheduling as NOT_RUN. The workflow records the separately claimed step.
 
 ## Local fixture candidate acceptance attempt (AW-033:B bounded slice)
 
@@ -646,3 +857,44 @@ Cancellation blocks future claims, preserves results and still permits explicit
 finish of RUNNING work; it does not stop remote processes or refund fees.
 A stdout failure (exit 6) can follow a committed claim or finish: never retry an
 ambiguous mutation automatically. Use status to reconcile it.
+
+`assetweft catalog preview --db EXISTING_DB --version-id ID` generates a
+thumbnail or audition clip for one managed PNG, GLB or WAV version and returns its library-relative
+path under `previews/`. It verifies the exact source length and SHA-256 on every
+call. Static 8-bit RGBA input is limited to 16 MiB, 4096 pixels per axis and
+4,194,304 pixels total. Nearest-neighbour sampling preserves RGBA channels and
+fits the image inside 128 × 128 without upscaling. An identical preview can be
+reused. An unknown version returns `INVALID_INPUT`/2. If a registered managed
+version's source file is missing from the validated object directory, preview returns
+`INPUT_INCOMPLETE`/3 with `managed source file is missing`. Both errors return
+`results:null` and leave existing previews intact. A conflicting file or
+unsupported input returns an error.
+
+For WAV, use a canonical RIFF/WAVE with exactly a 16-byte PCM format chunk
+and a data chunk, 16-bit mono or stereo at 8,000–48,000 Hz, at least two complete
+frames and at most 16 MiB. The result has scope `local_version_wav_preview`
+and a `.v1.wav` path. The clip contains the first half of the frames, rounded
+down and capped at one second, at the original sample rate. The CLI writes
+the playable file without opening an audio device.
+
+For GLB, a single static indexed TRIANGLES primitive with an opaque double-sided
+base color can produce a 128 × 128 front-view PNG. It applies node rotation and
+scale, fits the transformed geometry with equal margins on the longest axis,
+and returns `.glb-v1.png` under the PNG output scope. Inputs are capped at
+64 KiB and 256 triangles. See the [Catalog contract](../assetweft-core/src/catalog/CONTRACT.md#exact-version-png-wav-and-glb-previews)
+for the supported attributes, material and scene layout.
+
+
+### Rigged Simple bend measurement
+
+Use the unchanged **Rigged Simple** GLB (© 2017 Cesium) from the [pinned Khronos sample directory](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/f0920f5b32d172a30efe3f9257e965918831e6ea/Models/RiggedSimple).
+The [per-model license](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/f0920f5b32d172a30efe3f9257e965918831e6ea/Models/RiggedSimple/LICENSE.md) is [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The GLB SHA-256 is `3a79dabb67bb0cd598a18d08b954d9d357c27c30672f82ef5d3f4e7fe6ca3401`.
+The executable must be a trusted local Blender 5.1.2 build `ec6e62d40fa9`.
+The output directory must be new. It holds a staged copy of the input, native logs,
+and the coordinates measured at rest, after a 90° world +Z rotation of Bone.001, and
+with the armature modifier disabled during that rotation. Coordinates are glTF world metres.
+The numeric rig check runs before import. The measurement checks all 160 no-op positions
+against rest and three reference landmarks against the expected bend, with a
+maximum error of 0.00001 m per coordinate. These measurements describe the preset
+pose on this sample. The source file and its animation are preserved.

@@ -1,43 +1,27 @@
-//! 职责: 共享应用库入口；导出合同词表、应用与本地资产库、用户规格、验证、几何和 Rig 数值检查模块。
-//! 依赖: 词表使用 std；子模块分别使用 rusqlite、gltf 与 sha2。
-//! 调用方: 将来的 CLI、桌面与验证入口；当前由本模块单元测试和 C1 调用。
-//! 不变量: 未知合同值必须返回错误，不得静默默认；`NOT_DEFINED` 是"未定义摘要"的声明状态，
-//!          不是第三种 lock_mode；大小写与空白不做宽松归一化（合同字段值必须逐字匹配）。
-
 #![forbid(unsafe_code)]
 
-/// AW-008:A shared application lifecycle and bounded validation entry.
 pub mod application;
-/// Bounded validation policy and adapters.
 pub mod assurance;
 pub mod budget;
-/// Managed component staging and conditional fixture-only GLB structure acceptance.
 pub mod candidate;
-/// Asset head domain and persistence ownership.
 pub mod catalog;
 pub mod consumption;
 
-/// AW-022:A 静态几何引用检查；不解析外部资源。
 pub mod geometry;
 
-/// AW-009:A typed local library metadata and migration boundary.
 pub mod library;
-/// Bounded persistent local workflow.
 pub mod workflow;
 
-/// Managed immutable content storage behind Application.
 pub mod storage;
 
-/// AW-013:A user generation specification and trusted lock declarations.
 pub mod generation_spec;
 
-/// AW-022:B partial bound-skin numeric inspection; no pose evaluation.
 pub mod rig;
 
-/// AW-004:A SQLite 文件持久化原型；不依赖验证模块或模型执行。
+pub mod motion;
+
 pub mod sqlite;
 
-/// AW-017:A 独立文件验证入口与最小 ValidationReport；不依赖 SQLite/模型/Agent。
 pub mod validation;
 
 use std::fmt;
@@ -47,24 +31,17 @@ use std::fmt;
 /// 合同表只定义 `BYTE` 与 `SEMANTIC` 两种模式；`NOT_DEFINED` 属于声明状态，见 [`LockStatus`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockMode {
-    /// 字节级：比较文件字节的 SHA-256。
     Byte,
     /// 语义级：比较预先声明的规范化摘要；规范化器未就绪时该模式不得被判为可测量。
     Semantic,
 }
 
-/// 合同里的锁定声明状态：要么声明了模式，要么明确未定义摘要。
-///
-/// 这里只做词表映射；"是否已就绪/可测量"属于执行期或规范化器合同，本模块不提供该主张。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockStatus {
-    /// 已声明一种锁定模式。
     Declared(LockMode),
-    /// 该组件在本合同版本中未定义摘要。
     NotDefined,
 }
 
-/// 解析合同词表值失败时返回；携带字段名与原始输入以便定位笔误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseContractValueError {
     expected: &'static str,
@@ -72,13 +49,11 @@ pub struct ParseContractValueError {
 }
 
 impl ParseContractValueError {
-    /// 返回触发错误的原始字段值。
     #[must_use]
     pub fn input(&self) -> &str {
         &self.input
     }
 
-    /// 返回该字段允许的值说明。
     #[must_use]
     pub fn expected(&self) -> &'static str {
         self.expected
@@ -98,7 +73,6 @@ impl fmt::Display for ParseContractValueError {
 impl std::error::Error for ParseContractValueError {}
 
 impl LockMode {
-    /// 模式在合同中的规范文本形式。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -124,7 +98,6 @@ impl LockMode {
 }
 
 impl LockStatus {
-    /// 声明状态在合同中的规范文本形式。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -156,7 +129,6 @@ impl LockStatus {
 mod tests {
     use super::{LockMode, LockStatus};
 
-    // 正例直接使用合同的独立 wire 字面量，避免 parse/as_str 互相自圆。
     #[test]
     fn lock_mode_accepts_the_two_contract_wire_values() {
         assert_eq!(LockMode::parse("BYTE"), Ok(LockMode::Byte));
@@ -207,12 +179,10 @@ mod tests {
 }
 
 pub mod execution;
-/// Declared synchronous executor protocol; no runtime admission.
 pub mod executor;
 
 pub mod history;
 
-/// Consistent M1 snapshots and fresh restore.
 pub mod backup;
 
 pub mod executor_runtime;

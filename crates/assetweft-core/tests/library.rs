@@ -1,4 +1,3 @@
-//! AW-009 product repository against exclusively owned real disk databases.
 use assetweft_core::{
     application::Application,
     library::{AssetVersion, ComponentReference, ComponentRole, LibraryError, Presence},
@@ -64,7 +63,6 @@ fn sample(asset: &str, version: &str) -> AssetVersion {
 fn v0_upgrade_preserves_existing_data_and_reopen_round_trips_metadata_and_refs() {
     let d = Dir::new();
     let db = d.0.join("资产 库.sqlite");
-    // v0 is a real pre-product schema database, not a fabricated released version.
     let old = Connection::open(&db).unwrap();
     old.execute_batch("CREATE TABLE previous_data (value TEXT NOT NULL); INSERT INTO previous_data VALUES ('preserve');").unwrap();
     drop(old);
@@ -166,7 +164,6 @@ fn failed_initial_migration_really_rolls_back_ddl_and_preserves_preexisting_data
     let d = Dir::new();
     let db = d.0.join("升级 回滚.sqlite");
     let raw = Connection::open(&db).unwrap();
-    // Collision occurs after the migration has created both metadata and earlier tables.
     raw.execute_batch("CREATE TABLE preexisting (value TEXT); INSERT INTO preexisting VALUES ('intact'); CREATE TABLE aw_component_references (sentinel TEXT); INSERT INTO aw_component_references VALUES ('intact');").unwrap();
     drop(raw);
     let mut app = Application::open(&db).unwrap();

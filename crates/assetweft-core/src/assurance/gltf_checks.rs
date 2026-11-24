@@ -178,23 +178,25 @@ fn declared_uri_mime<'a>(uri: &'a str, mime: Option<&'a str>) -> Result<Option<&
         .then_some(Some(media_type))
         .ok_or(());
     }
-    Ok(mime.or_else(|| {
-        let path = uri.split(['?', '#']).next()?;
-        let path = match path
-            .strip_prefix("//")
-            .or_else(|| path.split_once("://").map(|(_, rest)| rest))
-        {
-            Some(authority_and_path) => authority_and_path.split_once('/')?.1,
-            None => path,
-        };
-        let (_, extension) = path.rsplit('/').next()?.rsplit_once('.')?;
-        match extension.to_ascii_lowercase().as_str() {
-            "webp" => Some("image/webp"),
-            "png" => Some("image/png"),
-            "jpg" | "jpeg" => Some("image/jpeg"),
-            _ => None,
-        }
-    }))
+    Ok(mime)
+}
+
+fn external_suffix_mime(uri: &str) -> Option<&'static str> {
+    let path = uri.split(['?', '#']).next()?;
+    let path = match path
+        .strip_prefix("//")
+        .or_else(|| path.split_once("://").map(|(_, rest)| rest))
+    {
+        Some(authority_and_path) => authority_and_path.split_once('/')?.1,
+        None => path,
+    };
+    let (_, extension) = path.rsplit('/').next()?.rsplit_once('.')?;
+    match extension.to_ascii_lowercase().as_str() {
+        "webp" => Some("image/webp"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        _ => None,
+    }
 }
 
 fn declares_image(root: &json::Root, bin: Option<&[u8]>, source: u32, formats: &[&str]) -> bool {
@@ -207,6 +209,11 @@ fn declares_image(root: &json::Root, bin: Option<&[u8]>, source: u32, formats: &
     }
     match (image.buffer_view, image.uri.as_deref()) {
         (None, Some(uri)) => declared_uri_mime(uri, mime).is_ok_and(|mime| {
+            let mime = if formats == WEBP_MIME {
+                mime.or_else(|| external_suffix_mime(uri))
+            } else {
+                mime
+            };
             mime.is_none_or(|mime| {
                 formats
                     .iter()

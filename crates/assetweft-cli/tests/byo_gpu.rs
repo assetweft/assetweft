@@ -462,6 +462,15 @@ fn run_requires_an_existing_initialized_library_and_task_allowance() {
 
     let mut app = Application::open(&fixture.db).unwrap();
     app.initialize_library().unwrap();
+    let (code, missing_budget) = run();
+    assert_eq!(code, 1, "{missing_budget}");
+    assert_eq!(missing_budget["status"], "FAIL");
+    assert_eq!(missing_budget["errors"][0]["field_path"], "budget");
+    assert!(app.call_intent("once").unwrap().is_none());
+    assert!(app.call_receipts("once").unwrap().is_empty());
+    assert!(!fixture.marker.exists());
+    assert!(!fixture.output.exists());
+
     app.approve_budget(&Allowance {
         id: "approved".into(),
         unit: Unit::Token,
@@ -476,6 +485,48 @@ fn run_requires_an_existing_initialized_library_and_task_allowance() {
     assert_eq!(wrong_unit["errors"][0]["field_path"], "budget");
     assert!(!fixture.marker.exists());
     fixture.balance(0, 0, None);
+}
+
+#[test]
+fn exhausted_budget_cleans_only_a_new_output_directory() {
+    let fixture = Fixture::new();
+    let mut app = Application::open(&fixture.db).unwrap();
+    app.reserve_call(&assetweft_core::budget::Request {
+        id: "existing-reservation".into(),
+        account: "approved".into(),
+        input_fingerprint: "0".repeat(64),
+        unit: Unit::Task,
+        quote: None,
+        reservation: 1,
+        source: "test".into(),
+    })
+    .unwrap();
+    let before = app.budget_balance("approved").unwrap();
+    app.close().unwrap();
+
+    for preexisting in [true, false] {
+        if preexisting {
+            fs::create_dir(&fixture.output).unwrap();
+        }
+        let (code, result) = invoke(
+            fixture
+                .run("hf-zerogpu", "success")
+                .arg("--image")
+                .arg(&fixture.image)
+                .arg("--allow-remote-upload"),
+        );
+        assert_eq!(code, 2, "{result}");
+        assert_eq!(result["errors"][0]["field_path"], "budget");
+        assert!(!fixture.marker.exists());
+        let app = Application::open_read_only(&fixture.db).unwrap();
+        assert_eq!(app.budget_balance("approved").unwrap(), before);
+        assert!(app.call_intent("once").unwrap().is_none());
+        assert!(app.call_receipts("once").unwrap().is_empty());
+        assert_eq!(fixture.output.exists(), preexisting);
+        if preexisting {
+            fs::remove_dir(&fixture.output).unwrap();
+        }
+    }
 }
 
 #[test]

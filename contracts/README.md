@@ -60,7 +60,9 @@ npm ci
 npm run check     # 等价: node tools/contract_check.mjs --manifest ... --fixtures ... --schema ...
 ```
 
-stdout 为机器结果，stderr 为日志；exit 0 表示 14/14 期望匹配，非 0 表示 gate 失败。本卡实际命令、原始退出码、stdout/stderr 文件与 schema/source hash 见 `../work/aw003-contracts/REPORT.md`。
+版本化信封须同时声明 `aw003-fixture-set/<version>` 与 `aw003-fixture-manifest/<version>`，且版本相同。两侧都省略 `schema` 时仍按无版本信封校验。清单的 `expect` 不接受 `INTERNAL`。
+
+stdout 为机器结果，stderr 为日志；exit 0 表示 14/14 期望匹配，非 0 表示 gate 失败。`doc_sha256` 对 `JSON.stringify(document)` 的序列化结果计算 SHA-256，摘要依赖对象键顺序，不能用于判定语义等价。本卡实际命令、原始退出码、stdout/stderr 文件与 schema/source hash 见 `../work/aw003-contracts/REPORT.md`。
 
 ## 6. 可选 CI 定义（本卡 NOT_RUN）
 

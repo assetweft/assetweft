@@ -5,7 +5,7 @@ mod execution;
 mod production;
 mod protocol;
 
-use assetweft_core::{application::Application, assurance as val};
+use assetweft_core::{application::Application, assurance as val, backup};
 use clap::{Arg, ArgMatches, Command, error::ErrorKind, value_parser};
 use protocol::{envelope, error, library_outcome};
 use serde_json::{Value, json};
@@ -66,12 +66,24 @@ fn grammar() -> Command {
             .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf))))
         .subcommand(
             Command::new("library")
-                .about("Explicit local library initialization; may apply existing product migrations")
+                .about("Initialize, back up, or restore a local library")
                 .subcommand_required(true)
                 .subcommand(
                     Command::new("init")
                         .about("Initialize a named file under an existing parent; no downgrade")
                         .arg(db()),
+                )
+                .subcommand(
+                    Command::new("backup")
+                        .about("Back up an existing library to a new directory")
+                        .arg(db())
+                        .arg(Arg::new("out").long("out").required(true).value_parser(value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("restore")
+                        .about("Restore a verified backup to a new directory")
+                        .arg(Arg::new("from").long("from").required(true).value_parser(value_parser!(PathBuf)))
+                        .arg(Arg::new("dest").long("dest").required(true).value_parser(value_parser!(PathBuf))),
                 ),
         )
         .subcommand(
@@ -383,6 +395,60 @@ fn library_init_response(call_id: Option<&String>, args: &ArgMatches) -> (i32, V
         }
     }
 }
+fn library_backup_response(
+    action: &str,
+    call_id: Option<&String>,
+    args: &ArgMatches,
+) -> (i32, Value) {
+    let path = |name| args.get_one::<PathBuf>(name).expect("required");
+    let limits = backup::Limits::default();
+    let (command, result) = match action {
+        "backup" => {
+            let command = "library backup";
+            let db = path("db");
+            let out = path("out");
+            if let Err(e) = protocol::existing_database(db) {
+                return (
+                    2,
+                    envelope(command, call_id, "INVALID_INPUT", json!([e]), Value::Null),
+                );
+            }
+            let app = match Application::open_existing(db) {
+                Ok(app) => app,
+                Err(e) => return protocol::database_open_error(command, call_id, e),
+            };
+            let result = app.backup_library(out, limits, &mut |_| true).map(|manifest| {
+                json!({"scope":"backed_up_local_library","out_dir":out.display().to_string(),"manifest":manifest})
+            });
+            (command, result)
+        }
+        "restore" => {
+            let dest = path("dest");
+            let result = Application::restore_library(path("from"), dest, limits, &mut |_| true)
+                .map(|manifest| {
+                    json!({"scope":"restored_local_library","dest_dir":dest.display().to_string(),"manifest":manifest})
+                });
+            ("library restore", result)
+        }
+        _ => unreachable!("clap grammar"),
+    };
+    match result {
+        Ok(results) => (0, envelope(command, call_id, "PASS", json!([]), results)),
+        Err(e) => {
+            let (code, status) = protocol::backup_outcome(&e);
+            (
+                code,
+                envelope(
+                    command,
+                    call_id,
+                    status,
+                    json!([error("library", status, e)]),
+                    Value::Null,
+                ),
+            )
+        }
+    }
+}
 fn run() -> (i32, Value) {
     let argv: Vec<_> = std::env::args_os().collect();
     let matches = match grammar().try_get_matches_from(&argv) {
@@ -450,8 +516,11 @@ fn run() -> (i32, Value) {
         return execution::response(args, call_id, limits.max_bytes);
     }
     if command == "library" {
-        let (_, init_args) = args.subcommand().expect("clap requires library init");
-        return library_init_response(call_id, init_args);
+        let (action, args) = args.subcommand().expect("clap requires a library action");
+        return match action {
+            "init" => library_init_response(call_id, args),
+            _ => library_backup_response(action, call_id, args),
+        };
     }
     if command == "budget" {
         let (action, budget_args) = args.subcommand().expect("clap requires a budget action");

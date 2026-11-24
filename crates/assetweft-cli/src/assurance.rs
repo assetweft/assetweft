@@ -253,3 +253,35 @@ pub(super) fn stance_response(
         ),
     }
 }
+
+pub(super) fn sprite_inspect_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    use val::checks::{SpriteError, inspect_sprite_file};
+
+    let command = "sprite-inspect";
+    let path = |name| args.get_one::<PathBuf>(name).expect("required");
+    let (code, status, field, detail) =
+        match inspect_sprite_file(path("file"), path("spec"), limits) {
+            Ok(report) => {
+                return (
+                    0,
+                    envelope(command, call_id, "PASS", json!([]), json!(report)),
+                );
+            }
+            Err(SpriteError::InvalidInput { field, detail }) => (2, "INVALID_INPUT", field, detail),
+            Err(SpriteError::Contract(detail)) => (1, "FAIL", "spec", detail.to_owned()),
+        };
+    (
+        code,
+        envelope(
+            command,
+            call_id,
+            status,
+            json!([error(field, status, detail)]),
+            Value::Null,
+        ),
+    )
+}

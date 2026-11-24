@@ -6982,3 +6982,91 @@ fn catalog_list_reports_bounded_versions() {
         assert_eq!(wire["status"], "INPUT_INCOMPLETE");
     }
 }
+
+#[test]
+fn sprite_inspect_reports_contract_and_input_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let sheet = dir.path().join("sprite sheet.png");
+    let spec = dir.path().join("manifest.json");
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, 2, 2);
+    encoder.set_color(png::ColorType::Rgba);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[0, 0, 0, 0, 1, 2, 3, 255, 0, 0, 0, 0, 7, 8, 9, 128])
+        .unwrap();
+    writer.finish().unwrap();
+    fs::write(&sheet, &png).unwrap();
+    let manifest = json!({
+        "sheet": {"frame_width": 1, "frame_height": 1, "columns": 2, "rows": 2},
+        "frames": (0..4).map(|index| json!({
+            "index": index, "col": index % 2, "row": index / 2,
+            "anchor_x": -0.0, "anchor_y": 0.5,
+        })).collect::<Vec<_>>(),
+        "looping": {"loop_cycle": true, "start_frame": 0, "end_frame": 3}
+    });
+    fs::write(&spec, manifest.to_string()).unwrap();
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("sprite-1"),
+        OsStr::new("sprite-inspect"),
+        sheet.as_os_str(),
+        OsStr::new("--spec"),
+        spec.as_os_str(),
+    ];
+    let (out, pass) = invoke(&args);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.stdout, invoke(&args).0.stdout);
+    assert_eq!(pass["status"], "PASS");
+    assert_eq!(pass["command"], "sprite-inspect");
+    assert_eq!(pass["call_id"], "sprite-1");
+    let result = &pass["results"];
+    assert_eq!(result["scope"], "inspected_sprite_sheet");
+    assert_eq!(result["frame_count"], 4);
+    assert_eq!(result["has_transparency"], true);
+    assert_eq!(result["empty_frames"], json!([0, 2]));
+    assert_eq!(result["duplicate_frame_groups"], json!([[0, 2]]));
+    assert_eq!(result["looping"], manifest["looping"]);
+    assert_eq!(result["semantic_quality_status"], "NOT_RUN");
+    assert_eq!(result["frames"][0]["anchor"].to_string(), "[0.0,0.5]");
+
+    for (pointer, value) in [
+        ("/frames/1/index", json!(2)),
+        ("/frames/0/anchor_y", json!(1.2)),
+        ("/sheet/columns", json!(3)),
+        ("/looping/end_frame", json!(4)),
+    ] {
+        let mut bad = manifest.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        fs::write(&spec, bad.to_string()).unwrap();
+        let (out, response) = invoke(&args);
+        assert_eq!(out.status.code(), Some(1), "{pointer}");
+        assert_eq!(response["status"], "FAIL");
+    }
+
+    fs::write(&spec, manifest.to_string()).unwrap();
+    for (limit, field) in [
+        ("1".to_owned(), Some("file")),
+        (png.len().to_string(), Some("spec")),
+        ("0".to_owned(), None),
+        ("16777217".to_owned(), None),
+    ] {
+        let mut bounded = args.to_vec();
+        bounded.extend([OsStr::new("--max-bytes"), OsStr::new(&limit)]);
+        let (out, response) = invoke(&bounded);
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(response["status"], "INVALID_INPUT");
+        if let Some(field) = field {
+            assert_eq!(response["errors"][0]["field_path"], field);
+        }
+    }
+    fs::write(&spec, "{").unwrap();
+    let (out, response) = invoke(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(response["status"], "INVALID_INPUT");
+    fs::write(&spec, manifest.to_string()).unwrap();
+    fs::write(&sheet, &png[..png.len() - 1]).unwrap();
+    let (out, response) = invoke(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(response["status"], "INVALID_INPUT");
+}

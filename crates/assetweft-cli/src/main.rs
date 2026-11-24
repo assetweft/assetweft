@@ -47,6 +47,9 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
+        .subcommand(Command::new("sprite-inspect").arg(file()).arg(
+            Arg::new("spec").long("spec").required(true).value_parser(value_parser!(PathBuf)),
+        ))
         .subcommand(Command::new("rigged-simple-components").arg(file()).arg(
             Arg::new("out-dir").long("out-dir").required(true).value_parser(value_parser!(PathBuf)),
         ))
@@ -611,6 +614,7 @@ fn run() -> (i32, Value) {
             assurance::rigged_simple_components_response(call_id, args, limits)
         }
         "motion-stance" => assurance::stance_response(call_id, args, limits),
+        "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),
         "plan" => production::plan_response(call_id, args, limits),

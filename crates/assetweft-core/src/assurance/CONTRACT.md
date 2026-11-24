@@ -19,6 +19,12 @@ also takes at most saturating limit+1 and rechecks size, preserving limit/error
 precedence. `gltf_checks` retains container validation and gltf 1.4.1 parsing,
 computes SHA-256, and translates bound mesh/skin/joint relationships to facts.
 It never resolves external URI/image resources or evaluates role acceptance.
+The shared GLB parser checks `EXT_texture_webp` declarations and image references
+before adapting texture sources for gltf 1.4.1. Only the validated WebP entry is
+removed from the SDK's required extensions for parsing. Geometry reports the
+original declarations and selected image indices. Hashes and byte counts use
+the original GLB. This checks declarations and resource references without
+decoding image payloads.
 
 Domain report policy alone decides component presence, role satisfaction and
 NOT_RUN. Format failure leaves role NOT_RUN with no inferred missing components.
@@ -49,6 +55,8 @@ Geometry read errors retain the original ValidationError payload at the
 Path/io/SDK/concrete errors.
 Unsupported external/sparse/viewless/extension/multiple-set data stays NOT_RUN;
 invalid format never produces numeric PASS. No pose/rest/semantic/engine claims.
+The validated WebP extension only affects texture sources, so it does not gate
+rig numeric checks.
 
 Unimplemented capabilities are unchanged: other Assurance measurement/export/
 engine capabilities and engine observation remain future work. CLI/geometry/rig

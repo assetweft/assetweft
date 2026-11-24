@@ -55,3 +55,7 @@
 - **路径或子命令**：见 [examples/godot-static/README.md](../examples/godot-static/README.md) 与 [examples/rigged-simple/README.md](../examples/rigged-simple/README.md)
 - **源码位置**：[examples/godot-static/verify.gd](../examples/godot-static/verify.gd) · [examples/rigged-simple/godot_playback.gd](../examples/rigged-simple/godot_playback.gd) · [examples/rigged-simple/godot_binding_control.gd](../examples/rigged-simple/godot_binding_control.gd)
 - **正常判据**：按夹具 README 退出码 `0` 且对照失败样例按预期报错；未执行的引擎导入、渲染与真实 F0 资产验收维持 `NOT_RUN`
+
+## 10. AW-034:A Agent Skill 与 CLI 操作配方
+- **入口**：[Skill](../skills/assetweft-cli/SKILL.md) · [离线评估](../skills/assetweft-cli/eval_recipe.sh)
+- **正常判据**：构建后运行评估脚本，缺预算、额度不足、缺上传授权均拒绝且调用次数为零；成功路径核对单行 JSON、历史回执重放、SQLite 工作流及 CAS 字节。远端 GPU、付费 API、完整渲染与可选 MCP 适配器为 `NOT_RUN`。

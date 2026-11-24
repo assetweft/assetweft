@@ -147,6 +147,56 @@ fn extensionless_external_webp_and_fallback_stay_unresolved() {
 }
 
 #[test]
+fn ordinary_core_texture_accepts_webp_suffix_as_unresolved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("external.glb");
+    let (mut doc, bin) = split_glb(MESH);
+    let uri = "https://example.invalid/Texture.WeBP?revision=1#preview";
+    doc["textures"] = json!([{"source": 0}]);
+    doc["images"] = json!([{"uri": uri}]);
+    fs::write(&path, encode_glb(&doc, bin.to_vec())).unwrap();
+    let (validated, validation) = invoke("validate", &path);
+    let (inspected, inspection) = invoke("inspect", &path);
+    assert_eq!(
+        (validated, inspected),
+        (Some(0), Some(0)),
+        "{validation} {inspection}"
+    );
+    let geometry = &inspection["results"]["geometry"];
+    assert_eq!(geometry["textures"], json!([[0, 0]]));
+    assert_eq!(geometry["images"], json!([{"UriUnresolved": uri}]));
+}
+
+#[test]
+fn ordinary_core_texture_still_rejects_declared_webp() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("external.glb");
+    let (mut doc, bin) = split_glb(MESH);
+    doc["textures"] = json!([{"source": 0}]);
+    for image in [
+        json!({"uri": "texture", "mimeType": "image/webp"}),
+        json!({"uri": "data:image/webp;base64,eA=="}),
+    ] {
+        doc["images"] = json!([image]);
+        fs::write(&path, encode_glb(&doc, bin.to_vec())).unwrap();
+        let (validated, validation) = invoke("validate", &path);
+        let (inspected, inspection) = invoke("inspect", &path);
+        assert_eq!(
+            (validated, inspected),
+            (Some(1), Some(2)),
+            "{validation} {inspection}"
+        );
+        assert!(
+            inspection["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("textures[0].source must not reference a WebP image"),
+            "{inspection}"
+        );
+    }
+}
+
+#[test]
 fn webp_source_accepts_exact_decimal_and_exponent_integers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("integer.glb");

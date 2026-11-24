@@ -128,6 +128,21 @@ fn identity(path: &Path) -> io::Result<(FileId, u64)> {
     Ok((FileId { volume, index }, links))
 }
 
+fn publish_witness(witness: &Path, target: &Path, expected: FileId) -> Result<(), StorageError> {
+    let (id, links) = identity(witness)?;
+    if id != expected {
+        return Err(StorageError::Invalid("export witness mismatch"));
+    }
+    if links != 1 {
+        return Err(StorageError::Invalid("export witness must have one link"));
+    }
+    if let Err(error) = fs::hard_link(witness, target) {
+        fs::remove_file(witness)?;
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 pub(crate) struct Export {
     _lease: Guard,
     database: FileId,
@@ -290,12 +305,10 @@ impl Export {
                 &self.object.content_hash,
                 self.object.byte_length,
             )?;
-            let witness = self.witness(identity(temp.path())?.0);
+            let (id, _) = identity(temp.path())?;
+            let witness = self.witness(id);
             temp.persist_noclobber(&witness).map_err(|e| e.error)?;
-            if let Err(error) = fs::hard_link(&witness, target) {
-                fs::remove_file(witness)?;
-                return Err(error.into());
-            }
+            publish_witness(&witness, &target, id)?;
         }
         Ok(relative)
     }
@@ -313,5 +326,35 @@ impl Export {
         fs::remove_file(target)?;
         fs::remove_file(witness)?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiply_linked_witness_is_rejected_before_export_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let temp = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        let leftover = root.path().join("leftover-temp-name");
+        let witness = root.path().join("witness");
+        let export = root.path().join("export");
+        let (id, _) = identity(temp.path()).unwrap();
+        fs::hard_link(temp.path(), &leftover).unwrap();
+        temp.persist_noclobber(&witness).unwrap();
+        assert_eq!(identity(&witness).unwrap().1, 2);
+
+        let result = publish_witness(&witness, &export, id);
+        assert!(
+            matches!(
+                result,
+                Err(StorageError::Invalid("export witness must have one link"))
+            ),
+            "{result:?}, visible export: {}",
+            export.exists()
+        );
+        assert!(!export.exists());
+        assert!(leftover.exists());
     }
 }

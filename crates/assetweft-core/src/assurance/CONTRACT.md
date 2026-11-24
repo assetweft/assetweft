@@ -93,6 +93,42 @@ The [CLI profile](../../../assetweft-cli/README.md#rigged-simple-bend-measuremen
 the asset identity, license, pose, units and tolerance. Generic rig inspection still reports
 pose deformation as NOT_RUN.
 
+## AW-028:A Static kit inspection
+
+`checks::inspect_static_kit_file` reads a GLB v2 and a JSON spec under the same
+per-file byte limit. It accepts embedded BIN geometry and buffer-view images
+(including the existing `EXT_texture_webp` declaration checks). It measures
+triangle lists, strips, and fans with dense float positions and optional dense
+unsigned indices. External resources and sparse geometry are outside this
+inspection scope. Geometry decoding is capped at two million combined position
+and index entries, and bounds at two million instanced positions.
+
+The spec requires `kind` (`architecture` or `foliage`), positive
+`expected_unit_scale` and `scale_tolerance`, `sockets`, and
+`allow_non_watertight_foliage`. All mesh-node world-space basis lengths must
+match the expected scale within tolerance on each axis. Each uniquely named
+socket declares `position` (XYZ in metres) and nonnegative `seam_tolerance_m`.
+Its case-sensitive name must resolve to exactly one GLB node. The Euclidean
+distance between the node's world-space origin and the expected point must be
+within tolerance. Measures and tolerances use G-DET-1 micro-unit rounding.
+
+The report counts stored primitives, vertices and triangles across mesh
+definitions. Its world-space bounds cover positions in all mesh nodes, including
+instances. Edge checks weld equal quantized positions within each mesh across
+primitives. A closed shell requires two oppositely oriented incidences per
+edge and rejects triangles with coincident welded vertices. This is an edge
+check. Self-intersections and volume are outside its scope. Only a `foliage`
+spec can enable `allow_non_watertight_foliage`. Both single- and double-sided
+open cards then pass the topology policy, with edge counts and material alpha
+modes still reported.
+
+An optional `budget_before` supplies `vertex_count`, `triangle_count`, and
+`texture_bytes`. Measured texture bytes sum each distinct embedded image
+buffer view. The optimization record gives before and after counts and signed
+after-minus-before triangle and texture-byte deltas (null without a baseline).
+Deltas outside the signed 64-bit range use exact decimal strings.
+`visual_quality_status` is always `NOT_RUN`. This operation only inspects files.
+
 ## G-DET-1 DeterminismPolicy
 
 Canonical floats reject NaN and infinities and map both signed zeros to `+0.0`.

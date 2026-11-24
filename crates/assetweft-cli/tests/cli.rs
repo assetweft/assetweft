@@ -35,6 +35,150 @@ fn fixture(name: &str) -> PathBuf {
         .join("../assetweft-core/tests/fixtures/validation")
         .join(name)
 }
+fn static_kit_glb(closed: bool, double_sided: bool) -> Vec<u8> {
+    let mut vertices: Vec<[f32; 3]> = vec![[0., 0., 0.], [2., 0., 0.], [2., 1., 0.], [0., 1., 0.]];
+    let mut indices: Vec<u16> = vec![0, 2, 1, 0, 3, 2];
+    if closed {
+        vertices.extend([
+            [0., 0., 0.25],
+            [2., 0., 0.25],
+            [2., 1., 0.25],
+            [0., 1., 0.25],
+        ]);
+        indices.extend([
+            4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4,
+            7,
+        ]);
+    }
+    let mut bin: Vec<_> = vertices
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let index_offset = bin.len();
+    bin.extend(indices.iter().flat_map(|v| v.to_le_bytes()));
+    let index_len = bin.len() - index_offset;
+    let document = json!({
+        "asset":{"version":"2.0"}, "scene":0, "scenes":[{"nodes":[0]}],
+        "nodes":[{"translation":[1,0,0],"children":[1,2]}, {"mesh":0}, {"name":"east","translation":[2,0,0]}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1,"material":0}]}],
+        "materials":[{"alphaMode":if closed {"OPAQUE"} else {"MASK"},"doubleSided":double_sided}],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":vertices.len(),"type":"VEC3","min":[0,0,0],"max":[2,1,if closed {0.25} else {0.0}]},
+            {"bufferView":1,"componentType":5123,"count":indices.len(),"type":"SCALAR"}
+        ],
+        "buffers":[{"byteLength":bin.len()}],
+        "bufferViews":[{"buffer":0,"byteLength":index_offset},{"buffer":0,"byteOffset":index_offset,"byteLength":index_len}]
+    });
+    let mut json = serde_json::to_vec(&document).unwrap();
+    json.resize(json.len().next_multiple_of(4), b' ');
+    let mut glb = b"glTF".to_vec();
+    glb.extend(2_u32.to_le_bytes());
+    glb.extend(((28 + json.len() + bin.len()) as u32).to_le_bytes());
+    glb.extend((json.len() as u32).to_le_bytes());
+    glb.extend(b"JSON");
+    glb.extend(json);
+    glb.extend((bin.len() as u32).to_le_bytes());
+    glb.extend(b"BIN\0");
+    glb.extend(bin);
+    glb
+}
+
+#[test]
+fn static_kit_inspect_reports_contract_breaches_and_bounded_input_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("static kit.glb");
+    let spec_path = dir.path().join("kit spec.json");
+    let mut spec = json!({
+        "kind":"architecture","expected_unit_scale":1,"scale_tolerance":0.001,
+        "sockets":[{"name":"east","position":[3,0,0],"seam_tolerance_m":0}],
+        "allow_non_watertight_foliage":false,
+        "budget_before":{"vertex_count":24,"triangle_count":24,"texture_bytes":128}
+    });
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("static-1"),
+        OsStr::new("static-kit-inspect"),
+        file.as_os_str(),
+        OsStr::new("--spec"),
+        spec_path.as_os_str(),
+    ];
+    let run = |spec: &Value, code, status| {
+        fs::write(&spec_path, spec.to_string()).unwrap();
+        let (out, value) = invoke(&args);
+        assert_eq!(out.status.code(), Some(code));
+        assert_eq!(value["command"], "static-kit-inspect");
+        assert_eq!(value["call_id"], "static-1");
+        assert_eq!(value["status"], status);
+        assert_eq!(out.stdout, invoke(&args).0.stdout);
+        value
+    };
+    fs::write(&file, static_kit_glb(true, false)).unwrap();
+    let pass = run(&spec, 0, "PASS");
+    assert_eq!(pass["results"]["scope"], "inspected_static_kit");
+    assert_eq!(
+        pass["results"]["optimization_record"]["delta_triangles"],
+        -12
+    );
+    assert_eq!(pass["results"]["optimization_record"]["delta_bytes"], -128);
+    assert_eq!(pass["results"]["visual_quality_status"], "NOT_RUN");
+    spec["budget_before"]["texture_bytes"] = json!(u64::MAX);
+    assert_eq!(
+        run(&spec, 0, "PASS")["results"]["optimization_record"]["delta_bytes"],
+        "-18446744073709551615"
+    );
+
+    spec["expected_unit_scale"] = json!(2);
+    let fail = run(&spec, 1, "FAIL");
+    assert_eq!(fail["results"]["triangle_count"], 12);
+    assert_eq!(fail["results"]["violations"][0]["field"], "scale");
+    spec["expected_unit_scale"] = json!(1);
+    spec["sockets"][0]["position"] = json!([3.01, 0, 0]);
+    assert_eq!(
+        run(&spec, 1, "FAIL")["results"]["violations"][0]["field"],
+        "seam"
+    );
+    spec["sockets"][0]["position"] = json!([3, 0, 0]);
+
+    fs::write(&file, static_kit_glb(false, true)).unwrap();
+    assert_eq!(
+        run(&spec, 1, "FAIL")["results"]["violations"][0]["field"],
+        "watertight"
+    );
+    spec["kind"] = json!("foliage");
+    spec["allow_non_watertight_foliage"] = json!(true);
+    let foliage = run(&spec, 0, "PASS");
+    assert_eq!(foliage["results"]["double_sided_material_count"], 1);
+    assert_eq!(foliage["results"]["alpha_modes"], json!(["MASK"]));
+    assert_eq!(foliage["results"]["unclosed_boundary_edges"], 4);
+
+    let invalid_spec = spec
+        .to_string()
+        .replace("\"expected_unit_scale\":1", "\"expected_unit_scale\":NaN");
+    fs::write(&spec_path, invalid_spec).unwrap();
+    let (out, invalid) = invoke(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(invalid["status"], "INVALID_INPUT");
+
+    spec["expected_unit_scale"] = json!(-1);
+    run(&spec, 2, "INVALID_INPUT");
+    spec["expected_unit_scale"] = json!(1);
+    spec["kind"] = json!("forest");
+    run(&spec, 2, "INVALID_INPUT");
+    spec["kind"] = json!("foliage");
+    let (out, invalid) =
+        invoke(&[&args[..], &[OsStr::new("--max-bytes"), OsStr::new("0")]].concat());
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(invalid["status"], "INVALID_INPUT");
+    assert_eq!(invalid["command"], "static-kit-inspect");
+    let (out, invalid) =
+        invoke(&[&args[..], &[OsStr::new("--max-bytes"), OsStr::new("12")]].concat());
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(invalid["status"], "INVALID_INPUT");
+    fs::write(&file, b"not a GLB").unwrap();
+    run(&spec, 2, "INVALID_INPUT");
+}
+
 fn cases() -> Value {
     serde_json::from_slice(
         &fs::read(

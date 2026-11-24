@@ -20,6 +20,12 @@ fn grammar() -> Command {
             .required(true)
             .value_parser(value_parser!(PathBuf))
     };
+    let spec_file = || {
+        Arg::new("spec")
+            .long("spec")
+            .required(true)
+            .value_parser(value_parser!(PathBuf))
+    };
     let db = || {
         Arg::new("db")
             .long("db")
@@ -47,9 +53,8 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
-        .subcommand(Command::new("sprite-inspect").arg(file()).arg(
-            Arg::new("spec").long("spec").required(true).value_parser(value_parser!(PathBuf)),
-        ))
+        .subcommand(Command::new("sprite-inspect").arg(file()).arg(spec_file()))
+        .subcommand(Command::new("static-kit-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("rigged-simple-components").arg(file()).arg(
             Arg::new("out-dir").long("out-dir").required(true).value_parser(value_parser!(PathBuf)),
         ))
@@ -486,6 +491,11 @@ fn run() -> (i32, Value) {
             let recovered_id = recovered
                 .as_ref()
                 .and_then(|m| m.get_one::<String>("call-id"));
+            let command = recovered
+                .as_ref()
+                .and_then(ArgMatches::subcommand_name)
+                .filter(|&name| code == 2 && name == "static-kit-inspect")
+                .unwrap_or(command);
             let message = e.to_string();
             if code != 0 {
                 let _ = write!(io::stderr().lock(), "{message}");
@@ -615,6 +625,7 @@ fn run() -> (i32, Value) {
         }
         "motion-stance" => assurance::stance_response(call_id, args, limits),
         "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
+        "static-kit-inspect" => assurance::static_kit_inspect_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),
         "plan" => production::plan_response(call_id, args, limits),

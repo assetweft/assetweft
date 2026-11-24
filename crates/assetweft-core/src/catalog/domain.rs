@@ -210,15 +210,23 @@ pub struct HistoryQuery<'a> {
     pub before_sequence: Option<i64>,
     pub limit: u16,
 }
-pub(crate) fn validate_feedback(f: &Feedback) -> Result<(), MetadataError> {
-    if !valid_id(&f.feedback_id)
-        || f.feedback_id.trim().is_empty()
-        || f.feedback_id.len() > 256
-        || !valid_id(&f.asset_id)
-        || !valid_id(&f.version_id)
+pub(crate) fn validate_feedback_identity(
+    asset_id: &str,
+    version_id: &str,
+    feedback_id: &str,
+) -> Result<(), MetadataError> {
+    if !valid_id(feedback_id)
+        || feedback_id.trim().is_empty()
+        || feedback_id.len() > 256
+        || !valid_id(asset_id)
+        || !valid_id(version_id)
     {
         return Err(MetadataError::InvalidInput("feedback identity"));
     }
+    Ok(())
+}
+pub(crate) fn validate_feedback(f: &Feedback) -> Result<(), MetadataError> {
+    validate_feedback_identity(&f.asset_id, &f.version_id, &f.feedback_id)?;
     if f.reason
         .as_ref()
         .is_some_and(|r| r.trim().is_empty() || r.len() > MAX_REASON_BYTES || r.contains('\0'))

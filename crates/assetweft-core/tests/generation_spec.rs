@@ -369,6 +369,36 @@ fn old_semantic_without_identity_is_incomplete() {
 }
 
 #[test]
+fn trusted_lock_roles_must_be_unique() {
+    let c = case("valid_single_motion_increment");
+    let rig = &c.context.declared_locks[2];
+    let mut other_id = rig.clone();
+    other_id.canonicalization_id = Some("other algorithm".into());
+    let mut other_version = rig.clone();
+    other_version.canonicalization_version = Some("other version".into());
+
+    for duplicate in [other_id, other_version, rig.clone()] {
+        for reverse in [false, true] {
+            let mut context = c.context.clone();
+            let i = context.declared_locks.len();
+            context.declared_locks.push(duplicate.clone());
+            if reverse {
+                context.declared_locks.swap(2, i);
+            }
+            let out = validate(&c.request, &context);
+            let field = format!("context.declared_locks[{i}].role");
+            assert_eq!(
+                out.status, STATUS_REJECTED,
+                "{duplicate:?} {reverse}: {out:?}"
+            );
+            assert!(out.issues.iter().any(|issue|
+                issue.code == IssueCode::InvalidInput && issue.field_path == field
+            ), "{duplicate:?} {reverse}: {out:?}");
+        }
+    }
+}
+
+#[test]
 fn semantic_identity_contract_matrix() {
     let c = case("valid_single_motion_increment");
     assert!(validate(&c.request, &c.context).is_declaration_consistent());

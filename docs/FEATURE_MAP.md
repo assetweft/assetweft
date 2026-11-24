@@ -18,13 +18,13 @@
 - **入口**：`assetweft motion-stance` / `motion-strike` / `rig-bend`；核心 `motion::*` / `assurance::rig_blender`
 - **路径或子命令**：`motion-stance <JSON> --role grounded-humanoid|hovering` · `motion-strike <GLB> [--with-idle] --out <GLB>` · `rig-bend <GLB> --blender <BIN> --out <DIR>`
 - **源码位置**：[crates/assetweft-cli/src/assurance.rs](../crates/assetweft-cli/src/assurance.rs) · [crates/assetweft-core/src/motion/stance.rs](../crates/assetweft-core/src/motion/stance.rs) · [crates/assetweft-core/src/motion.rs](../crates/assetweft-core/src/motion.rs) · [crates/assetweft-core/src/assurance/rig_blender.rs](../crates/assetweft-core/src/assurance/rig_blender.rs)
-- **正常判据**：单行 JSON `status:"PASS"`（`exit 0`）；`motion-stance` 水平滑步 ≤0.01 m 为 `PASS/0`、`hovering` 为 `INAPPLICABLE/5`、缺证据为 `NOT_RUN/3`
+- **正常判据**：单行 JSON `status:"PASS"`（`exit 0`）。`motion-stance` 水平峰值位移按最近 1 nm 取整（`round_ties_even`）后 ≤0.01 m 为 `PASS/0`，回执保留未取整的 `max_slip_m` 和 `limit_m: 0.01`。超大世界坐标受 binary64 精度限制。`hovering` 为 `INAPPLICABLE/5`，缺证据为 `NOT_RUN/3`。
 
 ## 4. Catalog：元数据、精确组件引用、CAS 对象、导出、预览与评价（7 表写主）
 - **入口**：`assetweft catalog <action>`；核心 `catalog::*`（表：`aw_assets`, `aw_asset_versions`, `aw_component_references`, `aw_objects`, `aw_managed_versions`, `aw_candidate_current`, `aw_feedback`）
-- **路径或子命令**：`catalog {commit-object,register-version,add-reference,version,search,file-availability,references,current,preview,materialize-export,evict-export,feedback-add,feedback-latest} --db <DB> ...`
+- **路径或子命令**：`catalog {commit-object,register-version,add-reference,version,search,file-availability,references,current,preview,materialize-export,evict-export,feedback-add,feedback-latest} --db <DB> ...` · `catalog feedback-get --db <DB> --asset-id <A> --version-id <V> --feedback-id <ID>`
 - **源码位置**：[crates/assetweft-cli/src/catalog.rs](../crates/assetweft-cli/src/catalog.rs) · [crates/assetweft-core/src/catalog/sqlite_metadata.rs](../crates/assetweft-core/src/catalog/sqlite_metadata.rs) · [crates/assetweft-core/src/catalog/objects_sqlite.rs](../crates/assetweft-core/src/catalog/objects_sqlite.rs) · [crates/assetweft-core/src/catalog/exports.rs](../crates/assetweft-core/src/catalog/exports.rs) · [crates/assetweft-core/src/catalog/CONTRACT.md](../crates/assetweft-core/src/catalog/CONTRACT.md)
-- **正常判据**：stdout 单行 JSON `status:"PASS"`（`exit 0`）；CAS 发布前校验字节长度与 SHA-256，PNG/WAV/GLB 预览与导出不覆写既有文件，评价与候选接受解耦
+- **正常判据**：stdout 单行 JSON `status:"PASS"`（`exit 0`）；CAS 发布前校验字节长度与 SHA-256，PNG/WAV/GLB 预览与导出不覆写既有文件，评价与候选接受解耦。`feedback-get` 只读返回三 ID 精确匹配的记录或 `null`，可用于追加回执丢失后确认原 ID。
 
 ## 5. Production：增量规格校验、持久化工作流与候选接受（5 表写主）
 - **入口**：`assetweft plan` / `workflow <action>` / `candidate <action>`；核心 `production::*`（表：`aw_workflow_runs`, `aw_workflow_steps`, `aw_workflow_dependencies`, `aw_candidates`, `aw_candidate_attempts`）

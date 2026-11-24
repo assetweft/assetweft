@@ -139,6 +139,37 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn half_nanometre_boundaries_use_ties_to_even_and_preserve_raw_slip() {
+        let input = tempfile::NamedTempFile::new().unwrap();
+        for (slip, rounded_nm, expected) in [
+            (0.01000000049, 10_000_000.0, "PASS"),
+            (0.01000000050, 10_000_000.0, "PASS"),
+            (0.01000000051, 10_000_001.0, "FAIL"),
+            (0.01000000150, 10_000_002.0, "FAIL"),
+        ] {
+            let clip = json!({
+                "stance": {"contact": "sole", "frames": [0, 1]},
+                "tracks": [{"marker": "sole", "world_y_up_m": [[0.0, 0.0, 0.0], [slip, 0.0, 0.0]]}]
+            });
+            std::fs::write(input.path(), serde_json::to_vec(&clip).unwrap()).unwrap();
+            let report = assess(
+                input.path(),
+                MotionRole::GroundedHumanoid,
+                ValidationLimits { max_bytes: 4096 },
+            )
+            .unwrap();
+            assert_eq!(report.max_slip_m, Some(slip));
+            assert_eq!(report.limit_m, 0.01);
+            assert_eq!((slip * NANOMETRES_PER_METRE).round_ties_even(), rounded_nm);
+            assert_eq!(
+                serde_json::to_value(report).unwrap()["status"],
+                expected,
+                "slip={slip}"
+            );
+        }
+    }
+
+    #[test]
     fn centimetre_boundary_is_stable_at_translated_origins() {
         let input = tempfile::NamedTempFile::new().unwrap();
         for origin in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [10.0, -5.0, 3.0]] {

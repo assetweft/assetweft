@@ -153,6 +153,14 @@ fn grammar() -> Command {
                         .arg(db())
                         .arg(Arg::new("asset-id").long("asset-id").required(true))
                         .arg(Arg::new("version-id").long("version-id")),
+                )
+                .subcommand(
+                    Command::new("feedback-get")
+                        .about("Read one opinion by its exact asset, version and feedback IDs")
+                        .arg(db())
+                        .arg(Arg::new("asset-id").long("asset-id").required(true))
+                        .arg(Arg::new("version-id").long("version-id").required(true))
+                        .arg(Arg::new("feedback-id").long("feedback-id").required(true)),
                 ),
         )
         .subcommand(
@@ -465,6 +473,7 @@ fn run() -> (i32, Value) {
             "current" => "catalog current",
             "feedback-add" => "catalog feedback-add",
             "feedback-latest" => "catalog feedback-latest",
+            "feedback-get" => "catalog feedback-get",
             _ => unreachable!("clap grammar"),
         };
         if matches!(

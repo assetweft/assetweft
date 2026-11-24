@@ -569,15 +569,29 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
             "pre-declared contract must declare locked scope",
         ));
     }
-    let mut declared: Vec<(ComponentRole, LockStatus)> = Vec::new();
+    let mut declared = Vec::new();
+    let mut seen_declared_roles = Vec::new();
+    let mut ambiguous_roles = Vec::new();
     for (i, l) in context.declared_locks.iter().enumerate() {
         let role = l.role.as_deref().and_then(ComponentRole::parse);
+        if let Some(role) = role {
+            if seen_declared_roles.contains(&role) {
+                issues.push(issue(
+                    IssueCode::InvalidInput,
+                    format!("context.declared_locks[{i}].role"),
+                    "duplicate locked component",
+                ));
+                ambiguous_roles.push(role);
+            } else {
+                seen_declared_roles.push(role);
+            }
+        }
         let decl = l
             .declaration
             .as_deref()
             .and_then(|d| LockStatus::parse(d).ok());
         match (role, decl) {
-            (Some(r), Some(s)) => declared.push((r, s)),
+            (Some(r), Some(s)) => declared.push((r, s, l)),
             _ => issues.push(issue(
                 IssueCode::InvalidInput,
                 format!("context.declared_locks[{i}]"),
@@ -589,7 +603,10 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
     if request.locked_components.is_empty() && !declared.is_empty() {
         issues.push(issue(IssueCode::LockViolation, "locked_components", "request has no locked_components; untrusted spec must not drop all pre-declared locks to gain authorization"));
     }
-    for (role, decl) in &declared {
+    for (role, decl, trusted) in &declared {
+        if ambiguous_roles.contains(role) {
+            continue;
+        }
         match requested_locks.iter().find(|(_, r, _)| r == role) {
             None => issues.push(issue(
                 IssueCode::LockViolation,
@@ -605,15 +622,7 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
                 "lock declaration differs from pre-declared contract",
             )),
             Some((i, _, _)) => {
-                if context.declared_locks.iter().any(|l| {
-                    l.role.as_deref() == Some(role.as_str())
-                        && l.declaration.as_deref() == Some("SEMANTIC")
-                }) {
-                    let trusted = context
-                        .declared_locks
-                        .iter()
-                        .find(|l| l.role.as_deref() == Some(role.as_str()))
-                        .expect("declared role exists");
+                if trusted.declaration.as_deref() == Some("SEMANTIC") {
                     let requested = &request.locked_components[*i];
                     for (field, actual, expected) in [
                         (
@@ -639,7 +648,7 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
             }
         }
     }
-    let declared_roles: Vec<ComponentRole> = declared.iter().map(|(r, _)| *r).collect();
+    let declared_roles: Vec<ComponentRole> = declared.iter().map(|(r, _, _)| *r).collect();
     let requested_lock_roles: Vec<ComponentRole> =
         requested_locks.iter().map(|(_, r, _)| *r).collect();
     for (i, e) in request.editable_components.iter().enumerate() {

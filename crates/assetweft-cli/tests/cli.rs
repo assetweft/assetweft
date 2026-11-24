@@ -4903,10 +4903,18 @@ fn object_wire(id: &str) -> Value {
         json!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     wire
 }
+
+fn library_backup_test_root(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    return path.to_path_buf();
+    #[cfg(not(windows))]
+    return path.canonicalize().unwrap();
+}
+
 #[test]
 fn library_backup_restore_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = library_backup_test_root(dir.path());
     let db = root.join("library.sqlite");
     let fixture = root.join("version.json");
     let file = root.join("bytes");
@@ -5055,7 +5063,7 @@ fn library_backup_restore_roundtrip() {
 #[test]
 fn library_backup_rejects_missing_uninitialized_and_existing_destination() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = library_backup_test_root(dir.path());
     let db = root.join("library.sqlite");
     let backup = root.join("backup");
     let run = |code, status| {

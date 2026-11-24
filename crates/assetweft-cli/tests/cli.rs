@@ -462,6 +462,42 @@ fn seed_workflow(dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn workflow_open_lock_reports_internal_and_does_not_cancel() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = seed_workflow(dir.path());
+    let (blocker, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+    blocker
+        .execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE")
+        .unwrap();
+    let run = OsStr::new("运行-α");
+    for action in ["status", "cancel"] {
+        let mut args = vec![OsStr::new("--call-id"), OsStr::new("locked-open")];
+        args.extend(workflow_args(action, db.as_os_str(), run));
+        let (out, v) = invoke(&args);
+        assert!(out.stderr.is_empty());
+        assert_eq!(out.status.code(), Some(6), "{v}");
+        assert_eq!(v["status"], "INTERNAL");
+        assert_eq!(v["call_id"], "locked-open");
+        assert_eq!(v["errors"][0]["code"], "INTERNAL");
+        assert_eq!(v["errors"][0]["field_path"], "db");
+        assert!(v["errors"][0]["message"].as_str().unwrap().contains("BUSY"));
+        assert!(v["results"].is_null());
+    }
+    blocker.execute_batch("ROLLBACK").unwrap();
+    let (out, v) = invoke(&workflow_args("status", db.as_os_str(), run));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert!(
+        !Application::open_read_only(&db)
+            .unwrap()
+            .workflow_cancelled("运行-α")
+            .unwrap()
+    );
+    let (out, v) = invoke(&workflow_args("cancel", db.as_os_str(), run));
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert_eq!(v["results"]["cancellation_requested"], true);
+}
+
+#[test]
 fn workflow_status_projects_persisted_state_deterministically() {
     let dir = tempfile::tempdir().unwrap();
     let db = seed_workflow(dir.path());

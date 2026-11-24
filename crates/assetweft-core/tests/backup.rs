@@ -72,6 +72,15 @@ fn roundtrip_exact_identity_history_metadata_and_bytes() {
     backup(&a, &root.join("backup"));
     let manifest = restore(&root.join("backup"), &root.join("restored")).unwrap();
     assert_eq!(manifest.schema, 6);
+    let snapshot = rusqlite::Connection::open(root.join("backup/library.sqlite")).unwrap();
+    let actual_schema: i64 = snapshot
+        .query_row(
+            "SELECT version FROM aw_schema_version WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(manifest.schema, actual_schema);
     assert_eq!(manifest.objects.len(), 1);
     let mut b = Application::open(&root.join("restored/library.sqlite")).unwrap();
     b.initialize_library().unwrap();
@@ -455,4 +464,50 @@ fn snapshot_write_budget_pins_source_during_wal_growth() {
         2
     );
     assert!(!d.path().join(".aw-storage.lock").exists());
+}
+
+#[test]
+fn rollback_snapshot_progress_can_write_and_cancel_without_leaking_locks() {
+    let (d, app) = fixture();
+    let db = d.path().join("source/original.sqlite");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "delete"
+    );
+    conn.execute_batch("CREATE TABLE snapshot_padding(data BLOB); INSERT INTO snapshot_padding VALUES(zeroblob(2097152));").unwrap();
+    assert!(
+        conn.query_row("PRAGMA page_count", [], |r| r.get::<_, u32>(0))
+            .unwrap()
+            > 128
+    );
+    let dest = d.path().join("cancelled");
+    let mut snapshots = 0;
+    let result = app.backup_library(&dest, Limits::default(), &mut |progress| {
+        if progress == Progress::Snapshot {
+            snapshots += 1;
+            if snapshots == 2 {
+                conn.execute_batch("INSERT INTO snapshot_padding VALUES(x'01')")
+                    .expect("second Snapshot callback can commit on an independent connection");
+                return false;
+            }
+        }
+        true
+    });
+    assert!(matches!(result, Err(BackupError::Cancelled)), "{result:?}");
+    assert_eq!(snapshots, 2);
+    assert!(!dest.join("manifest.json").exists());
+    assert!(!d.path().join("source/.aw-storage.lock").exists());
+    conn.execute_batch("INSERT INTO snapshot_padding VALUES(x'02')")
+        .unwrap();
+    let restored_snapshot = rusqlite::Connection::open(dest.join("library.sqlite")).unwrap();
+    assert_eq!(
+        restored_snapshot
+            .query_row("SELECT count(*) FROM snapshot_padding", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
 }

@@ -18,9 +18,13 @@ impl Default for Limits {
         }
     }
 }
-/// Progress is also a cancellation boundary; returning false cancels without a manifest.
+/// Returning false cancels without a manifest. Callbacks must return promptly and
+/// must not wait on an operation that needs the same object-store lease.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Progress {
+    /// Called before pinning the source and, in rollback-journal mode, after releasing
+    /// the source read transaction. In WAL mode it can also run between steps;
+    /// the callback must not synchronously wait for a checkpoint of the pinned WAL.
     Snapshot,
     Bytes(u64),
     ObjectsReady,
@@ -53,8 +57,10 @@ pub(crate) fn hash_ok(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
+pub(crate) const FORMAT_1_SCHEMA: i64 = 6;
+
 pub(crate) fn validate_manifest(m: &Manifest, limits: Limits) -> Result<(), PolicyError> {
-    if m.format != 1 || m.schema != 6 || m.objects.len() > limits.max_objects {
+    if m.format != 1 || m.schema != FORMAT_1_SCHEMA || m.objects.len() > limits.max_objects {
         return Err(PolicyError::Invalid("unsupported format/schema or count"));
     }
     Ok(())

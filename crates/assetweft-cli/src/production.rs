@@ -6,6 +6,7 @@ use assetweft_core::{
     candidate::{Acceptance, FixtureContract, Proposal, RIGGED_SIMPLE_MOTION_STRUCTURE_V1},
     library::ComponentRole,
     production::specification as spec,
+    sqlite::ProtoError,
     workflow::{Outcome, State, Step, StepRecord},
 };
 use clap::ArgMatches;
@@ -142,7 +143,7 @@ pub(super) fn candidate_write_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let mut app = match Application::open_existing(db) {
         Ok(app) => app,
         Err(e) => {
             return finish(
@@ -216,7 +217,7 @@ pub(super) fn candidate_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let mut app = match Application::open(db) {
+    let mut app = match Application::open_existing(db) {
         Ok(app) => app,
         Err(e) => {
             return finish(
@@ -428,15 +429,19 @@ pub(super) fn workflow_response(
             Value::Null,
         );
     }
-    let mut app = match Application::open(db) {
+    let opened = if action == "status" {
+        Application::open_read_only(db)
+    } else {
+        Application::open_existing(db)
+    };
+    let mut app = match opened {
         Ok(app) => app,
         Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e.to_string())]),
-                Value::Null,
-            );
+            let (code, status) = match e {
+                ProtoError::Busy(_) | ProtoError::Io(_) => (6, "INTERNAL"),
+                _ => (2, "INVALID_INPUT"),
+            };
+            return finish(code, status, json!([error("db", status, e)]), Value::Null);
         }
     };
     if action == "create" {

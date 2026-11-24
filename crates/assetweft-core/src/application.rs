@@ -52,6 +52,11 @@ impl Application {
         Self::open_with(path, sqlite::open_and_configure)
     }
 
+    /// Opens an existing local database for reads and writes.
+    pub fn open_existing(path: &Path) -> Result<Self, ProtoError> {
+        Self::open_with(path, sqlite::open_existing)
+    }
+
     pub fn open_read_only(path: &Path) -> Result<Self, ProtoError> {
         Self::open_with(path, sqlite::open_read_only)
     }

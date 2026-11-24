@@ -123,3 +123,59 @@ jobs:
           cargo check --locked --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml
           cargo test --locked --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml
           cargo fmt --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml -- --check
+
+      - name: Detect isolated workbench changes
+        id: workbench
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          set -eu
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          else
+            base="$PUSH_BASE"
+            if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE"; fi
+            if [[ ! "$base" =~ ^[0-9a-f]{40}$ ]] || [[ "$base" = 0000000000000000000000000000000000000000 ]]; then
+              echo "affected=true" >> "$GITHUB_OUTPUT"
+            else
+              git fetch --no-tags --depth=1 origin "$base"
+              git diff --name-only "$base" HEAD > "$RUNNER_TEMP/workbench-changes.txt"
+              if grep -Eq '^(apps/workbench/|crates/assetweft-core/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/native-recovery\.yml$)' "$RUNNER_TEMP/workbench-changes.txt"; then
+                echo "affected=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "affected=false" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          fi
+
+      - name: Workbench Node
+        if: steps.workbench.outputs.affected == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - name: Isolated workbench frontend
+        if: steps.workbench.outputs.affected == 'true'
+        shell: bash
+        working-directory: apps/workbench
+        run: |
+          set -eu
+          npm ci --ignore-scripts
+          npm run check:tokens
+          npm run typecheck
+          npm run build
+          npm test
+
+      - name: Isolated workbench native check
+        if: steps.workbench.outputs.affected == 'true'
+        shell: bash
+        run: |
+          set -eu
+          cargo check --locked --manifest-path apps/workbench/src-tauri/Cargo.toml
+          export AW_WORKBENCH_TEST_CLI="$GITHUB_WORKSPACE/target/debug/assetweft"
+          if [[ "$RUNNER_OS" = Windows ]]; then AW_WORKBENCH_TEST_CLI+=".exe"; fi
+          cargo test --locked --manifest-path apps/workbench/src-tauri/Cargo.toml
+          cargo fmt --manifest-path apps/workbench/src-tauri/Cargo.toml -- --check

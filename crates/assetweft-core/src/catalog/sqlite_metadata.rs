@@ -123,17 +123,47 @@ pub(crate) fn search_versions(
     if query.is_empty() {
         return Err(LibraryError::InvalidInput("empty search query"));
     }
+    query_versions(
+        conn,
+        "SELECT asset_id, version_id, source_format
+         FROM aw_asset_versions
+         WHERE instr(asset_id, ?1) > 0 OR instr(version_id, ?1) > 0
+         ORDER BY asset_id COLLATE BINARY, version_id COLLATE BINARY
+         LIMIT ?2",
+        params![query, LIMIT + 1],
+        LIMIT,
+    )
+}
+
+pub(crate) fn list_versions(
+    conn: &mut Connection,
+    limit: u16,
+) -> Result<VersionSearchResult, LibraryError> {
+    if !(1..=100).contains(&limit) {
+        return Err(LibraryError::InvalidInput("list limit"));
+    }
+    query_versions(
+        conn,
+        "SELECT asset_id, version_id, source_format
+         FROM aw_asset_versions
+         ORDER BY asset_id COLLATE BINARY, version_id COLLATE BINARY
+         LIMIT ?1",
+        [limit + 1],
+        limit,
+    )
+}
+
+fn query_versions(
+    conn: &mut Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+    limit: u16,
+) -> Result<VersionSearchResult, LibraryError> {
     let tx = conn.transaction()?;
     library::require_current(&tx)?;
     let mut matches = {
-        let mut stmt = tx.prepare(
-            "SELECT asset_id, version_id, source_format
-             FROM aw_asset_versions
-             WHERE instr(asset_id, ?1) > 0 OR instr(version_id, ?1) > 0
-             ORDER BY asset_id COLLATE BINARY, version_id COLLATE BINARY
-             LIMIT ?2",
-        )?;
-        stmt.query_map(params![query, LIMIT + 1], |row| {
+        let mut stmt = tx.prepare(sql)?;
+        stmt.query_map(parameters, |row| {
             Ok(VersionSearchMatch {
                 asset_id: row.get(0)?,
                 version_id: row.get(1)?,
@@ -142,8 +172,8 @@ pub(crate) fn search_versions(
         })?
         .collect::<Result<Vec<_>, _>>()?
     };
-    let truncated = matches.len() > usize::from(LIMIT);
-    matches.truncate(usize::from(LIMIT));
+    let truncated = matches.len() > usize::from(limit);
+    matches.truncate(usize::from(limit));
     tx.commit()?;
     Ok(VersionSearchResult { matches, truncated })
 }

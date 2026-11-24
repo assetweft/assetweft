@@ -5,7 +5,7 @@ use assetweft_core::{
     application::Application,
     assurance as val,
     catalog::domain::{Decision, Feedback, FeedbackRecord},
-    library::{AssetVersion, ComponentReference, ComponentRole, Presence},
+    library::{AssetVersion, ComponentReference, ComponentRole, LibraryError, Presence},
     storage::{FileAvailability, StorageError},
 };
 use clap::ArgMatches;
@@ -77,7 +77,7 @@ pub(super) fn query_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let read_only = matches!(action, "file-availability" | "search" | "preview");
+    let read_only = matches!(action, "file-availability" | "search" | "list" | "preview");
     let opened = if read_only || action == "feedback-get" {
         Application::open_read_only(db)
     } else {
@@ -151,6 +151,17 @@ pub(super) fn query_response(
         };
     }
     let result = match action {
+        "list" => {
+            let limit = id("limit").parse::<u16>().unwrap_or(0);
+            match app.list_versions(limit) {
+                Err(e @ LibraryError::InvalidInput("list limit")) => {
+                    return finish(3, "INPUT_INCOMPLETE", json!([error("limit", "INPUT_INCOMPLETE", e)]), Value::Null);
+                }
+                result => result.map(|result| {
+                    json!({"matches":result.matches,"truncated":result.truncated})
+                }),
+            }
+        }
         "search" => app.search_versions(id("query")).map(|result| {
             json!({"scope":"stored_local_asset_version_search","matches":result.matches,"truncated":result.truncated})
         }),

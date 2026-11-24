@@ -1,0 +1,22 @@
+{
+  "name": "assetweft-workbench",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "generate:tokens": "node scripts/generate_tokens.mjs",
+    "check:tokens": "node scripts/check_tokens.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "node build.mjs",
+    "test": "node --test tests/workbench.test.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.9.0",
+    "three": "0.181.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.181.0",
+    "typescript": "5.9.3",
+    "esbuild": "0.25.12"
+  }
+}

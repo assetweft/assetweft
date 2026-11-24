@@ -1,0 +1,107 @@
+:root {
+  color-scheme: dark light;
+  --aw-dark-surface-base: #14171c;
+  --aw-light-surface-base: #f5f6f8;
+  --aw-dark-surface-panel: #1b2028;
+  --aw-light-surface-panel: #ffffff;
+  --aw-dark-surface-elevated: #222833;
+  --aw-light-surface-elevated: #eef1f5;
+  --aw-dark-surface-stage: #101318;
+  --aw-light-surface-stage: #e7ebf0;
+  --aw-dark-border: #2a313d;
+  --aw-light-border: #d5dce6;
+  --aw-dark-border-strong: #3b4454;
+  --aw-light-border-strong: #bcc6d4;
+  --aw-dark-ink: #e8edf4;
+  --aw-light-ink: #18202c;
+  --aw-dark-ink-secondary: #9aa5b4;
+  --aw-light-ink-secondary: #4b5668;
+  --aw-dark-ink-subtle: #727f91;
+  --aw-light-ink-subtle: #647185;
+  --aw-dark-accent: #d9923b;
+  --aw-light-accent: #b36b16;
+  --aw-dark-accent-tint: #d9923b24;
+  --aw-light-accent-tint: #b36b1624;
+  --aw-dark-pass: #3fb67a;
+  --aw-light-pass: #1e7e4f;
+  --aw-dark-fail: #e05a4f;
+  --aw-light-fail: #c0352b;
+  --aw-dark-unknown: #8592a4;
+  --aw-light-unknown: #5c687a;
+  --aw-dark-warn: #d9923b;
+  --aw-light-warn: #a86414;
+  --aw-dark-backdrop: #101318b0;
+  --aw-light-backdrop: #18202c72;
+  --aw-surface-base: var(--aw-dark-surface-base);
+  --aw-surface-panel: var(--aw-dark-surface-panel);
+  --aw-surface-elevated: var(--aw-dark-surface-elevated);
+  --aw-surface-stage: var(--aw-dark-surface-stage);
+  --aw-border: var(--aw-dark-border);
+  --aw-border-strong: var(--aw-dark-border-strong);
+  --aw-ink: var(--aw-dark-ink);
+  --aw-ink-secondary: var(--aw-dark-ink-secondary);
+  --aw-ink-subtle: var(--aw-dark-ink-subtle);
+  --aw-accent: var(--aw-dark-accent);
+  --aw-accent-tint: var(--aw-dark-accent-tint);
+  --aw-pass: var(--aw-dark-pass);
+  --aw-fail: var(--aw-dark-fail);
+  --aw-unknown: var(--aw-dark-unknown);
+  --aw-warn: var(--aw-dark-warn);
+  --aw-backdrop: var(--aw-dark-backdrop);
+  --aw-font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --aw-font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --aw-text-small: 12px;
+  --aw-text-body: 14px;
+  --aw-text-heading: 18px;
+  --aw-text-title: 20px;
+  --aw-space-4: 4px;
+  --aw-space-8: 8px;
+  --aw-space-12: 12px;
+  --aw-space-16: 16px;
+  --aw-space-20: 20px;
+  --aw-space-24: 24px;
+  --aw-radius-4: 4px;
+  --aw-radius-6: 6px;
+  --aw-radius-8: 8px;
+  --aw-shadow: 0 12px 36px #10131840;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --aw-surface-base: var(--aw-light-surface-base);
+    --aw-surface-panel: var(--aw-light-surface-panel);
+    --aw-surface-elevated: var(--aw-light-surface-elevated);
+    --aw-surface-stage: var(--aw-light-surface-stage);
+    --aw-border: var(--aw-light-border);
+    --aw-border-strong: var(--aw-light-border-strong);
+    --aw-ink: var(--aw-light-ink);
+    --aw-ink-secondary: var(--aw-light-ink-secondary);
+    --aw-ink-subtle: var(--aw-light-ink-subtle);
+    --aw-accent: var(--aw-light-accent);
+    --aw-accent-tint: var(--aw-light-accent-tint);
+    --aw-pass: var(--aw-light-pass);
+    --aw-fail: var(--aw-light-fail);
+    --aw-unknown: var(--aw-light-unknown);
+    --aw-warn: var(--aw-light-warn);
+    --aw-backdrop: var(--aw-light-backdrop);
+  }
+}
+@supports (color: light-dark(white, black)) {
+  :root {
+    --aw-surface-base: light-dark(var(--aw-light-surface-base), var(--aw-dark-surface-base));
+    --aw-surface-panel: light-dark(var(--aw-light-surface-panel), var(--aw-dark-surface-panel));
+    --aw-surface-elevated: light-dark(var(--aw-light-surface-elevated), var(--aw-dark-surface-elevated));
+    --aw-surface-stage: light-dark(var(--aw-light-surface-stage), var(--aw-dark-surface-stage));
+    --aw-border: light-dark(var(--aw-light-border), var(--aw-dark-border));
+    --aw-border-strong: light-dark(var(--aw-light-border-strong), var(--aw-dark-border-strong));
+    --aw-ink: light-dark(var(--aw-light-ink), var(--aw-dark-ink));
+    --aw-ink-secondary: light-dark(var(--aw-light-ink-secondary), var(--aw-dark-ink-secondary));
+    --aw-ink-subtle: light-dark(var(--aw-light-ink-subtle), var(--aw-dark-ink-subtle));
+    --aw-accent: light-dark(var(--aw-light-accent), var(--aw-dark-accent));
+    --aw-accent-tint: light-dark(var(--aw-light-accent-tint), var(--aw-dark-accent-tint));
+    --aw-pass: light-dark(var(--aw-light-pass), var(--aw-dark-pass));
+    --aw-fail: light-dark(var(--aw-light-fail), var(--aw-dark-fail));
+    --aw-unknown: light-dark(var(--aw-light-unknown), var(--aw-dark-unknown));
+    --aw-warn: light-dark(var(--aw-light-warn), var(--aw-dark-warn));
+    --aw-backdrop: light-dark(var(--aw-light-backdrop), var(--aw-dark-backdrop));
+  }
+}

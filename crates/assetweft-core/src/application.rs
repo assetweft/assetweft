@@ -13,8 +13,6 @@ use crate::sqlite::{self, ConnectionConfig, ProtoError};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
-/// One independently configured local application connection. Dropping it closes it;
-/// explicit `close` reports SQLite close errors. No network or task executor exists yet.
 pub struct Application {
     connection: Connection,
     library_root: PathBuf,
@@ -720,6 +718,79 @@ impl Application {
 }
 
 impl Application {
+    pub fn run_byo_gpu(
+        &mut self,
+        run: &crate::execution::byo_gpu::Run,
+    ) -> Result<crate::execution::byo_gpu::Report, crate::execution::byo_gpu::RunError> {
+        use crate::budget::State;
+        use crate::execution::{
+            byo_gpu::{self, Outcome, Report, RunError},
+            consumption_adapter::ConsumptionBudgetOnce,
+            ports::BudgetOnce,
+        };
+
+        let prepared = byo_gpu::process::prepare(run)?;
+        let request = prepared.request();
+        let id = &request.id;
+        let previous = self.call_intent(id).map_err(RunError::Ledger)?;
+        if previous
+            .as_ref()
+            .is_none_or(|i| i.state == State::Preparing)
+        {
+            prepared.check_destination().map_err(RunError::Invalid)?;
+        }
+        self.reserve_call(&request).map_err(RunError::Ledger)?;
+
+        let mut invocation = None;
+        let recorded = ConsumptionBudgetOnce(&mut self.connection)
+            .submit_once(id, || invocation = Some(prepared.invoke()));
+        let attempted = invocation.is_some();
+        let outcome = match invocation {
+            Some(_) if recorded.is_err() => Outcome::Unknown {
+                diagnostic: "attempt finished but the ledger could not record its outcome",
+            },
+            Some(Err(diagnostic)) => Outcome::Unknown { diagnostic },
+            Some(Ok(sha256)) => {
+                if self.reconcile_call(id, &byo_gpu::receipt(&sha256)).is_ok() {
+                    Outcome::Succeeded { sha256 }
+                } else {
+                    Outcome::Unknown {
+                        diagnostic: "artifact produced but local task settlement is unresolved",
+                    }
+                }
+            }
+            None => {
+                recorded.map_err(RunError::Ledger)?;
+                match self
+                    .call_intent(id)
+                    .map_err(RunError::Ledger)?
+                    .map(|i| i.state)
+                {
+                    Some(State::Confirmed) => {
+                        let receipts = self.call_receipts(id).map_err(RunError::Ledger)?;
+                        receipts.iter().find_map(byo_gpu::receipt_hash).map_or(
+                            Outcome::Unknown {
+                                diagnostic: "no BYO GPU success receipt is recorded",
+                            },
+                            |hash| Outcome::Succeeded {
+                                sha256: hash.into(),
+                            },
+                        )
+                    }
+                    Some(State::Released) => Outcome::Released,
+                    _ => Outcome::Unknown {
+                        diagnostic: "prior attempt is unresolved",
+                    },
+                }
+            }
+        };
+        Ok(Report {
+            attempted,
+            artifact: prepared.artifact,
+            outcome,
+        })
+    }
+
     /// Typed LOCAL TEST_FIXTURE engineering only; not authenticated provider admission.
     /// # Errors
     /// Returns preflight failures; post-invocation recording errors retain the backend result.

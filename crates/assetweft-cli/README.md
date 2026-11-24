@@ -28,6 +28,9 @@ assetweft [--call-id ID] budget reserve --db EXISTING_DB --request FILE
 assetweft [--call-id ID] budget intent --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget receipts --db EXISTING_DB --intent-id ID
 assetweft [--call-id ID] budget cancel --db EXISTING_DB --intent-id ID
+assetweft [--call-id ID] byo-gpu profiles
+assetweft [--call-id ID] byo-gpu kaggle-validate --bundle DIR
+assetweft [--call-id ID] byo-gpu run --db EXISTING_DB --budget-id ID --intent-id ID --profile PROFILE --model MODEL --out-dir DIR [--image FILE] [--prompt TEXT] [--bundle DIR] [--adapter-bin CMD] [--allow-remote-upload]
 assetweft [--call-id ID] candidate initialize --db EXISTING_DB --version-id ID --contract FILE
 assetweft [--call-id ID] candidate propose --db EXISTING_DB --proposal FILE
 assetweft [--call-id ID] candidate propose-rigged-simple-motion --db EXISTING_DB --proposal FILE
@@ -58,7 +61,7 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
-`catalog feedback-latest`, `arguments`,
+`catalog feedback-latest`, `byo-gpu profiles`, `byo-gpu kaggle-validate`, `byo-gpu run`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
@@ -120,12 +123,55 @@ bootstrap. Business adapters translate wire inputs/results through the same exis
 | `consumption.rs` | strict allowance/request DTOs; budget approve/balance/reserve/intent/cancel | [Consumption](../assetweft-core/src/consumption/CONTRACT.md) |
 | `catalog.rs` | declared metadata, exact references, version feedback and fixture-head queries | [Catalog](../assetweft-core/src/catalog/CONTRACT.md) |
 | `assurance.rs` | bounded inspect/validate and report projection | [Assurance](../assetweft-core/src/assurance/CONTRACT.md) |
+| `execution.rs` | BYO GPU profiles, bundle validation and run receipts | [Execution](../assetweft-core/src/execution/CONTRACT.md) |
 | `protocol.rs` | shared envelope/errors, bounded JSON, existing-file admission and source projection | Existing core reader/types/error categories |
 
 Adapters depend inward on these public capabilities and share only transport helpers;
 core `Application` retains composition, persistence and business policy. Catalog now has a
 real incoming consumer in `catalog.rs`; its legacy `candidate_current` facade is Catalog-owned.
-No empty Execution module or additional domain/port/registry layer is introduced.
+
+## BYO GPU
+
+`profiles` reports the supported model IDs, licenses, expected artifact names, and
+optional external runtimes. `kaggle-validate` checks the bundle on disk and returns
+`credential_present` as a boolean. A valid private GPU bundle can pass validation
+with the boolean false. Use a real `owner/kernel-slug`, a kernel title, Python
+script or notebook, `is_private: true`, `enable_gpu: true`, and an in-bundle code file.
+Numeric kernel ID overrides are rejected.
+Absolute paths, traversal and symlinked code paths are rejected. The accelerator
+defaults to `NvidiaTeslaT4` (T4 ×2). A `machine_shape` of `NvidiaL4` is also accepted.
+
+Initialize the library explicitly, then use `budget approve` with `unit: "Task"`,
+`approval: "ExplicitBounded"` and positive capacity. The `run` command requires
+`--allow-remote-upload` whenever a local image or bundle is supplied. HF 3D models
+require an image and HF 2D models require a prompt. Kaggle requires a private
+bundle and credential presence. Configure credentials using `HF_TOKEN`,
+`KAGGLE_API_TOKEN`, `KAGGLE_USERNAME` with `KAGGLE_KEY`, or a standard Kaggle
+configuration file as applicable. AssetWeft never reads the contents of a Kaggle
+credential file.
+
+Set `--adapter-bin` or `ASSETWEFT_BYO_GPU_ADAPTER` to a trusted local executable.
+AssetWeft runs it without a shell and with the inherited environment. Use a
+runner that keeps credentials in the environment or provider configuration and
+sets its own provider deadlines. HF Spaces clients and Kaggle CLI are external
+processes. Python is optional for these runners and unnecessary for AssetWeft.
+The runner receives `--profile PROFILE --model MODEL --out-dir STAGING_DIR`
+plus the supplied inputs as `--image FILE`, `--prompt=TEXT`, or
+`--bundle DIR --accelerator ACCELERATOR`. Local file arguments point to private
+snapshots. A Kaggle runner should push the staged private kernel with the supplied
+accelerator, query that run's status, and download that run's output. PyPI
+`kaggle==2.2.5` needs `--with six` when using `uvx`. The runner exits zero only
+after writing the expected artifact into its staging output directory.
+
+AssetWeft publishes the artifact under `--out-dir` without replacing an existing
+file. Supply an existing directory or a new directory under an existing parent.
+The global `--max-bytes` restricts each input file and the output file. On PASS/0,
+`results.state` is `SUCCEEDED` and `results.artifact` gives the file name and
+SHA-256. Read `budget receipts` for the stored digest. Repeating a settled intent
+with the same inputs returns that receipt with `invoked: false`. An uncertain attempt returns UNKNOWN/1,
+retains the reservation, and never launches the runner again for that intent.
+`invoked` indicates entry into the claimed runner path, and does not prove a
+remote submission. The local unit is `Task` and `cash_cost` stays null.
 
 ## Explicit library initialization and workflow commands (AW-033:B bounded slice)
 

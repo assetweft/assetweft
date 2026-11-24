@@ -36,3 +36,23 @@ Protocol scale >9 is explicitly UnsupportedScale for ledger use, overflow remain
 AmountOverflow, None usage stays unknown. No rounding, settlement, retry, download,
 model/provider/auth/paid behavior is added. Issue #28 remains OPEN; affected
 workflow/budget/CLI CI, review and whole product acceptance remain root-owned.
+
+## BYO GPU external executor (AW-006 / AW-018 / AW-020)
+
+`byo_gpu` owns profile/model admission, upload consent, private Kaggle kernel
+validation, and the artifact receipt. The process adapter stages the exact checked
+image and, for Kaggle, only the checked metadata and kernel code. It dispatches the
+operator's executable directly and supplies only the allowed accelerator. The
+runner owns auth and provider I/O. AssetWeft discards its stdout/stderr and
+checks a fresh, bounded, regular output file before publishing it without overwrite.
+
+Root `Application::run_byo_gpu` assembles the existing Consumption ledger. It
+reserves one local `Task` from an explicit bounded allowance with `quote: None`.
+The descriptor binds the profile, model, runner path, output path, byte limit,
+prompt and input snapshots by digest. The durable claim enters `ATTEMPTING` before
+the callback. The existing once primitive records `UNKNOWN` after return. A
+successful local artifact publishes a separate atomic `CONFIRMED` settlement with
+charge one and its SHA-256 in the receipt's Task usage source. Failures retain the
+reservation. A crash or ledger error can leave `ATTEMPTING` or `UNKNOWN`;
+neither can be claimed again. A settled replay reads the historical digest.
+Cash cost remains unknown. Consumption owns all tables and transactions.

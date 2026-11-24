@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 
 /// 单连接 SQLite 级有限忙等待（`sqlite3_busy_timeout`），不是无限循环。
 pub const BUSY_TIMEOUT: Duration = Duration::from_millis(200);
@@ -109,10 +109,14 @@ pub fn open_and_configure(path: &Path) -> Result<(Connection, ConnectionConfig),
     configure(Connection::open(path).map_err(classify)?)
 }
 
+pub(crate) fn open_existing(path: &Path) -> Result<(Connection, ConnectionConfig), ProtoError> {
+    let flags = OpenFlags::default() & !OpenFlags::SQLITE_OPEN_CREATE;
+    configure(Connection::open_with_flags(path, flags).map_err(classify)?)
+}
+
 pub(crate) fn open_read_only(path: &Path) -> Result<(Connection, ConnectionConfig), ProtoError> {
     configure(
-        Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(classify)?,
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(classify)?,
     )
 }
 
@@ -207,21 +211,30 @@ pub fn write_with_finite_retry<F>(mut operation: F) -> Result<(), ProtoError>
 where
     F: FnMut() -> Result<(), ProtoError>,
 {
-    for attempt in 1..=MAX_BUSY_ATTEMPTS {
+    retry_busy(&mut operation, |error| matches!(error, ProtoError::Busy(_)))
+}
+
+fn retry_busy<T, E>(
+    mut operation: impl FnMut() -> Result<T, E>,
+    is_busy: impl Fn(&E) -> bool,
+) -> Result<T, E> {
+    for _ in 1..MAX_BUSY_ATTEMPTS {
         match operation() {
-            Ok(()) => return Ok(()),
-            Err(classified) => {
-                if matches!(classified, ProtoError::Busy(_)) && attempt < MAX_BUSY_ATTEMPTS {
-                    std::thread::sleep(BUSY_BACKOFF);
-                    continue;
-                }
-                return Err(classified);
-            }
+            Err(error) if is_busy(&error) => std::thread::sleep(BUSY_BACKOFF),
+            result => return result,
         }
     }
-    Err(ProtoError::Other(
-        "finite retry loop ended without a result".to_owned(),
-    ))
+    operation()
+}
+
+// #118: Retry only before the transaction begins, so no write or callback is replayed.
+pub(crate) fn begin_immediate_with_retry(
+    conn: &mut Connection,
+) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    retry_busy(
+        || rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate),
+        |error| error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy),
+    )
 }
 
 pub(crate) mod acceptance;

@@ -1,4 +1,4 @@
-use super::backup_domain::{Limits, Manifest, Object, Progress};
+use super::backup_domain::{FORMAT_1_SCHEMA, Limits, Manifest, Object, Progress};
 use super::backup_domain::{account_bytes, hash_ok, object_identity};
 use super::backup_ports::{FreshRestore, ProtectedBackup};
 use crate::backup::BackupError;
@@ -21,10 +21,14 @@ struct Run<'a> {
     progress: &'a mut dyn FnMut(Progress) -> bool,
 }
 impl Run<'_> {
-    fn check(&mut self, progress: Progress) -> Result<(), BackupError> {
+    fn check_deadline(&self) -> Result<(), BackupError> {
         if self.start.elapsed() >= self.limits.timeout {
             return Err(BackupError::Limit);
         }
+        Ok(())
+    }
+    fn check(&mut self, progress: Progress) -> Result<(), BackupError> {
+        self.check_deadline()?;
         if !(self.progress)(progress) {
             return Err(BackupError::Cancelled);
         }
@@ -90,8 +94,16 @@ fn fresh(path: &Path) -> Result<(), BackupError> {
 fn new_file(path: &Path) -> Result<File, BackupError> {
     Ok(FileOptions::new().write(true).create_new(true).open(path)?)
 }
-fn inspect(conn: &Connection, max: usize) -> Result<Vec<Object>, BackupError> {
+fn require_format_1_schema(conn: &Connection) -> Result<(), BackupError> {
     library::require_current(conn)?;
+    if library::CURRENT_SCHEMA != FORMAT_1_SCHEMA {
+        return Err(BackupError::Invalid("unsupported format/schema or count"));
+    }
+    Ok(())
+}
+
+fn inspect(conn: &Connection, max: usize) -> Result<Vec<Object>, BackupError> {
+    require_format_1_schema(conn)?;
     let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
     if integrity != "ok"
         || conn
@@ -184,20 +196,22 @@ impl ProtectedBackup for BackupSession<'_> {
         let (conn, root, dest, limits) = (self.conn, self.root, self.dest, self.run.limits);
         self.guard = Some(storage::reference_guard(root)?);
         storage::bind(conn, root)?;
-        library::require_current(conn)?;
+        require_format_1_schema(conn)?;
         fresh(dest)?;
         let db = dest.join("library.sqlite");
         new_file(&db)?;
         let mut snapshot = Connection::open(&db)?;
         snapshot.busy_timeout(Duration::ZERO)?;
-        {
-            self.run.check(Progress::Snapshot)?;
-            // SQLite sqlite3_backup_step can restart after a concurrent source write.
-            // Pin the snapshot before checking the ceiling: pagecount updates after that step writes.
+        self.run.check(Progress::Snapshot)?;
+        let wal = {
+            // #38: An unpinned backup can restart on a writer's commit and outgrow its byte budget.
             let source = conn.unchecked_transaction()?;
             source.query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
                 r.get::<_, i64>(0)
             })?;
+            let journal_mode: String =
+                source.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+            let wal = journal_mode.eq_ignore_ascii_case("wal");
             let page_size: u32 = source.query_row("PRAGMA page_size", [], |r| r.get(0))?;
             let pages: u32 = source.query_row("PRAGMA page_count", [], |r| r.get(0))?;
             account_bytes(0, u64::from(pages) * u64::from(page_size), limits.max_bytes)?;
@@ -209,8 +223,17 @@ impl ProtectedBackup for BackupSession<'_> {
                     StepResult::Busy | StepResult::Locked => return Err(BackupError::Busy),
                     _ => return Err(BackupError::Invalid("backup step")),
                 }
-                self.run.check(Progress::Snapshot)?;
+                if wal {
+                    self.run.check(Progress::Snapshot)?;
+                } else {
+                    self.run.check_deadline()?;
+                }
             }
+            wal
+        };
+        // #76: Rollback-journal writers need the source read lock released to commit.
+        if !wal {
+            self.run.check(Progress::Snapshot)?;
         }
         let objects = inspect(&snapshot, limits.max_objects)?;
         snapshot.close().map_err(|(_, e)| BackupError::Sql(e))?;

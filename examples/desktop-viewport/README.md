@@ -31,8 +31,17 @@ For macOS launch an owned bundle using `open -g --env AW_VIEWPORT_RUN=...`.
 WebView data_directory is requested, but platform support and OS-owned cache
 locations must be measured, never assumed isolated. Do not change OS settings.
 
-After rendering, the owned run directory contains render.png, Core report and
-renderer-observations.json. Run `node compare.mjs <render.png> <observations.json>`.
+Each case switch retires the prior evidence. An admitted render publishes
+`evidence/render.png` and `evidence/renderer-observations.json` together in the
+owned run directory. The JSON records the render generation. Empty and malformed
+controls produce Core reports without publishing render evidence. With the fixture
+rendered, run `node compare.mjs <run>/evidence/render.png <run>/evidence/renderer-observations.json`
+before switching cases.
+
+For headless regression coverage, run `node --test evidence.test.mjs` and, after
+building the frontend, `cargo test --locked --offline --manifest-path src-tauri/Cargo.toml`.
+Same-commit native macOS and Windows screenshot acceptance (#99) is `NOT_RUN / OWNER_NATIVE_RUN_PENDING`.
+
 The dev-only comparator parses source GLB float positions and node transform,
 projects through the fixed orthographic camera, and compares green pixel bounds, declared material and analytic triangle row spans
 (including interior continuity). It supports only that exact fixture SHA and fixed camera. `--wrong-bounds` injects a failure; repeat correctly on the

@@ -1,5 +1,3 @@
-// Responsibility: independent analytic projection/material image gate; dev-only Node/pngjs.
-// Callers: author native evidence; invariant: expected geometry comes from original fixture bytes.
 import fs from 'node:fs';import crypto from 'node:crypto';import path from 'node:path';
 import {inflateSync} from 'node:zlib';import {execFileSync} from 'node:child_process';import {PNG} from 'pngjs';
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex');

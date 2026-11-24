@@ -113,6 +113,7 @@ jobs:
           npm ci --ignore-scripts
           npm run typecheck
           npm run build
+          node --test evidence.test.mjs
 
       - name: Isolated viewport native check (not render acceptance)
         if: steps.viewport.outputs.affected == 'true'
@@ -120,4 +121,5 @@ jobs:
         run: |
           set -eu
           cargo check --locked --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml
+          cargo test --locked --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml
           cargo fmt --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml -- --check

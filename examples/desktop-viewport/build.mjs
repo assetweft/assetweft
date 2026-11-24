@@ -1,4 +1,3 @@
-// Responsibility: isolated shell bundle; esbuild only; called by npm build/CI.
 import {build} from 'esbuild';
 import {mkdir,copyFile} from 'node:fs/promises';
 await mkdir('dist',{recursive:true});

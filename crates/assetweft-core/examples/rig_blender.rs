@@ -1,8 +1,3 @@
-//! Responsibility: optional, bounded Blender 5.1.2 GLB skin roundtrip tool.
-//! Dependencies: Assurance rig checks, gltf/serde/sha2/tempfile, external explicit Blender.
-//! Callers: opt-in local M3 fixture checks. No Python runtime required by core.
-//! Invariants: fixed embedded script; no shell/foreign script; new output directory;
-//! immutable staged input, no URI/texture/extension/animation/morph processing.
 use assetweft_core::assurance::{self, CheckStatus, ValidationLimits};
 use serde_json::{Value, json};
 #[path = "../src/assurance/rig_blender/process.rs"]
@@ -47,7 +42,6 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
     let container = gltf::binary::Glb::from_slice(&bytes)?;
     let j: Value = serde_json::from_slice(&container.json)?;
     reject_external(&j, "")?;
-    // Deliberately narrow supported slice; never ask Blender to repair rejected data.
     for key in [
         "animations",
         "textures",
@@ -90,7 +84,6 @@ fn run() -> Result<Value, Box<dyn std::error::Error>> {
             return Err("UNSUPPORTED /meshes/0/primitives: morph or non-triangles".into());
         }
     }
-    // Fixed declaration intentionally admits only this programmatic proof, not F0.
     if j["asset"]["generator"] != "AssetWeft TEST_FIXTURE pose v1" || names != ["root", "bend"] {
         return Err("UNSUPPORTED fixture declaration or identity mapping".into());
     }

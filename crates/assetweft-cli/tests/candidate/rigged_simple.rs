@@ -1,5 +1,3 @@
-//! Actual-binary staging, locked reference selection and fresh receipt reads on Cesium's licensed sample.
-//! Application and CLI tests cover frozen managed versions, conditional acceptance and the scoped motion workflow.
 use super::*;
 use assetweft_core::{
     library::{AssetVersion, ComponentReference, ComponentRole, Presence},
@@ -142,8 +140,6 @@ fn stages_only_the_bound_motion_and_reopens_the_explicit_nonacceptance() {
         .iter()
         .zip(c["proposed"].as_array().unwrap())
     {
-        // Independent walk from each mesh attribute, skin and animation sampler
-        // through its accessor and complete BIN view on the licensed pair.
         let expected = match after["role"].as_str().unwrap() {
             "materials" => "b1729ff12b1f4610af0ad3598abc9fd08fc5af21b0f55de79d276269fc14cfb1",
             "mesh" => "4c696f162fb41079ccf4bef4c6bec474871fd34a043e63c37da8cf09f95902a4",
@@ -345,8 +341,6 @@ fn measured_motion_edit_runs_only_its_affected_stage() {
         pass(&args);
     };
 
-    // Positive control: use the entire original's projected role inventory to
-    // build its Catalog inputs. Observe actual claims and actual per-role writes.
     let mut app = Application::open(&db).unwrap();
     app.initialize_library().unwrap();
     commit(
@@ -426,7 +420,6 @@ fn measured_motion_edit_runs_only_its_affected_stage() {
     assert!(!output.exists());
     drive(run, &mut |id| {
         assert_eq!(id, "motion", "locked component dispatched");
-        // A restarted worker sees the durable unresolved claim and cannot replay it.
         assert_eq!(
             workflow("status", run.as_ref())["steps"][0]["state"],
             "running"

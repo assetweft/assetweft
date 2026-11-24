@@ -1,7 +1,3 @@
-//! Responsibility: CLI process entry, argument grammar/dispatch and explicit library bootstrap.
-//! Dependencies: clap, shared transport, business incoming adapters and existing Application init.
-//! Callers: humans, automation and unchanged C1 black-box tests.
-
 mod assurance;
 mod catalog;
 mod consumption;
@@ -320,7 +316,6 @@ fn grammar() -> Command {
                 ),
         )
 }
-/// The only CLI path authorized to create/initialize a library, using existing migrations.
 fn library_init_response(call_id: Option<&String>, args: &ArgMatches) -> (i32, Value) {
     let db = args.get_one::<PathBuf>("db").expect("required");
     let finish = |code, status, errors, results| {
@@ -329,7 +324,6 @@ fn library_init_response(call_id: Option<&String>, args: &ArgMatches) -> (i32, V
             envelope("library init", call_id, status, errors, results),
         )
     };
-    // New files are allowed; existing directories/special files are not SQLite inputs.
     match std::fs::metadata(db) {
         Ok(metadata) if !metadata.is_file() => {
             return finish(

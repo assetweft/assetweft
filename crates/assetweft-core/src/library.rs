@@ -1,9 +1,3 @@
-//! Responsibility: SQLite migration chain (schema 1–6) and LibraryError diagnostics.
-//! Dependencies: rusqlite, the versioned 001–006 SQL migrations and Catalog type re-exports (M1 objects, M2 workflow/budget).
-//! Callers: Application connection setup, concrete owner adapters requiring schema guards and compatibility consumers.
-//! Invariants: IDs are caller-supplied, versions are immutable, no state claims a file is
-//! ready by itself; managed bytes use storage, references are exact, migrations atomic.
-
 use crate::sqlite::ProtoError;
 use rusqlite::{Connection, TransactionBehavior};
 use std::{error::Error, fmt};
@@ -11,10 +5,8 @@ use std::{error::Error, fmt};
 pub(crate) const CURRENT_SCHEMA: i64 = 6;
 const INITIAL_SQL: &str = include_str!("library/001_initial.sql");
 
-/// Compatibility paths refer to the identical Catalog domain types.
 pub use crate::catalog::domain::{AssetVersion, ComponentReference, ComponentRole, Presence};
 
-/// Errors at the product boundary; underlying database diagnostics are retained.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LibraryError {
     Busy(String),
@@ -66,7 +58,6 @@ impl LibraryError {
     }
 }
 
-// Absence means pre-product-schema v0; a malformed metadata table fails closed.
 fn version(conn: &Connection) -> Result<Option<i64>, LibraryError> {
     let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='aw_schema_version')", [], |r| r.get(0))?;
     if !exists {

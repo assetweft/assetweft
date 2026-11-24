@@ -1,13 +1,7 @@
-//! Responsibility: Rig report and pure graph/numeric policy.
-//! Dependencies: Assurance validation values and collections.
-//! Callers: Rig application and streaming SDK adapter.
-//! Invariants: checked layout math and ordered original diagnostics.
-
 use super::domain::{CheckItem, CheckStatus, ValidationReport};
 use std::collections::{BTreeSet, VecDeque};
 #[derive(Debug)]
 pub struct RigReport {
-    /// Original report, including its unchanged numeric NOT_RUN entries.
     pub validation: ValidationReport,
     pub checks: Vec<CheckItem>,
     pub bound_nodes: Vec<usize>,
@@ -25,7 +19,6 @@ impl RigReport {
 
 pub(crate) fn forest(children: &[Vec<usize>], r: &mut RigReport) {
     use CheckStatus::{Fail, Pass};
-    // Iterative traversal avoids stack overflow on deeply nested hostile trees.
     let mut indegree = vec![0usize; children.len()];
     let mut graph_ok = true;
     for (n, cs) in children.iter().enumerate() {
@@ -197,7 +190,6 @@ pub(crate) fn valid_attributes(
         && positions == Some(j.count)
 }
 
-/// Actual node bindings; unbound skin objects cannot become numeric consumers.
 pub(crate) struct NodeBinding {
     pub node: usize,
     pub mesh: Option<usize>,

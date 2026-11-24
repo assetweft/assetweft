@@ -1,6 +1,3 @@
-//! Responsibility: purpose-owned atomic budget/intent/receipt ledger capability.
-//! Dependencies: Consumption domain only; use cases consume it, SQLite implements it.
-//! Invariants: each mutation is one atomic decision/commit; no SQL counters escape.
 use super::domain::*;
 pub(crate) trait BudgetLedger {
     fn approve(&mut self, a: &Allowance) -> Result<()>;

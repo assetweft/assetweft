@@ -1,6 +1,3 @@
-//! Responsibility: register immutable metadata and query exact version/reference snapshots.
-//! Dependencies: Catalog domain validation and its purpose-based metadata capability.
-//! Callers: compatibility Application; invariant: reject malformed identities before persistence.
 use super::{
     domain::{self, AssetVersion, ComponentReference, MetadataError},
     ports::Metadata,

@@ -1,12 +1,8 @@
-//! Responsibility: Catalog immutable metadata, exact references and local head values and their unchanged serde representation.
-//! Dependencies: serde and std only; callers: candidate compatibility facade and Catalog SQLite adapter.
-//! Invariants: local structural contract; no Production or persistence dependency.
 use serde::{Deserialize, Serialize};
 
 /// Predeclared local structural contract. Required quality items cannot be satisfied here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FixtureContract {
-    /// Identifies the exact validation profile for a local head.
     pub contract_id: String,
     pub max_component_bytes: u64,
     pub required_quality: Vec<String>,
@@ -34,9 +30,7 @@ pub(crate) enum MetadataError {
 /// File availability known to this metadata-only repository. No ready state is issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
-    /// Presence has not been checked.
     Unknown,
-    /// The referenced file is missing.
     Missing,
 }
 impl Presence {
@@ -110,7 +104,6 @@ pub struct AssetVersion {
     pub presence: Presence,
 }
 
-/// Stored identifiers and declared source format for one registered version.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct VersionSearchMatch {
     pub asset_id: String,
@@ -177,7 +170,6 @@ pub(crate) fn validate_reference(r: &ComponentReference) -> Result<(), MetadataE
     validate_version_id(&r.component_version_id)
 }
 
-// Exact-version feedback values and pure input policy.
 pub const MAX_REASON_BYTES: usize = 2048;
 pub const MAX_HISTORY_LIMIT: u16 = 100;
 

@@ -1,6 +1,3 @@
-//! Responsibility: Consumption commands, queries and once-only local submission.
-//! Dependencies: domain and atomic BudgetLedger only; compatibility facade assembles it.
-//! Invariants: validate before persistence; callback follows durable claim, never retries.
 use super::{domain::*, ports::BudgetLedger};
 pub(crate) fn approve(ledger: &mut impl BudgetLedger, a: &Allowance) -> Result<()> {
     validate_allowance(a)?;

@@ -1,8 +1,3 @@
-//! Responsibility: capabilities required by bounded validation.
-//! Dependencies: Assurance domain.
-//! Callers: application use cases and concrete adapters.
-//! Invariants: no paths, filesystem handles or parser SDK types cross these capabilities.
-
 use super::domain::{CheckedBytes, ValidationLimits};
 
 pub(crate) trait BoundedInput {

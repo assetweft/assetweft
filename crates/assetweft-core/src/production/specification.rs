@@ -1,39 +1,16 @@
-//! 职责: 可检查的用户需求。给 UI/Agent 同一份 `GenerationSpecRequest` 数据规格与
-//!        唯一可调用验证入口 `validate(request, context)`；只做声明一致性对照，外加少量线性
-//!        `recipe_examples()`（明确 NOT_EXECUTED）。不是 CLI 包装、节点/DAG 平台、调度器或 LLM 解析器。
-//! 依赖: std、serde 1.0.229 / serde_json 1.0.154（已锁的成熟 wire 解析，不是第二套验证引擎）；
-//!        复用 crate 既有 `LockMode`/`LockStatus`（lib.rs）与 `SourceClass`/`SourceDeclaration`（Assurance）。
-//! 调用方: CLI/桌面/Agent 共享此类型与 `validate`；`generation_spec` re-export 同一批 item。
-//! 不变量:
-//!  1. 请求来自不可信方；锁定范围以**调用方预声明**的 `TrustedContext.declared_locks` 为准，
-//!     请求删空/省略/篡改/冲突 locked 范围一律 `LOCK_VIOLATION` 并附明确原因，绝不自删锁获得授权。
-//!  2. 缺字段/非法声明返回稳定可定位的 `field_path`（如 `base_version`、`references[0].purpose`）。
-//!  3. 隐藏/补全/推断只许 `PENDING_CONFIRMATION`；`OBSERVED`/`KNOWN_CORRECT` 一律拒绝，不自动晋升真值。
-//!  4. `authorized=true`、engine/executor 等只是**声明**，本模块不验证真实素材许可或执行器准入；
-//!     `DeclarationConsistent` 不等于执行 PASS，不提供任何 `can_execute` 就绪主张。
-//!  5. unknown 费用允许 null，不自动填 0；`NOT_DEFINED` 是声明状态不是 lock_mode；
-//!     组件词表沿用现行 mesh/materials/rig/motion…（回指 AW-003 schema `definitions.role` 的真实消费者），
-//!     不把 GLB 物理 skin/animation 计数改名成厂商 schema，不造语义规范化器。
-//!  6. 不修改既有 first-delivery schema/checker/fixtures；不引入第二套通用 JSON Schema 引擎或漂移常量。
-
 use serde::Deserialize;
 
 use crate::assurance::{SourceClass, SourceDeclaration};
 use crate::{LockMode, LockStatus};
 
-/// 本验证器版本（与 crate 版本一致）；报告只表示声明一致性，不表示能力验收。
 pub const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 配方样例状态：只描述规格，**从未执行**。
 pub const RECIPE_STATUS: &str = "NOT_EXECUTED";
-/// 声明一致（仅在声明范围内；不是真实执行 PASS）。
 pub const STATUS_DECLARATION_CONSISTENT: &str = "DECLARATION_CONSISTENT";
-/// 被拒绝。
 pub const STATUS_REJECTED: &str = "REJECTED";
-/// 允许的推断/补全状态（唯一）。
 pub const STATE_PENDING_CONFIRMATION: &str = "PENDING_CONFIRMATION";
 
 /// 组件角色词表：与 `contracts/first-delivery-contract.schema.json` `definitions.role` 的 wire 值一致。
-/// 真实消费者是 AW-003 checker；此处是该词表在 Rust 类型化执行路径的表示，不重写 JSON Schema。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ComponentRole {
     Mesh,
@@ -46,7 +23,6 @@ pub enum ComponentRole {
 }
 
 impl ComponentRole {
-    /// 合同 wire 文本。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -60,7 +36,6 @@ impl ComponentRole {
         }
     }
 
-    /// 逐字解析；未知值返回 None，由调用方给出带字段路径的错误。
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -87,7 +62,6 @@ pub enum ReferencePurpose {
 }
 
 impl ReferencePurpose {
-    /// 合同 wire 文本。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -99,7 +73,6 @@ impl ReferencePurpose {
         }
     }
 
-    /// 逐字解析；未知值返回 None。
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -116,16 +89,12 @@ impl ReferencePurpose {
 /// 推断/补全所声称的状态。只有 `PendingConfirmation` 合法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferenceState {
-    /// 明确待确认（允许存在于正例，但绝不等于已证实真值）。
     PendingConfirmation,
-    /// 声称已观察 —— 本模块拒绝。
     Observed,
-    /// 声称已知正确 —— 本模块拒绝。
     KnownCorrect,
 }
 
 impl InferenceState {
-    /// 合同 wire 文本。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -135,7 +104,6 @@ impl InferenceState {
         }
     }
 
-    /// 逐字解析；未知值返回 None。
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -150,20 +118,14 @@ impl InferenceState {
 /// 错误类别；名称回指 docs/CONTRACTS.md §10.5（2/3/4/1/5），不是执行结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueCode {
-    /// 2 INVALID_INPUT：非法数值/声明不一致。
     InvalidInput,
-    /// 3 INPUT_INCOMPLETE：缺字段。
     InputIncomplete,
-    /// 4 LOCK_VIOLATION：锁定范围被绕过/省略/篡改/冲突。
     LockViolation,
-    /// 1 FAIL：其它合同违反。
     Fail,
-    /// 5 UNSUPPORTED：能力不足（规范化器未实现等）。
     Unsupported,
 }
 
 impl IssueCode {
-    /// 稳定类别名。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -176,7 +138,6 @@ impl IssueCode {
     }
 }
 
-/// 一条可定位的问题：稳定字段路径 + 明确原因。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecIssue {
     pub code: IssueCode,
@@ -189,33 +150,27 @@ pub struct SpecIssue {
 pub struct ValidationOutcome {
     pub status: &'static str,
     pub issues: Vec<SpecIssue>,
-    /// 来源声明（调用方声明，本模块恒不验证）。
     pub source: SourceDeclaration,
-    /// 显式未执行项（逐项列出，不冒充 PASS）。
     pub not_run: Vec<&'static str>,
 }
 
 impl ValidationOutcome {
-    /// 是否在声明范围内一致（不是执行 PASS）。
     #[must_use]
     pub fn is_declaration_consistent(&self) -> bool {
         self.status == STATUS_DECLARATION_CONSISTENT
     }
 
-    /// 是否含有指定类别的问题。
     #[must_use]
     pub fn has_code(&self, code: IssueCode) -> bool {
         self.issues.iter().any(|i| i.code == code)
     }
 
-    /// 是否含有指定字段路径的问题。
     #[must_use]
     pub fn has_field_path(&self, path: &str) -> bool {
         self.issues.iter().any(|i| i.field_path == path)
     }
 }
 
-/// 参考素材用途声明（§3）。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceUse {
@@ -223,12 +178,10 @@ pub struct ReferenceUse {
     pub reference_id: Option<String>,
     #[serde(default)]
     pub purpose: Option<String>,
-    /// 单图隐藏区域：只登记位置，不推断内容。
     #[serde(default)]
     pub hidden_regions: Vec<String>,
 }
 
-/// 锁定声明；`declaration` 取值 BYTE/SEMANTIC/NOT_DEFINED，复用 `LockStatus::parse`。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LockClaim {
@@ -256,7 +209,6 @@ pub struct Budget {
     pub cost_value: Option<u64>,
 }
 
-/// 隐藏结构补全/推断；`state` 只允许 PENDING_CONFIRMATION。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompletionClaim {
@@ -264,12 +216,10 @@ pub struct CompletionClaim {
     pub path: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
-    /// 来源分类声明（复用 validation::SourceClass 词表，不验证真伪）。
     #[serde(default)]
     pub source: Option<String>,
 }
 
-/// UI/Agent 提交的同一份用户规格（不可信输入）。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenerationSpecRequest {
@@ -279,31 +229,24 @@ pub struct GenerationSpecRequest {
     /// 输入引用（S3 首条动作增量必需）。
     #[serde(default)]
     pub input_refs: Vec<String>,
-    /// 参考素材与用途（§3）。
     #[serde(default)]
     pub references: Vec<ReferenceUse>,
-    /// 请求可写组件。
     #[serde(default)]
     pub editable_components: Vec<String>,
     /// 请求锁定组件；必须与预声明合同对照，不能自删。
     #[serde(default)]
     pub locked_components: Vec<LockClaim>,
-    /// 输出合同。
     #[serde(default)]
     pub output_contract: Option<String>,
-    /// 预算。
     #[serde(default)]
     pub budget: Option<Budget>,
-    /// 允许执行环境。
     #[serde(default)]
     pub allowed_environment: Option<String>,
     /// 调用方声称的授权（只记录，**不验证**）。
     #[serde(default)]
     pub authorized: Option<bool>,
-    /// 来源分类声明（复用 SourceClass 词表，不验证）。
     #[serde(default)]
     pub source: Option<String>,
-    /// 引擎/执行器只是声明，不自动变真实运行 PASS。
     #[serde(default)]
     pub declared_engine: Option<String>,
     #[serde(default)]
@@ -314,18 +257,13 @@ pub struct GenerationSpecRequest {
 }
 
 /// 调用方可信上下文：来自**预声明合同**，不是从请求里读。
-///
-/// 来源与未验证边界：由调用方（CLI/UI/Agent 上游）从已冻结合同提供；本模块只用它对照请求范围，
-/// 不验证该合同本身的真实素材许可、执行器准入或来源真伪，也不因此声称 F0 已提供。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustedContext {
     #[serde(default)]
     pub contract_id: Option<String>,
-    /// 预声明锁定范围（权威）。正常正例锁 mesh/materials/rig、允许 motion。
     #[serde(default)]
     pub declared_locks: Vec<LockClaim>,
-    /// 调用方对上下文来源的说明（只记录）。
     #[serde(default)]
     pub source_note: Option<String>,
 }
@@ -365,15 +303,11 @@ fn nonblank(value: &Option<String>) -> bool {
     value.as_ref().is_some_and(|s| !s.trim().is_empty())
 }
 
-/// 唯一可调用验证入口：UI/Agent 提交同一 `GenerationSpecRequest` + 同一 `TrustedContext`。
-///
-/// 返回 `ValidationOutcome`；`DeclarationConsistent` **仅**表示声明一致性，不表示真实执行 PASS，
-/// 不授予任何权限。所有问题都带稳定 `field_path` 与明确原因。
+/// Declaration consistency grants no execution permission. Issues include stable field paths.
 #[must_use]
 pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> ValidationOutcome {
     let mut issues: Vec<SpecIssue> = Vec::new();
 
-    // --- 1) 缺字段 / 非法声明：稳定可定位的字段路径 ---
     if !nonblank(&request.base_version) {
         issues.push(issue(
             IssueCode::InputIncomplete,
@@ -496,7 +430,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
         ));
     }
 
-    // Required identity is checked independently on each wire side, preserving indices.
     for (prefix, locks) in [
         ("locked_components", &request.locked_components),
         ("context.declared_locks", &context.declared_locks),
@@ -519,7 +452,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
         }
     }
 
-    // --- 2) 组件词表与锁定声明解析 ---
     let mut requested_locks: Vec<(usize, ComponentRole, LockStatus)> = Vec::new();
     let mut seen_lock_roles: Vec<ComponentRole> = Vec::new();
     for (i, l) in request.locked_components.iter().enumerate() {
@@ -566,7 +498,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
                 continue;
             }
         };
-        // NOT_DEFINED 是声明状态，不是锁定模式；不得用来声明一个锁。
         if decl == LockStatus::NotDefined {
             issues.push(issue(IssueCode::Unsupported, format!("locked_components[{i}].declaration"), "NOT_DEFINED is a declaration state, not a lock_mode; no semantic normalizer is implemented"));
             continue;
@@ -583,7 +514,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
         }
     }
 
-    // --- 3) 隐藏结构补全与真值分开 ---
     for (i, c) in request.completion.iter().enumerate() {
         if !nonblank(&c.path) {
             issues.push(issue(
@@ -625,7 +555,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
         }
     }
 
-    // --- 4) 可信上下文自身完整性 ---
     if !nonblank(&context.contract_id) {
         issues.push(issue(
             IssueCode::InputIncomplete,
@@ -657,7 +586,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
         }
     }
 
-    // --- 5) 锁定范围对照：请求不能删空/省略/篡改/冲突预声明锁 ---
     if request.locked_components.is_empty() && !declared.is_empty() {
         issues.push(issue(IssueCode::LockViolation, "locked_components", "request has no locked_components; untrusted spec must not drop all pre-declared locks to gain authorization"));
     }
@@ -736,7 +664,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
         }
     }
 
-    // --- 6) 声明但不验证：来源 / 授权 / 引擎 / 执行器 ---
     let source_class = request
         .source
         .as_deref()
@@ -765,7 +692,6 @@ pub fn validate(request: &GenerationSpecRequest, context: &TrustedContext) -> Va
     }
 }
 
-/// 线性配方样例：只描述规格，**从未执行**（不造节点/DAG 平台）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecipeExample {
     pub id: &'static str,
@@ -775,7 +701,6 @@ pub struct RecipeExample {
     pub context: TrustedContext,
 }
 
-/// 少量线性 recipe examples；全部 TEST_FIXTURE / metadata-only / NOT_EXECUTED。
 #[must_use]
 pub fn recipe_examples() -> Vec<RecipeExample> {
     let mut context = TrustedContext::from_contract(

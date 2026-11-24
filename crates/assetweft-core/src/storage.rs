@@ -1,8 +1,3 @@
-//! Responsibility: managed-object compatibility values/errors and shared concrete retention lease.
-//! Dependencies: Catalog object use cases/adapter, library errors and std filesystem.
-//! Callers: Application; filesystem is a private local library, not an adversarial shared tree.
-//! Invariants: publish before DB, never replace objects, serialize GC with every hash-reference insertion and protection update.
-//! A crash may leave a lock/temp/orphan; no automatic stale-lock breaking or power-loss claim.
 use crate::library::LibraryError;
 use rusqlite::Connection;
 use std::{
@@ -15,7 +10,7 @@ pub(crate) fn redirected(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        // Includes junctions and other reparse points.
+        // Windows FILE_ATTRIBUTE_REPARSE_POINT also covers junctions.
         metadata.file_attributes() & 0x400 != 0
     }
     #[cfg(not(windows))]
@@ -25,7 +20,6 @@ pub(crate) fn redirected(metadata: &fs::Metadata) -> bool {
 }
 
 pub use crate::catalog::objects_domain::{Collection, FileAvailability, StoredObject};
-/// Preserve the original IO/database diagnostic; rejected input never registers a version.
 #[derive(Debug)]
 pub enum StorageError {
     Io(io::Error),
@@ -60,7 +54,6 @@ impl From<rusqlite::Error> for StorageError {
     }
 }
 
-// Exclusive create establishes ownership. Drop removes only a successfully created lock.
 pub(crate) struct Guard(PathBuf, File);
 impl Drop for Guard {
     fn drop(&mut self) {
@@ -68,8 +61,7 @@ impl Drop for Guard {
         let _ = fs::remove_file(&self.0);
     }
 }
-// Both metadata-only references and managed operations use the same lease primitive.
-// Global order: storage lease, then SQLite transaction. Never acquire it inside a tx.
+// Take the filesystem lease before SQLite's transaction lock (Catalog contract, managed objects).
 fn acquire(root: &Path) -> io::Result<Guard> {
     let path = root.join(".aw-storage.lock");
     OpenOptions::new()
@@ -85,8 +77,6 @@ pub(crate) fn lock(root: &Path) -> Result<Guard, StorageError> {
         Err(e) => Err(e.into()),
     }
 }
-/// Coordinates metadata hash references without requiring managed bytes or owner binding.
-/// commit_object already holds this lease and uses the internal insert_version directly.
 pub(crate) fn reference_guard(root: &Path) -> Result<Guard, LibraryError> {
     match acquire(root) {
         Ok(guard) => Ok(guard),
@@ -96,8 +86,6 @@ pub(crate) fn reference_guard(root: &Path) -> Result<Guard, LibraryError> {
         Err(e) => Err(LibraryError::Io(e.to_string())),
     }
 }
-// A directory may hold multiple SQLite files, but its objects belong to exactly one.
-// Relative database filename keeps a closed whole-library move possible.
 pub(crate) fn bind(conn: &Connection, root: &Path) -> Result<(), StorageError> {
     object_binding(conn, root, true)
 }

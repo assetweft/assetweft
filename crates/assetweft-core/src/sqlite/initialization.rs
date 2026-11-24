@@ -1,6 +1,3 @@
-//! Responsibility: real SQLite/CAS fixture initialization and persisted receipt query.
-//! Dependencies: Production semantic ports, bounded staging IO, Catalog borrowed head adapter.
-//! Callers: Application and acceptance adapter; invariants: validation outside transaction, lease→refs→IMMEDIATE→commit; no replay.
 use crate::{
     library::{self, LibraryError},
     production::{

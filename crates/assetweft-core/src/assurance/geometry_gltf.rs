@@ -1,8 +1,3 @@
-//! Responsibility: translate SDK structure into geometry facts.
-//! Dependencies: gltf and geometry values.
-//! Callers: geometry application capability.
-//! Invariants: URI identities remain unresolved and unchanged.
-
 use super::{geometry_domain::*, geometry_ports::GeometryStructure, gltf_checks::parse_glb};
 pub(crate) struct GltfGeometry;
 impl GeometryStructure for GltfGeometry {

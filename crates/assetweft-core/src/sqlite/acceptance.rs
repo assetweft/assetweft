@@ -1,6 +1,3 @@
-//! Responsibility: single-database atomic Production acceptance adapter.
-//! Dependencies: Production byte/receipt IO, Catalog SQLite adapter, storage lease and rusqlite.
-//! Callers: compatibility Application; invariant: lease before IMMEDIATE, CAS and receipt in one commit, no replay.
 use crate::catalog::domain::FixtureContract;
 use crate::{
     catalog::sqlite_store,
@@ -72,8 +69,6 @@ impl AcceptanceInputs for SqliteAcceptance<'_> {
         max_component_bytes: u64,
     ) -> Result<(), AcceptanceError> {
         for s in snapshots {
-            // The frozen base is re-checked against the candidate's declared bound
-            // on the actual file before Catalog managed CAS hashing.
             crate::production::staging_sqlite::bounded_regular(
                 &self.root.join("objects").join(&s.measured_sha256),
                 Some(max_component_bytes),

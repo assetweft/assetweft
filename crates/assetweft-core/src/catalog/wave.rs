@@ -1,5 +1,3 @@
-//! Catalog audition clips for canonical little-endian PCM16 WAVE.
-//! Called under the managed-file lease with verified, size-limited bytes. Preserve whole frames.
 use crate::storage::StorageError;
 
 pub(super) fn audition(source: &[u8]) -> Result<Vec<u8>, StorageError> {

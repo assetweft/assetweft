@@ -1,6 +1,3 @@
-//! Responsibility: produce and evict one reconstructible, version-addressed local export.
-//! Depends on the Catalog managed-object verifier, root binding and storage lease.
-//! Caller: Application. The private witness pins the copy's identity across process exits.
 use super::{domain::validate_version_id, objects_domain::StoredObject, objects_sqlite};
 use crate::{
     library::LibraryError,
@@ -42,8 +39,7 @@ pub(crate) fn database_id(path: &Path) -> Option<FileId> {
     identity(path).ok().map(|(id, _)| id)
 }
 
-// All components below the canonical library root are checked separately. In
-// particular a bind mount can redirect a regular file or directory on the same device.
+// Linux bind mounts can redirect a path to the same device, so device identity alone cannot detect them.
 fn local_entry(
     root: &Path,
     path: &Path,
@@ -296,9 +292,7 @@ impl Export {
             )?;
             let witness = self.witness(identity(temp.path())?.0);
             temp.persist_noclobber(&witness).map_err(|e| e.error)?;
-            // Publish last. A crash here can leave an unreachable private witness.
             if let Err(error) = fs::hard_link(&witness, target) {
-                // We just exclusively created this name under the same lease.
                 fs::remove_file(witness)?;
                 return Err(error.into());
             }

@@ -1,6 +1,3 @@
-//! Responsibility: Production candidate descriptors and acceptance wire values.
-//! Dependencies: serde and stable Catalog values; callers: acceptance use case and compatibility facade.
-//! Invariants: existing fields, derives and wire representation remain unchanged.
 use crate::catalog::domain::{Current, FixtureContract};
 use serde::{Deserialize, Serialize};
 

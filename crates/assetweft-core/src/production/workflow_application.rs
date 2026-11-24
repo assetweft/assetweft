@@ -1,6 +1,3 @@
-//! Responsibility: actual workflow command/query and claim → driver → finish use cases.
-//! Dependencies: pure workflow domain and semantic WorkflowRuns capability.
-//! Callers: compatibility composition; driver runs after durable claim, never replayed.
 use super::{
     workflow_domain::{self, Outcome, Step, StepRecord},
     workflow_ports::{WorkflowQuery, WorkflowRuns},

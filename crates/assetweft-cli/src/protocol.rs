@@ -1,8 +1,3 @@
-//! Responsibility: shared CLI transport projection and bounded input/file admission.
-//! Dependencies: serde JSON, existing Assurance reader/types and LibraryError categories.
-//! Callers: process entry and Production/Consumption/Assurance incoming adapters.
-//! Invariants: v1 wire/errors unchanged; no business policy, SQL, replay or implicit init.
-
 use assetweft_core::{assurance as val, library::LibraryError};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -32,8 +27,6 @@ pub(super) fn read_json<T: DeserializeOwned>(
 pub(super) fn source(s: &val::SourceDeclaration) -> Value {
     json!({"class":s.class.as_str(),"declared_license":s.declared_license,"verified_by_checker":s.verified_by_checker()})
 }
-/// Rejects a missing or non-regular `--db` before any create-capable `Application::open`.
-/// This precheck is not race-proof and does not make the later open read-only.
 pub(super) fn existing_database(path: &Path) -> Result<(), Value> {
     if path.as_os_str().is_empty() {
         return Err(error(
@@ -56,7 +49,6 @@ pub(super) fn existing_database(path: &Path) -> Result<(), Value> {
         )),
     }
 }
-/// Deterministic `LibraryError` categories only; no error-string parsing and no typed NotFound.
 pub(super) fn library_outcome(failure: &LibraryError) -> (i32, &'static str) {
     match failure {
         LibraryError::InvalidInput(_) | LibraryError::Constraint(_) => (2, "INVALID_INPUT"),

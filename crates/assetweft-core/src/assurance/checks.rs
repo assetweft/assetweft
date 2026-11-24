@@ -1,8 +1,3 @@
-//! Responsibility: public Assurance check composition and concrete read errors.
-//! Dependencies: existing Assurance use cases and private filesystem/GLB adapters.
-//! Callers: legacy facades and public check consumers.
-//! Invariants: unchanged sequencing, diagnostics and type identity; no business policy here.
-
 use super::{
     GeometryReport, RigReport, RoleRequirement, SourceDeclaration, ValidationLimits,
     ValidationReport, application,
@@ -44,8 +39,6 @@ pub enum GeometryError {
     Invalid(String),
 }
 /// Inspect a bounded file without resolving resources.
-/// # Errors
-/// Preserves bounded-read and parser diagnostics.
 pub fn inspect_geometry_file(
     path: &Path,
     limits: ValidationLimits,
@@ -57,16 +50,11 @@ pub fn inspect_geometry_file(
         })
 }
 /// Inspect resident bytes without resource resolution.
-/// # Errors
-/// Preserves format and parser diagnostics.
 pub fn inspect_geometry_bytes(bytes: &[u8]) -> Result<GeometryReport, GeometryError> {
     geometry_application::inspect_bytes(&GltfChecks, &GltfGeometry, bytes)
         .map_err(GeometryError::Invalid)
 }
 
-/// Read only a bounded supplied file.
-/// # Errors
-/// Returns the original bounded-read error.
 pub fn inspect_rig_file(
     path: &Path,
     limits: ValidationLimits,

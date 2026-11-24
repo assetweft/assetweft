@@ -1,5 +1,3 @@
-//! Sampled stance check for the CLI. Role, contact identity and stance are author
-//! declarations. Only horizontal excursion over the supplied world samples is measured.
 use super::digest;
 use crate::assurance::{ValidationLimits, read_bounded};
 use serde::{Deserialize, Serialize};

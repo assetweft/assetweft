@@ -1,6 +1,3 @@
-//! Responsibility: real Application/CAS tests for the staging-only M2 boundary.
-//! Dependencies: exclusively owned tempfile directories and existing M1 commits.
-//! Callers: C2 targeted checks and C1. Invariants: no fixture is F0 or quality evidence.
 use assetweft_core::{
     LockMode,
     application::Application,
@@ -302,7 +299,6 @@ fn glb_conditional_accept_stale_conflict_reopen_and_exact_history() {
     stale.candidate_version = "other".into();
     a.propose_candidate(&stale).unwrap();
     let result = a.attempt_accept_candidate(&p.id).unwrap();
-    // Both paths name the same Catalog-owned value without wire conversion.
     if let Acceptance::Accepted { current, .. } = &result {
         let head: &assetweft_core::catalog::domain::Current = current;
         let _: &assetweft_core::candidate::Current = head;
@@ -445,7 +441,6 @@ fn corrupted_managed_bytes_after_staging_fail_acceptance() {
     );
 }
 
-// Existing AW017 fixture assembly reused verbatim; structural fixture, not real rig/AI evidence.
 fn glb_from_json(json: &str) -> Vec<u8> {
     let mut js = json.as_bytes().to_vec();
     while !js.len().is_multiple_of(4) {
@@ -626,9 +621,6 @@ fn candidate_receipts(path: &std::path::Path) -> Vec<(String, String)> {
         .unwrap()
 }
 
-/// Reproduce restored/corrupt data: an aw_candidates row whose descriptor embeds
-/// a different id. The real 005 migration forbids UPDATE, so the exact wire bytes
-/// are re-inserted under another primary key; no product write path is used.
 fn insert_restored_candidate(
     path: &std::path::Path,
     row_id: &str,
@@ -655,9 +647,6 @@ fn identity_error() -> assetweft_core::library::LibraryError {
     assetweft_core::library::LibraryError::InvalidInput("candidate identity")
 }
 
-// Issue 30: the declared fixture component cap must reject actual managed regular
-// files before Catalog/CAS hashing and Assurance validation, while a contract-less
-// staged request keeps the existing global managed byte ceiling.
 fn cap_contract(max_component_bytes: u64) -> assetweft_core::candidate::FixtureContract {
     assetweft_core::candidate::FixtureContract {
         contract_id: "TEST_FIXTURE_GLB_STRUCTURE_V1".into(),
@@ -703,8 +692,6 @@ fn declared_cap_rejects_proposal_before_managed_hashing() {
     let (d, mut a, p) = cap_setup();
     let size = grow_object(&d, &mut a, "mesh1", b'X');
     assert_eq!(size, p.contract.as_ref().unwrap().max_component_bytes + 1);
-    // Pre-fix this request hashes the grown object and fails on the claimed-hash
-    // identity instead; only a cap checked on real size can reject before that.
     assert_eq!(
         a.propose_candidate(&p),
         Err(assetweft_core::library::LibraryError::InvalidInput(
@@ -755,8 +742,6 @@ fn declared_cap_rejects_attempt_before_managed_hashing_without_receipt() {
 
 #[test]
 fn declared_cap_rejects_attempt_base_remeasure_before_managed_hashing() {
-    // Base and proposed must be distinct managed objects: real CAS deduplicates
-    // identical bytes, which would let the proposed read mask the base case.
     let glb = include_bytes!("fixtures/validation/mesh_only.glb");
     let mut shifted = glb.to_vec();
     let json_len = u32::from_le_bytes(shifted[12..16].try_into().unwrap()) as usize;
@@ -785,7 +770,6 @@ fn declared_cap_rejects_attempt_base_remeasure_before_managed_hashing() {
         contract: Some(contract),
     };
     a.propose_candidate(&p).unwrap();
-    // Only the base object grows past the declared bound; proposed bytes stay valid.
     let hash = a.asset_version("mesh0").unwrap().unwrap().content_hash;
     let file = fs::OpenOptions::new()
         .write(true)
@@ -793,8 +777,6 @@ fn declared_cap_rejects_attempt_base_remeasure_before_managed_hashing() {
         .unwrap();
     file.set_len(p.contract.as_ref().unwrap().max_component_bytes + 1)
         .unwrap();
-    // Pre-fix the base remeasurement hashes the grown object and returns a CAS
-    // corruption error; only a declared bound on the actual file rejects earlier.
     assert_eq!(
         a.attempt_accept_candidate(&p.id),
         Err(assetweft_core::library::LibraryError::InvalidInput(
@@ -812,7 +794,6 @@ fn declared_cap_rejects_attempt_base_remeasure_before_managed_hashing() {
 fn declared_cap_boundaries_and_contractless_managed_ceiling_are_retained() {
     let bytes = include_bytes!("fixtures/validation/mesh_only.glb");
     let exact = bytes.len() as u64;
-    // Exactly at the declared bound stays a valid staged and accepted component.
     let (_d, mut a, p) = cap_setup();
     a.initialize_candidate_current("base", p.contract.as_ref().unwrap())
         .unwrap();
@@ -821,7 +802,6 @@ fn declared_cap_boundaries_and_contractless_managed_ceiling_are_retained() {
         a.attempt_accept_candidate(&p.id).unwrap(),
         Acceptance::Accepted { .. }
     ));
-    // One byte under the valid fixture size is a real declared-limit rejection.
     let (_d2, mut b, p2) = cap_setup();
     let mut under = p2.clone();
     under.contract = Some(cap_contract(exact - 1));
@@ -832,7 +812,6 @@ fn declared_cap_boundaries_and_contractless_managed_ceiling_are_retained() {
         ))
     );
     assert!(b.candidate(&under.id).unwrap().is_none());
-    // No predeclared contract retains the existing 16 MiB managed-file ceiling.
     let (d3, mut c, mut p3) = cap_setup();
     p3.contract = None;
     let hash = c.asset_version("mesh1").unwrap().unwrap().content_hash;
@@ -862,11 +841,8 @@ fn persisted_descriptor_identity_is_bound_to_the_lookup_key() {
     let receipts = candidate_receipts(&path);
     assert_eq!(receipts.len(), 1);
 
-    // (1) row cand-a embeds the id of the accepted candidate.
     insert_restored_candidate(&path, "cand-a", &candidate.id, &candidate);
-    // (2) embedded id has no aw_candidates row at all.
     insert_restored_candidate(&path, "cand-c", "cand-ghost", &candidate);
-    // (3) embedded id names a real candidate that has no receipt yet.
     let mut pending = p.clone();
     pending.id = "cand-b2".into();
     pending.candidate_version = "other".into();
@@ -881,20 +857,16 @@ fn persisted_descriptor_identity_is_bound_to_the_lookup_key() {
             "{row} attempt"
         );
     }
-    // Catalog head and both receipts stay exactly as before, under both keys.
     assert_eq!(a.candidate_current("character").unwrap(), head);
     assert_eq!(candidate_receipts(&path), receipts);
     for row in ["cand-a", "cand-c", "cand-d", "cand-ghost"] {
         assert!(a.candidate_attempt(row).unwrap().is_none(), "{row} receipt");
     }
 
-    // A matching identity keeps reading and keeps its original durable receipt.
     assert_eq!(a.candidate(&p.id).unwrap(), Some(candidate.clone()));
     assert_eq!(a.candidate_attempt(&p.id).unwrap(), Some(durable.clone()));
     assert_eq!(a.attempt_accept_candidate(&p.id).unwrap(), durable);
 
-    // The identity mismatch must outrank component measurement/IO: the managed
-    // object that validation would read is gone, yet no byte/IO error surfaces.
     let object = d
         .path()
         .join("objects")

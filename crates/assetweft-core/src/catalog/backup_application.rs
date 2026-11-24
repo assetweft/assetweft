@@ -1,6 +1,3 @@
-//! Responsibility: protected backup and fresh restore use-case ordering.
-//! Dependencies: pure backup policy and purpose-owned capabilities only.
-//! Callers: compatibility backup composition; invariants: publish completion last, stop on error.
 use super::backup_domain::{Limits, Manifest, validate_manifest};
 use super::backup_ports::{FreshRestore, ProtectedBackup};
 pub(crate) fn create<P: ProtectedBackup>(port: &mut P) -> Result<Manifest, P::Error> {

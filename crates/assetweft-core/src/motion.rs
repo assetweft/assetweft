@@ -1,6 +1,3 @@
-//! M3 motion preset called by the CLI. Reuses the accepted Rigged Simple identity
-//! and glTF container codec. Appends clips to an immutable source and publishes
-//! to a new path only after serialization succeeds.
 use crate::assurance::{ValidationLimits, read_bounded, rig_blender::RIGGED_SIMPLE};
 use gltf::binary::Glb;
 use serde_json::{
@@ -120,15 +117,13 @@ fn write_motion(
         return Err(reason.into());
     }
     let mut glb = Glb::from_slice(&source)?;
-    // Keep upstream numeric literals intact, including the original accessor bounds.
     let mut doc: BTreeMap<String, Box<RawValue>> = serde_json::from_slice(&glb.json)?;
     let mut views: Vec<Value> = serde_json::from_str(doc["bufferViews"].get())?;
     let mut accessors: Vec<Box<RawValue>> = serde_json::from_str(doc["accessors"].get())?;
     let mut clips: Vec<Box<RawValue>> = serde_json::from_str(doc["animations"].get())?;
     let bin = glb.bin.as_mut().ok_or("missing BIN")?.to_mut();
     let times = [0.0_f32, 0.25, 0.5, 1.0];
-    // Local Y rotation at rest and at peak (rest composed with +90 degrees).
-    // Quaternion signs share the same hemisphere for shortest-arc interpolation.
+    // glTF 2.0.1 Appendix C: keep quaternion signs in the same hemisphere for shortest-path interpolation.
     let rest = [0.0_f32, -0.00028992252, 0.0, 0.99999994];
     let peak = [0.0, 0.7069017, 0.0, 0.70731175];
     append_clip(
@@ -141,7 +136,6 @@ fn write_motion(
         &[rest, rest, peak, rest],
     )?;
     if with_idle {
-        // Rotation about the same local Y axis as the rest quaternion.
         let sway = |degrees: f32| {
             let half = degrees.to_radians() / 2.0 + rest[1].atan2(rest[3]);
             [0.0, half.sin(), 0.0, half.cos()]

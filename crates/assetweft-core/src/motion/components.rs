@@ -1,6 +1,3 @@
-//! Indexed component bytes for the two pinned Cesium Rigged Simple containers.
-//! Catalog clients can store these as immutable versions. Production recomputes
-//! the same bytes from each managed owner before freezing a motion proposal.
 use super::digest;
 use crate::{assurance::rig_blender::RIGGED_SIMPLE, library::ComponentRole};
 use gltf::binary::Glb;
@@ -29,7 +26,6 @@ pub fn rigged_simple_components(
     if !matches!(digest(bytes).as_str(), RIGGED_SIMPLE | IDLE_STRIKE) {
         return Err("unverified Rigged Simple component profile");
     }
-    // Both complete files are pinned before these profile-specific indices are used.
     let glb = Glb::from_slice(bytes).expect("pinned container");
     let bin = glb.bin.as_deref().expect("pinned BIN");
     let doc: BTreeMap<&str, &RawValue> = serde_json::from_slice(&glb.json).expect("pinned JSON");

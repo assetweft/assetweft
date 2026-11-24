@@ -1,4 +1,3 @@
-//! Persistent local workflow behavior through the product API.
 use assetweft_core::{
     application::Application,
     workflow::{Outcome, State, Step},

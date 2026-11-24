@@ -1,8 +1,3 @@
-//! Responsibility: GLB container and gltf SDK adapter translating structural facts.
-//! Dependencies: gltf, sha2, std and Assurance StructureCheck.
-//! Callers: Assurance composition.
-//! Invariants: no URI resolution; bound mesh/skin/joint relationships retained.
-
 use super::{
     domain::{CheckedBytes, ComponentFacts},
     ports::StructureCheck,
@@ -13,9 +8,6 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
-/// 结构化校验 GLB 2.0 二进制容器：12 字节头 + 分块表（magic/version/声明长度/chunk 边界与类型）。
-///
-/// 只做容器层检查，不解析 JSON 内容、不替代成熟结构解析器；用于阻止把 plain JSON 当 GLB。
 fn check_glb_container(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() < 12 {
         return Err(format!("too short for a GLB header: {} bytes", bytes.len()));
@@ -288,11 +280,9 @@ impl StructureCheck for GltfChecks {
             let mesh_count = document.meshes().count();
             let skin_count = document.skins().count();
             let animation_count = document.animations().count();
-            // 角色关联：mesh node 必须实际引用 skin；动画必须命中该 rig 的 joint。
             let has_bound_skinned_mesh = document
                 .nodes()
                 .any(|n| n.mesh().is_some() && n.skin().is_some());
-            // 只收集被 mesh node 实际引用的 skin 的 joint；未绑定 skin 的 joint 不参与动画判定。
             let bound_skins: HashSet<usize> = document
                 .nodes()
                 .filter(|n| n.mesh().is_some())

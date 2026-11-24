@@ -1,8 +1,3 @@
-//! 职责: AW-017:A 文件验证入口的缺陷型回归：格式/角色/来源分类/NOT_RUN/读取上限。
-//! 依赖: assetweft-core 的 validation 模块；所有 fixture 均为脚本合成的 TEST_FIXTURE，非 AI/引擎产物。
-//! 调用方: C1（cargo test）；不写数据库、不联网、不执行文件内容。
-//! 不变量: 文件 hash 绑定原始字节；可解析≠角色满足；失败/未执行分开；来源只记录声明。
-
 use std::path::PathBuf;
 
 use assetweft_core::validation::{
@@ -51,12 +46,10 @@ fn parseable_mesh_does_not_satisfy_rigged_character() {
         ValidationLimits::default(),
     )
     .expect("fixture must be readable");
-    // 格式通过但角色合同不满足：两件事分开报告。
     assert_eq!(report.format_status, CheckStatus::Pass);
     assert_eq!(report.role.status, CheckStatus::Fail);
     assert_eq!(report.role.satisfied, Some(false));
     assert_eq!(report.role.missing, vec!["skin"]);
-    // 未做的数值检查不得因解析成功而变成 PASS。
     assert!(report.not_run.contains(&"skin.weights_numeric"));
     assert!(report.not_run.contains(&"rig.bind_matrices_numeric"));
 }
@@ -143,7 +136,6 @@ fn source_class_is_declared_not_verified_and_unknown_strings_reject() {
     assert_eq!(report.source.class, SourceClass::AiGenerated);
     assert!(!report.source.verified_by_checker());
     assert_eq!(report.source.declared_license, None);
-    // 来源标签不影响格式判定：非法字节仍然 FAIL。
     assert_eq!(report.format_status, CheckStatus::Fail);
 }
 
@@ -170,7 +162,6 @@ fn not_run_items_are_explicit() {
     assert_eq!(report.role.missing, vec!["skin", "animation"]);
 }
 
-/// 用给定 JSON + 36 字节 BIN 构造一个合法 GLB 容器（TEST_FIXTURE，仅测试用）。
 fn glb_from_json(json: &str) -> Vec<u8> {
     let mut js = json.as_bytes().to_vec();
     while !js.len().is_multiple_of(4) {
@@ -231,7 +222,6 @@ fn max_limit_does_not_panic_or_wrap() {
 
 #[test]
 fn unbound_skin_does_not_satisfy_rigged_character() {
-    // skins 数组存在，但 mesh node 不引用它：全局 count 不能充当 rig。
     let json = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0},{"name":"joint"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,1]}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],"buffers":[{"byteLength":36}],"skins":[{"joints":[1]}]}"#;
     let bytes = glb_from_json(json);
     let report = validate_bytes(
@@ -256,7 +246,6 @@ fn unbound_skin_does_not_satisfy_rigged_character() {
     assert!(skin_item.detail.contains("unbound skin"));
 }
 
-/// 构造「mesh node 绑定 skin0(joint=node1)，另有未绑定 skin1(joint=node2)，动画只 target 指定 node」的 GLB。
 fn glb_two_skins_animation(target_node: u32) -> Vec<u8> {
     let json = format!(
         r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"skin":0}},{{"name":"j1"}},{{"name":"j2"}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],"skins":[{{"joints":[1]}},{{"joints":[2]}}],"animations":[{{"channels":[{{"sampler":0,"target":{{"node":{target_node},"path":"translation"}}}}],"samplers":[{{"input":1,"output":2}}]}}],"accessors":[{{"bufferView":0,"byteOffset":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,1]}},{{"bufferView":0,"byteOffset":0,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]}},{{"bufferView":0,"byteOffset":8,"componentType":5126,"count":2,"type":"VEC3"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}}],"buffers":[{{"byteLength":36}}]}}"#
@@ -266,7 +255,7 @@ fn glb_two_skins_animation(target_node: u32) -> Vec<u8> {
 
 #[test]
 fn animation_targeting_bound_skin_joint_satisfies_animated_character() {
-    let bytes = glb_two_skins_animation(1); // node1 是已绑定 skin0 的 joint
+    let bytes = glb_two_skins_animation(1);
     let report = validate_bytes(
         &bytes,
         RoleRequirement::AnimatedCharacter,
@@ -284,7 +273,7 @@ fn animation_targeting_bound_skin_joint_satisfies_animated_character() {
 
 #[test]
 fn animation_targeting_unbound_skin_joint_does_not_satisfy_animated_character() {
-    let bytes = glb_two_skins_animation(2); // node2 属于未被 mesh node 引用的 skin1
+    let bytes = glb_two_skins_animation(2);
     let report = validate_bytes(
         &bytes,
         RoleRequirement::AnimatedCharacter,
@@ -306,8 +295,6 @@ fn animation_targeting_unbound_skin_joint_does_not_satisfy_animated_character() 
     assert!(item.detail.contains("orphan animation"));
 }
 
-// TEST_FIXTURE chunk assembly; depends on glb_from_json, called only by regressions.
-// Invariant: preserve payloads and update the declared length after each append.
 fn append_chunk(bytes: &mut Vec<u8>, ty: &[u8; 4], payload: &[u8]) {
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     bytes.extend_from_slice(ty);
@@ -402,7 +389,6 @@ fn malformed_chunk_inputs_fail_without_panicking() {
     }
 }
 
-// Synthetic JSON-only container derived from the established fixture helper.
 fn json_only_glb(json: &str) -> Vec<u8> {
     let mut bytes = glb_from_json(json);
     let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;

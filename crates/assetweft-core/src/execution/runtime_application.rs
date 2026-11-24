@@ -1,6 +1,3 @@
-//! Responsibility: pure LOCAL TEST_FIXTURE preflight and execution orchestration.
-//! Dependencies: Execution domain/ports and Consumption request values only.
-//! Invariants: preflight -> reserve -> once callback; backend and recording results stay separate.
 use super::{
     application::Executor,
     domain::*,
@@ -74,8 +71,6 @@ pub fn submit_local_test_fixture<B: Backend, P: BudgetOnce>(
             Operation::Submit,
         )));
     }
-    // Existing allowance validation remains authoritative (including zero-capacity
-    // ZeroAdditionalCost). Nonzero counts here are simulated fixture capacity.
     if budget.quote != Some(0) {
         return Err(PreflightError::NotZeroAdditionalCost);
     }

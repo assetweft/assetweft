@@ -1,15 +1,10 @@
-//! Responsibility: Production workflow graph, state values and pure transition policy.
-//! Dependencies: std only; callers: workflow use cases and SQLite translation.
-//! Invariants: ordinal ready selection, successful prerequisites, no unresolved replay.
 use std::collections::{HashMap, HashSet};
 
-/// Caller-declared stable step and its explicit prerequisite IDs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     pub id: String,
     pub dependencies: Vec<String>,
 }
-/// The driver's actual local outcome and optional evidence pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Success {
@@ -35,7 +30,6 @@ pub struct StepRecord {
     pub state: State,
     pub outcome: Option<Outcome>,
 }
-/// Stable policy diagnostic, translated to the existing database category at composition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PolicyError(pub String);
 fn invalid(s: &str) -> PolicyError {

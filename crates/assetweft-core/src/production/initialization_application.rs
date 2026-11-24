@@ -1,6 +1,3 @@
-//! Responsibility: fixture bootstrap policy/orchestration and acceptance receipt read use case.
-//! Dependencies: Production policy/values and own semantic ports; callers: Application and the Production acceptance adapter.
-//! Invariants: identity→contract→quality→owner→snapshot→real validation→sealed commit; no IO types.
 use super::{
     domain::{Acceptance, ComponentSnapshot, report_passes},
     initialization_ports::{
@@ -9,8 +6,6 @@ use super::{
     staging_domain::{check_contract, id_ok},
 };
 
-/// Only this use case constructs the proof, after measured snapshot validation.
-/// It is neither cloneable nor deserializable and is consumed by the adapter once.
 pub(crate) struct VerifiedInitialization<'a> {
     asset_id: String,
     version: &'a str,

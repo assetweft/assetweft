@@ -1,5 +1,3 @@
-//! Local structural eligibility for the pinned original and idle/strike derivative.
-//! Production compares frozen projections; the adapter measures Catalog-managed bytes.
 use super::{
     domain::{AcceptanceReport, Candidate, ComponentEvidence, ComponentSnapshot},
     ports::AcceptanceError,
@@ -24,8 +22,6 @@ pub(crate) fn check_contract(c: &FixtureContract) -> Result<(), AcceptanceError>
     Ok(())
 }
 
-/// For the pinned profile the clip writer consumes the original tracks and
-/// bound mesh/skin topology. None of the other indexed component outputs reads clips.
 pub(crate) fn affected_steps(
     base: &[ComponentSnapshot],
     editable: &[String],
@@ -50,7 +46,6 @@ pub(crate) fn affected_steps(
             }
             steps.push(super::workflow_domain::Step {
                 id: part.role.clone(),
-                // Every prerequisite outside this edit is a measured Catalog input.
                 dependencies: Vec::new(),
             });
         }

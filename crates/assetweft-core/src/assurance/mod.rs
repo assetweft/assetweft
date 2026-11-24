@@ -1,8 +1,3 @@
-//! Responsibility: Assurance bounded validation ownership.
-//! Dependencies: pure core and private concrete adapters.
-//! Callers: legacy validation/geometry/rig facades and public check consumers.
-//! Invariants: no new support or authority claims.
-
 pub mod checks;
 pub mod rig_blender;
 

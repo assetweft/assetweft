@@ -1,12 +1,8 @@
-//! Responsibility: proposal/read use cases and sealed internally produced descriptor.
-//! Dependencies: staging domain and semantic capability only; callers: Application and the Production acceptance adapter.
-//! Invariants: input policy precedes IO, exact owner checks precede measurement, lock policy precedes freeze, a supplied id may only name its own descriptor.
 use super::{
     domain::Candidate,
     staging_domain::{self, Proposal},
     staging_ports::{Staging, StagingError},
 };
-/// Only this module produces a descriptor eligible for persistence. This is not acceptance.
 pub(crate) struct FrozenProposal {
     candidate: Candidate,
 }
@@ -39,7 +35,6 @@ pub(crate) fn propose(port: &mut impl Staging, p: &Proposal) -> Result<Candidate
     )?;
     port.freeze(FrozenProposal { candidate })
 }
-/// Freeze a measured motion-only edit for the two exact supported owner files.
 pub(crate) fn propose_rigged_simple(
     port: &mut impl super::staging_ports::RiggedSimpleStaging,
     p: &Proposal,
@@ -98,9 +93,6 @@ pub(crate) fn read(
         return Err(StagingError::InvalidInput("candidate id"));
     }
     match port.candidate(id)? {
-        // The descriptor is the only identity later used for measurement, Catalog
-        // advance and receipt rows. A restored row whose embedded id differs from its
-        // lookup key cannot be trusted, so fail before any measurement, lease or write.
         Some(candidate) if candidate.id != id => {
             Err(StagingError::InvalidInput("candidate identity"))
         }

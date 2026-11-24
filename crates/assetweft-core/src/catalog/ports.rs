@@ -1,6 +1,3 @@
-//! Responsibility: capabilities for immutable metadata registration and exact snapshot reads.
-//! Dependencies: Catalog domain values only; callers: Catalog use cases and SQLite adapter.
-//! Invariants: no managed-byte readiness, connection, transaction or vendor error crosses the ports.
 use super::domain::{AssetVersion, ComponentReference, MetadataError};
 
 pub(crate) trait Metadata {
@@ -10,7 +7,6 @@ pub(crate) trait Metadata {
     fn exact_references(&mut self, owner: &str) -> Result<Vec<ComponentReference>, MetadataError>;
 }
 
-/// Append-only opinions and bounded exact-version history; persistence owns atomic binding.
 pub(crate) trait Feedback {
     fn append(
         &mut self,

@@ -1,10 +1,3 @@
-//! 职责: AW-013:A 缺陷型回归——真实 JSON parse→validate、锁定范围不可绕过、缺字段路径、
-//!        补全不得冒真值、授权/引擎只声明不验证、配方 NOT_EXECUTED。
-//! 依赖: assetweft_core::generation_spec（Rust 类型与唯一验证入口）、serde_json（已锁 wire 解析）。
-//! 调用方: C1（cargo test）；不写数据库、不联网、不执行模型/引擎、不读凭据。
-//! 不变量: 样例全部 TEST_FIXTURE/metadata-only；期望断言只在本文件（不设可弱化 golden）；
-//!        正例必须通过、锁绕过必须明确拒绝、缺字段须给具体路径、补全不得晋升真值。
-
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -44,7 +37,6 @@ fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generation_spec/cases.json")
 }
 
-/// 真实 wire 解析：JSON → Rust 类型；同时校验 TEST_FIXTURE 溯源与 id 唯一（信封前置）。
 fn load_cases() -> Vec<Case> {
     let text = fs::read_to_string(fixture_path()).expect("cases.json must be readable");
     let parsed: CasesFile =
@@ -70,7 +62,6 @@ fn case(id: &str) -> Case {
         .unwrap_or_else(|| panic!("missing case {id}"))
 }
 
-/// 目标 1（正例）：正常允许 motion、锁 mesh/materials/rig 的请求必须通过；声明一致≠执行 PASS。
 #[test]
 fn positive_cases_are_declaration_consistent() {
     for id in ["valid_single_motion_increment", "valid_pending_inference"] {
@@ -87,7 +78,6 @@ fn positive_cases_are_declaration_consistent() {
     }
 }
 
-/// 目标 1（反例）：删空/省略/冲突锁定范围一律 LOCK_VIOLATION 且附明确原因。
 #[test]
 fn lock_scope_bypass_is_rejected_with_explicit_reason() {
     for id in [
@@ -110,7 +100,6 @@ fn lock_scope_bypass_is_rejected_with_explicit_reason() {
             "{id}: LOCK_VIOLATION must carry an explicit reason"
         );
     }
-    // 删空特例：必须出现"不能自删锁获得授权"的明确原因。
     let omitted = case("invalid_lock_omitted");
     let out = validate(&omitted.request, &omitted.context);
     assert!(
@@ -121,7 +110,6 @@ fn lock_scope_bypass_is_rejected_with_explicit_reason() {
     );
 }
 
-/// 目标 2：输入不完整返回稳定、可定位的具体字段路径。
 #[test]
 fn incomplete_input_returns_specific_field_paths() {
     let c = case("invalid_missing_base_version");
@@ -139,7 +127,6 @@ fn incomplete_input_returns_specific_field_paths() {
     assert_eq!(out2.status, STATUS_REJECTED);
 }
 
-/// 未知费用允许 null，不自动填 0。
 #[test]
 fn unknown_cost_must_not_be_zero_filled() {
     let c = case("invalid_unknown_cost_zero");
@@ -148,7 +135,6 @@ fn unknown_cost_must_not_be_zero_filled() {
     assert!(out.has_code(IssueCode::InvalidInput));
 }
 
-/// 目标 3：隐藏结构补全/推断不得晋升为 observed/known_correct 真值；待确认推断正例仍可通过。
 #[test]
 fn completion_cannot_be_promoted_to_truth() {
     let bad = case("invalid_completion_observed");
@@ -173,7 +159,6 @@ fn completion_cannot_be_promoted_to_truth() {
     );
 }
 
-/// fixture 写 authorized=true / engine=UNKNOWN 只是声明，不宣称真的有授权或执行器准入。
 #[test]
 fn authorization_and_engine_fields_are_declared_not_verified() {
     let c = case("valid_single_motion_increment");
@@ -188,7 +173,6 @@ fn authorization_and_engine_fields_are_declared_not_verified() {
     assert!(out.not_run.contains(&"semantic_normalizer"));
 }
 
-/// NOT_DEFINED 是声明状态不是 lock_mode；复用既有 LockStatus/LockMode，不混作模式。
 #[test]
 fn not_defined_is_a_declaration_state_not_a_lock_mode() {
     let mut c = case("valid_single_motion_increment");
@@ -200,7 +184,6 @@ fn not_defined_is_a_declaration_state_not_a_lock_mode() {
     assert_eq!(LockMode::parse("BYTE"), Ok(LockMode::Byte));
 }
 
-/// 线性 recipe examples 明确 NOT_EXECUTED，但其规格本身可通过声明一致性验证。
 #[test]
 fn recipe_examples_are_not_executed_but_validate() {
     let recipes = recipe_examples();
@@ -218,7 +201,6 @@ fn recipe_examples_are_not_executed_but_validate() {
     }
 }
 
-/// wire 上下文与 UI/Agent 在 Rust 内构造的上下文给出同一验证结果（同一入口、无漂移）。
 #[test]
 fn wire_and_programmatic_context_agree() {
     let c = case("valid_single_motion_increment");
@@ -240,7 +222,6 @@ fn wire_and_programmatic_context_agree() {
     assert_eq!(wire.issues, programmatic.issues);
 }
 
-/// 非法 JSON/未知字段不得被静默接受（类型/JSON 只验证声明一致性）。
 #[test]
 fn malformed_wire_is_rejected_at_parse() {
     let bad = "{\"cases\":[{\"id\":\"x\",\"fixture\":{\"marker\":\"TEST_FIXTURE\",\"metadata_only\":true},\"context\":{},\"request\":{},\"unexpected\":1}]}";
@@ -250,7 +231,6 @@ fn malformed_wire_is_rejected_at_parse() {
     );
 }
 
-/// Every input reference must be present; report its wire array index without resolving files.
 #[test]
 fn blank_input_reference_reports_numeric_path() {
     for refs in [vec!["   "], vec!["metadata://fixture/mesh.bin", "\t\n"]] {
@@ -269,7 +249,6 @@ fn blank_input_reference_reports_numeric_path() {
     }
 }
 
-/// Known cost needs a value; unknown/null and explicitly known zero remain valid declarations.
 #[test]
 fn known_cost_requires_value_without_inventing_amount() {
     let mut c = case("valid_single_motion_increment");
@@ -288,7 +267,6 @@ fn known_cost_requires_value_without_inventing_amount() {
     assert!(validate(&c.request, &c.context).is_declaration_consistent());
 }
 
-/// Reordering request locks preserves valid scope and identifies conflicts by actual wire index.
 #[test]
 fn reordered_lock_conflict_reports_actual_numeric_index() {
     for rig_index in [0, 1, 2] {
@@ -309,11 +287,9 @@ fn reordered_lock_conflict_reports_actual_numeric_index() {
     }
 }
 
-/// Check each required free-text declaration independently, retaining exact wire bytes.
 fn required_text_regression(path: &str, set: impl Fn(&mut Case, &str)) {
     let mut positive = case("valid_pending_inference");
     assert!(validate(&positive.request, &positive.context).is_declaration_consistent());
-    // Surrounding whitespace on a nonempty declaration must not be normalized away.
     set(&mut positive, " \tfixture:declared-value\n");
     let before = format!("{:?}{:?}", positive.request, positive.context);
     assert!(validate(&positive.request, &positive.context).is_declaration_consistent());
@@ -376,7 +352,6 @@ fn required_trusted_contract_id_rejects_whitespace() {
 
 #[test]
 fn old_semantic_without_identity_is_incomplete() {
-    // Frozen pre-strengthening wire fixture: this regression remains the old request/context.
     let old: CasesFile = serde_json::from_str(include_str!(
         "fixtures/generation_spec/legacy_missing_identity.json"
     ))
@@ -443,7 +418,6 @@ fn semantic_identity_contract_matrix() {
     req.locked_components[2].canonicalization_version = None;
     ctx.declared_locks = req.locked_components.clone();
     assert!(validate(&req, &ctx).is_declaration_consistent());
-    // Unknown opaque identities are declaration-only and never normalize/exe cute.
     req.locked_components[2].declaration = Some("SEMANTIC".into());
     req.locked_components[2].canonicalization_id = Some(" unknown algorithm ".into());
     req.locked_components[2].canonicalization_version = Some("opaque version".into());

@@ -1,6 +1,3 @@
-//! Responsibility: legacy backup API and concrete composition boundary.
-//! Dependencies: Catalog backup use cases/SQLite adapter and original diagnostic payloads.
-//! Callers: Application and legacy consumers; invariants: identical public types and signatures.
 pub use crate::catalog::backup_domain::{Limits, Manifest, Object, Progress};
 use crate::{library, storage};
 use std::path::Path;

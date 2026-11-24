@@ -1,6 +1,3 @@
-//! Responsibility: bounded Production acceptance core.
-//! Dependencies: stable Catalog values and core-owned ports; callers: compatibility facade/adapters.
-//! Invariants: no storage or database types enter the core.
 pub(crate) mod application;
 pub mod domain;
 pub(crate) mod initialization_application;
@@ -18,5 +15,4 @@ pub mod workflow_domain;
 pub(crate) mod workflow_ports;
 pub(crate) mod workflow_sqlite;
 
-/// Pure generation declarations, validation policy and unexecuted recipe examples.
 pub mod specification;

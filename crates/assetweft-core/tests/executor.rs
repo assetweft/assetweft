@@ -1,4 +1,3 @@
-//! Public protocol fixtures only; no provider, runtime admission or IO.
 use assetweft_core::budget::{Unit, Usage};
 use assetweft_core::executor::*;
 use std::{cell::Cell, rc::Rc};
@@ -59,7 +58,6 @@ impl Backend for Fixture {
         Ok(CancelResult::Requested)
     }
 }
-// A distinct implementation uses the exact same consumer without another workflow.
 struct Second(Fixture);
 impl Backend for Second {
     fn declaration(&self) -> Declaration {

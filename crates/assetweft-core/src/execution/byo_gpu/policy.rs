@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use std::path::Path;
 
 use super::{Invalid, Run};
@@ -110,7 +110,7 @@ pub fn profiles() -> [ProfileDescription; 2] {
             (
                 "Operator-supplied runner with Kaggle CLI push/status/output. PyPI kaggle==2.2.5 requires --with six when using uvx. NvidiaTeslaT4 is T4 x2.",
                 &["KAGGLE_API_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY"],
-                &["~/.kaggle/kaggle.json", "~/.config/kaggle/kaggle.json", "$KAGGLE_CONFIG_DIR/kaggle.json"],
+                &["~/.kaggle/access_token", "~/.kaggle/kaggle.json", "~/.config/kaggle/kaggle.json", "$KAGGLE_CONFIG_DIR/kaggle.json"],
             )
         } else {
             (
@@ -189,21 +189,68 @@ struct KernelMetadata {
     code_file: String,
     language: String,
     kernel_type: String,
+    #[serde(deserialize_with = "kernel_flag")]
     is_private: bool,
+    #[serde(deserialize_with = "kernel_flag")]
     enable_gpu: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "kernel_flag")]
     enable_tpu: bool,
     #[serde(default)]
     machine_shape: Option<String>,
 }
 
+fn kernel_flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    struct FlagVisitor;
+
+    impl de::Visitor<'_> for FlagVisitor {
+        type Value = bool;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a boolean or the Kaggle template string true or false")
+        }
+
+        fn visit_bool<E: de::Error>(self, value: bool) -> Result<bool, E> {
+            Ok(value)
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<bool, E> {
+            match value {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Err(E::invalid_value(de::Unexpected::Str(value), &self)),
+            }
+        }
+    }
+
+    deserializer.deserialize_any(FlagVisitor)
+}
+
 pub(super) fn kernel_metadata(bytes: &[u8]) -> Result<(String, &'static str), Invalid> {
-    let metadata: KernelMetadata = serde_json::from_slice(bytes).map_err(|_| {
+    struct MetadataVisitor;
+
+    impl<'de> de::Visitor<'de> for MetadataVisitor {
+        type Value = KernelMetadata;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a Kaggle kernel metadata object")
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<KernelMetadata, A::Error> {
+            KernelMetadata::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    let invalid_metadata = |_| {
         Invalid(
             "bundle",
             "kernel-metadata.json must contain typed kernel metadata",
         )
-    })?;
+    };
+    let mut json = serde_json::Deserializer::from_slice(bytes);
+    let metadata = json
+        .deserialize_map(MetadataVisitor)
+        .map_err(invalid_metadata)?;
+    json.end().map_err(invalid_metadata)?;
     if !metadata.is_private {
         return Err(Invalid(
             "bundle.is_private",
@@ -310,7 +357,7 @@ mod tests {
         );
         for (field, value, rejected) in [
             ("id_no", json!(7), "bundle.id"),
-            ("is_private", json!("true"), "bundle"),
+            ("is_private", json!("True"), "bundle"),
             ("enable_gpu", json!(false), "bundle.enable_gpu"),
             ("enable_tpu", json!(true), "bundle.enable_gpu"),
             (
@@ -325,6 +372,13 @@ mod tests {
             invalid[field] = value;
             assert_eq!(check(&invalid).unwrap_err().0, rejected);
         }
-        assert!(kernel_metadata(br#"{"is_private":true,"is_private":false}"#).is_err());
+        let duplicate = format!(
+            r#"{},"is_private":true}}"#,
+            metadata.to_string().strip_suffix('}').unwrap()
+        );
+        assert_eq!(
+            kernel_metadata(duplicate.as_bytes()).unwrap_err().0,
+            "bundle"
+        );
     }
 }

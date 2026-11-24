@@ -24,4 +24,5 @@
 
 ## 历史归档
 
-早期架构与基线快照已归档至 `docs/archive/`（非现行规范，已由 `.rgignore` 隔离出默认检索）。
+- 早期 PG18 与守护进程（daemon）旧架构文档及 W0 快照已归档至 `docs/archive/`（非现行规范，已由 `.rgignore` 隔离出默认检索）；其中 `docs/archive/INTEGRITY.json` 经协调者批准保持原始 JSON 字节不变以留存原始完整性凭证。
+- 原归档基线中仍适用的 8 项未落地业务不变量（含跨平台浮点规范化 `G-DET-1`、三引擎变换与 PBR 通道打包、开源许可隔离、Tauri 二进制协议等）已统一登记追踪于 [#142](https://github.com/assetweft/assetweft/issues/142)。

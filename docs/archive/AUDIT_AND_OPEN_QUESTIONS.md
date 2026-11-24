@@ -27,7 +27,7 @@
 
 ## 二、 核心架构不完善点与完善结论汇总（12 项 P0 级关键缺口全量闭环）
 
-基线文档（`AW-DEV-001`）在产品方向、模块边界、反腐败层和风险前置（W1 三大原型）上设计非常扎实，但在进入代码编写前，经 `DSH` 与官方 `CodeBuddy (Hy4)` 深度审计共识别出 **12 项“原则已写、但缺少可执行工程/数学契约”的 P0 级缺口**。现已在 [`docs/ARCHITECTURE.md`](file:///Volumes/data/assetweft_delivery/docs/ARCHITECTURE.md) 与 [`evidence/sources.yaml`](file:///Volumes/data/assetweft_delivery/evidence/sources.yaml) 中完成闭环补齐：
+基线文档（`AW-DEV-001`）在产品方向、模块边界、反腐败层和风险前置（W1 三大原型）上设计非常扎实，但在进入代码编写前，经 `DSH` 与官方 `CodeBuddy (Hy4)` 深度审计共识别出 **12 项“原则已写、但缺少可执行工程/数学契约”的 P0 级缺口**。现已在 [`docs/archive/ARCHITECTURE.md`](ARCHITECTURE.md) 与 [`docs/archive/evidence/sources.yaml`](evidence/sources.yaml) 中完成闭环补齐：
 
 1. **【P0 · 资金安全】并发任务预算缺少“原子预留（Reservation）”表与单条 SQL 锁**：
    - *原基线缺陷*：仅要求“并发任务不会绕过预算”（L644），但 §8.3 的 11 张表中无预算表，若实现为“先查余额再提交”必然在并发下超支。

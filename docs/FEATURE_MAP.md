@@ -48,7 +48,7 @@
 - **入口**：`./tools/verify.sh` · `./tools/c1-stdout-contract.sh` · `node tools/contract_check.mjs`
 - **路径或子命令**：`./tools/verify.sh --crate <pkg> [--test <name>]` · `./tools/verify.sh --contracts` · `./tools/verify.sh --full`
 - **源码位置**：[tools/verify.sh](../tools/verify.sh) · [tools/c1-stdout-contract.sh](../tools/c1-stdout-contract.sh) · [tools/contract_check.mjs](../tools/contract_check.mjs) · [contracts/README.md](../contracts/README.md) · [contracts/media-compatibility.md](../contracts/media-compatibility.md)
-- **正常判据**：退出码 `0`；`--full` 通过 fmt/clippy/test/build 且 C1 stdout 恰 1 行 `{"status":"PASS",...}`；`--contracts` 通过 5/5 非法信封单测与 14/14 fixture 期望匹配；失败仅输出压缩结论、关键失败行与完整日志路径
+- **正常判据**：退出码 `0`；`--full` 通过 fmt/clippy/test/build 且 C1 stdout 恰 1 行 `{"status":"PASS",...}`；`--contracts` 通过 5/5 invalid-manifest cases 单测与 14/14 fixture 期望匹配；失败仅输出压缩结论、关键失败行与完整日志路径
 
 ## 9. 引擎离线示例夹具（Godot Static / Rigged Simple）
 - **入口**：本地 Godot / Blender 夹具验证脚本（非 CI 必跑，按需手工复跑）

@@ -97,7 +97,7 @@ mkdir -p "$log_dir" || exit 2
 log_file=$(mktemp "$log_dir/${mode}.XXXXXX") || exit 2
 
 print_failure_excerpt() {
-    excerpt=$(grep -nE '^(error(\[|:)|failures:|test .* FAILED|thread .* panicked|✖ |MISMATCH |ERROR )|\bFAIL\b|\bfailed\b' "$1" | head -n 20)
+    excerpt=$(grep -nE '^(error(\[|:)|failures:|test .* FAILED|thread .* panicked|✖ |MISMATCH |ERROR )|(^|[^[:alnum:]_])(FAIL|failed)([^[:alnum:]_]|$)' "$1" | head -n 20)
     if [ -n "$excerpt" ]; then
         printf '%s\n' "$excerpt" >&2
     else

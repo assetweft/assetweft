@@ -54,6 +54,9 @@ fn grammar() -> Command {
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
         .subcommand(Command::new("sprite-inspect").arg(file()).arg(spec_file()))
+        .subcommand(Command::new("card-template-check").arg(file()).arg(
+            Arg::new("illustration").long("illustration").value_parser(value_parser!(PathBuf)),
+        ))
         .subcommand(Command::new("static-kit-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("rigged-simple-components").arg(file()).arg(
             Arg::new("out-dir").long("out-dir").required(true).value_parser(value_parser!(PathBuf)),
@@ -494,7 +497,9 @@ fn run() -> (i32, Value) {
             let command = recovered
                 .as_ref()
                 .and_then(ArgMatches::subcommand_name)
-                .filter(|&name| code == 2 && name == "static-kit-inspect")
+                .filter(|&name| {
+                    code == 2 && matches!(name, "static-kit-inspect" | "card-template-check")
+                })
                 .unwrap_or(command);
             let message = e.to_string();
             if code != 0 {
@@ -625,6 +630,7 @@ fn run() -> (i32, Value) {
         }
         "motion-stance" => assurance::stance_response(call_id, args, limits),
         "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
+        "card-template-check" => assurance::card_template_check_response(call_id, args, limits),
         "static-kit-inspect" => assurance::static_kit_inspect_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),

@@ -77,3 +77,9 @@
 - **正常判据**：无需配置数据库服务器或登录，能打开或初始化本地 SQLite，索引、受管文件和版本反馈与 Core 一致；GLB 只显示静态网格，支持 PNG/WAV 预览。高级编辑保持 `NOT_RUN`，云端同步与登录已禁用。
 - **生成与预算**：Generation & Budgets 展示额度、用量与回执。未知金额保持 `null`，远端 UNKNOWN 禁盲重试，本地取消保留远端未决额度。BYO GPU 仅按显式操作执行，本地文件上传默认未授权，历史回执重放不调用执行器。
 - **增量候选**：Incremental Candidates 展示候选及关联资产头，测试夹具采用 BYTE 锁和期望修订号。接受以 Core 事务为准，陈旧分支保留。生成、格式校验、版本反馈、结构接受各有独立结果。
+
+## 14. AW-024:B UI、卡牌和地块模板检查
+- **入口**：`assetweft card-template-check` · `assurance::checks::check_card_template_file`
+- **路径或子命令**：`card-template-check <TEMPLATE.json> [--illustration <FILE.png>]`，全局 `--max-bytes` 分别限制两个文件
+- **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [模板排版领域](../crates/assetweft-core/src/assurance/card_layout_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-024b-card-template-layout-check)
+- **正常判据**：单行 JSON `PASS/0`，互换插画时布局摘要不变，PNG 摘要独立，视觉质量为 `NOT_RUN`。布局违规返回 `FAIL/1`，输入错误返回 `INVALID_INPUT/2`

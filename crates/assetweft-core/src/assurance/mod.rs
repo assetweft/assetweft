@@ -2,12 +2,14 @@ pub mod checks;
 pub mod rig_blender;
 
 pub(crate) mod application;
+mod card_layout_domain;
 mod determinism_domain;
 mod domain;
 pub(crate) mod file_input;
 pub(crate) mod gltf_checks;
 mod ports;
 
+pub use card_layout_domain::{CardLayoutReport, FittedBox, LayoutViolation, TemplateKind};
 pub use file_input::{ValidationError, read_bounded};
 
 pub use determinism_domain::{

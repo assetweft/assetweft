@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline regression probes for the verification wrapper and HEX gate."""
 import os
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,6 +13,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 import hex_lint as hex_gate
+import tech_preview_check as preview_gate
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -121,6 +124,47 @@ class ToolsGates(unittest.TestCase):
                 self.assertEqual(seen, set())
                 hex_gate.check_sql(owner, 1, sql, add, seen)
                 self.assertEqual(seen, {"aw_objects"})
+
+
+class TechPreviewGate(unittest.TestCase):
+    def test_repository_baseline(self):
+        self.assertEqual(preview_gate.check(ROOT), 0)
+
+    def test_preview_boundary_faults(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            for directory in ("crates", "apps/workbench", "docs"):
+                shutil.copytree(ROOT / directory, root / directory,
+                                ignore=shutil.ignore_patterns("target", "node_modules", "dist", "archive"))
+            for file in ("Cargo.toml", "Cargo.lock", "README.md"):
+                shutil.copyfile(ROOT / file, root / file)
+            self.assertEqual(preview_gate.check(root), 0)
+
+            for file, change, diagnostic in (
+                ("Cargo.lock", lambda s: s + '\n[[package]]\nname = "sqlx"\nversion = "0.8.0"\n', "sqlx"),
+                ("crates/assetweft-core/Cargo.toml",
+                 lambda s: s + '\n[target."cfg(unix)".dependencies.db]\npackage = "sqlx"\nversion = "0.8"\n',
+                 "sqlx"),
+                ("apps/workbench/package.json",
+                 lambda s: s.replace('"three": "0.181.0"', '"three": "npm:ollama@1"'),
+                 "ollama"),
+                ("crates/assetweft-cli/src/main.rs",
+                 lambda s: s + '\nfn probe() { std::process::Command::new("/usr/bin/python3"); }\n',
+                 "python3"),
+                ("docs/TECH_PREVIEW.md", lambda s: s.replace("NOT_RUN", "PASS"), "NOT_RUN"),
+                ("docs/TECH_PREVIEW.md", lambda s: s.replace("#99", "viewport"), "#99"),
+                ("docs/TECH_PREVIEW.md", lambda s: s + "\n/Users/example/secret\n", "/Users/"),
+            ):
+                with self.subTest(file=file, diagnostic=diagnostic):
+                    path = root / file
+                    original = path.read_text(encoding="utf-8")
+                    path.write_text(change(original), encoding="utf-8")
+                    stderr = StringIO()
+                    with redirect_stderr(stderr):
+                        self.assertNotEqual(preview_gate.check(root), 0)
+                    self.assertIn(diagnostic, stderr.getvalue())
+                    path.write_text(original, encoding="utf-8")
+                    self.assertEqual(preview_gate.check(root), 0)
 
 
 if __name__ == "__main__":

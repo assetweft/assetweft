@@ -16,6 +16,7 @@ run_step() {
 }
 
 run_step hex-lint python3 tools/hex_lint.py
+run_step tech-preview python3 tools/tech_preview_check.py
 run_step fmt cargo fmt --all --check
 run_step clippy cargo clippy --workspace --all-targets --locked -- -D warnings
 run_step test cargo test --workspace --locked

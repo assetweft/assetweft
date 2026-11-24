@@ -1,3 +1,4 @@
+# [ARCHIVED · 非现行规范 · 仅供历史溯源]
 # AssetWeft（游织）v1.0 模型、处理与引擎交付能力状态表
 # 唯一维护位置：evidence/capabilities.yaml
 # 状态枚举：NOT_RUN（尚未实测） | PROTOTYPE_PENDING（待 W1 原型验证） | VERIFIED（已通过实测与 CI 证据） | BLOCKED（受阻） | REJECTED（已否决）

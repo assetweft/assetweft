@@ -111,3 +111,32 @@ in little-endian order. `semantic_sha256_hex` hashes the ASCII tag
 returns lowercase hex. Pass rotations through `canonical_quaternion` before
 hashing so equivalent signs produce the same digest. Component-level SEMANTIC
 execution remains a caller responsibility.
+
+## AW-024:A Sprite sheet inspection
+
+`checks::inspect_sprite_file` reads the PNG and manifest independently with
+`read_bounded`. It accepts static 8-bit RGBA, RGB, grayscale, grayscale+alpha
+and indexed PNGs (with or without palette transparency). Each side is limited to
+4096 pixels, total area to 4,194,304 pixels and decoder scratch allocations to
+a 16 MiB decoder budget. APNG, other sample/index depths, truncated PNGs and
+bytes after IEND are input errors. The inspection uses raw decoded samples and
+ignores embedded color profiles and text.
+
+The manifest declares positive grid dimensions under `sheet` with
+`frame_width`, `frame_height`, `columns` and `rows`. The grid must exactly fill the
+PNG. Ordered `frames` use contiguous zero-based `index` values and distinct
+zero-based `col` and `row` slots. Unused slots are allowed. Each `anchor_x` and
+`anchor_y` is in [0, 1], with signed zero canonicalized by G-DET-1. The
+`looping` object declares `loop_cycle` and inclusive `start_frame` and
+`end_frame` within the sequence, including when `loop_cycle` is false.
+
+Frame hashes are lowercase SHA-256 of the frame's decoded RGBA8 bytes in
+top-to-bottom, left-to-right order. Grayscale is replicated across RGB and
+missing alpha becomes 255. RGB samples behind zero alpha are retained.
+Per-frame alpha presence reflects the source alpha channel or PNG transparency
+declaration. `transparent_pixels` counts alpha below 255 and `opaque_pixels`
+counts alpha equal to 255. An empty frame has alpha zero throughout.
+`has_transparency` covers the full sheet, including unused slots.
+Duplicate groups list equal hashes, with ascending frame indices and groups
+ordered by their first index. Duplicate and empty frames are observations.
+`semantic_quality_status` remains `NOT_RUN`.

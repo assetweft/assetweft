@@ -32,3 +32,6 @@ pub use geometry_domain::{
     Accessor, BufferView, GeometryReport, LocalTransform, Material, Node, Primitive, Resource,
 };
 pub use rig_domain::RigReport;
+
+mod sprite_domain;
+pub use sprite_domain::{Looping, SpriteFrame, SpriteReport};

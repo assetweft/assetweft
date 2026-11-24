@@ -13,6 +13,7 @@ query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
+assetweft [--call-id ID] sprite-inspect FILE.png --spec MANIFEST.json
 assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
 assetweft [--call-id ID] motion-stance SAMPLES.json --role grounded-humanoid|hovering
 assetweft [--call-id ID] motion-strike RiggedSimple.glb [--with-idle] --out NEW_FILE.glb
@@ -63,7 +64,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `sprite-inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -82,6 +83,25 @@ cross-platform canonical digest.
 `inspect` delegates static GLB structure inspection to core geometry. PASS means
 only that inspection returned a report; unknown units stay UNKNOWN and the
 report lists unexecuted checks. It does not render or read linked URIs.
+
+### Sprite sheet and timeline inspection
+
+`sprite-inspect` reads a local PNG and JSON manifest. Global `--max-bytes` applies
+separately to each file. The [Assurance sprite contract](../assetweft-core/src/assurance/CONTRACT.md#aw-024a-sprite-sheet-inspection)
+describes the supported colors, decode limits and pixel hashes.
+
+```json
+{
+  "sheet": {"frame_width": 32, "frame_height": 32, "columns": 1, "rows": 1},
+  "frames": [{"index": 0, "col": 0, "row": 0, "anchor_x": 0.5, "anchor_y": 1}],
+  "looping": {"loop_cycle": true, "start_frame": 0, "end_frame": 0}
+}
+```
+
+`PASS` (0) returns sheet dimensions, ordered frames, anchors, loop bounds, alpha
+counts, empty-frame indices and exact duplicate groups. `FAIL` (1) indicates a
+structural mismatch. `INVALID_INPUT` (2) covers malformed or unsupported input,
+unreadable paths and size limits. Semantic quality remains `NOT_RUN`.
 
 ### Sampled foot slip
 

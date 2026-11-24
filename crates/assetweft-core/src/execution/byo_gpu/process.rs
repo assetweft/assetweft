@@ -8,7 +8,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::{Invalid, KaggleValidation, LEDGER_SOURCE, Run, RunError, policy};
+use super::{Invalid, KaggleValidation, LEDGER_SOURCE, Run, policy};
 use crate::budget::{Request, Unit};
 
 const METADATA: &str = "kernel-metadata.json";
@@ -37,6 +37,15 @@ fn digest(bytes: &[u8]) -> String {
 }
 
 fn read_regular(path: &Path, max: u64, field: &'static str) -> Result<Vec<u8>, Invalid> {
+    read_regular_with(path, max, field, |path| File::open(path))
+}
+
+fn read_regular_with(
+    path: &Path,
+    max: u64,
+    field: &'static str,
+    open: impl FnOnce(&Path) -> io::Result<File>,
+) -> Result<Vec<u8>, Invalid> {
     let error = || {
         Invalid(
             field,
@@ -47,9 +56,21 @@ fn read_regular(path: &Path, max: u64, field: &'static str) -> Result<Vec<u8>, I
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max {
         return Err(error());
     }
+    let file = open(path).map_err(|_| error())?;
+    let opened = file.metadata().map_err(|_| error())?;
+    if !opened.is_file() {
+        return Err(error());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (metadata.dev(), metadata.ino()) != (opened.dev(), opened.ino()) {
+            return Err(error());
+        }
+    }
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(max + 1).read_to_end(&mut bytes))
+    file.take(max + 1)
+        .read_to_end(&mut bytes)
         .map_err(|_| error())?;
     if bytes.is_empty() || bytes.len() as u64 > max {
         return Err(error());
@@ -94,7 +115,7 @@ fn read_kernel(bundle: &Path, max: u64) -> Result<Kernel, Invalid> {
     })
 }
 
-fn kaggle_credentials_present() -> bool {
+pub(crate) fn kaggle_credentials_present() -> bool {
     let present = |name| env::var_os(name).is_some_and(|v| !v.is_empty());
     present("KAGGLE_API_TOKEN")
         || (present("KAGGLE_USERNAME") && present("KAGGLE_KEY"))
@@ -102,9 +123,13 @@ fn kaggle_credentials_present() -> bool {
             .filter(|path| !path.is_empty())
             .is_some_and(|path| Path::new(&path).join("kaggle.json").is_file())
         || env::home_dir().is_some_and(|home| {
-            [".kaggle/kaggle.json", ".config/kaggle/kaggle.json"]
-                .into_iter()
-                .any(|file| home.join(file).is_file())
+            [
+                ".kaggle/access_token",
+                ".kaggle/kaggle.json",
+                ".config/kaggle/kaggle.json",
+            ]
+            .into_iter()
+            .any(|file| home.join(file).is_file())
         })
 }
 
@@ -203,17 +228,13 @@ fn output_dir(path: &Path) -> Result<PathBuf, Invalid> {
     }
 }
 
-pub(crate) fn prepare(run: &Run) -> Result<Prepared<'_>, RunError> {
-    let model = policy::check_run(run).map_err(RunError::Invalid)?;
+pub(crate) fn prepare(run: &Run) -> Result<Prepared<'_>, Invalid> {
+    let model = policy::check_run(run)?;
     let kernel = run
         .bundle
         .as_deref()
         .map(|dir| read_kernel(dir, run.max_bytes))
-        .transpose()
-        .map_err(RunError::Invalid)?;
-    if kernel.is_some() && !kaggle_credentials_present() {
-        return Err(RunError::Credentials);
-    }
+        .transpose()?;
     let image = run
         .image
         .as_deref()
@@ -223,12 +244,11 @@ pub(crate) fn prepare(run: &Run) -> Result<Prepared<'_>, RunError> {
                 .ok_or(Invalid("image", "image file name required"))?;
             read_regular(path, run.max_bytes, "image").map(|bytes| (PathBuf::from(file), bytes))
         })
-        .transpose()
-        .map_err(RunError::Invalid)?;
+        .transpose()?;
     Ok(Prepared {
         run,
-        adapter: adapter_path(run.adapter_bin.as_deref()).map_err(RunError::Invalid)?,
-        out_dir: output_dir(&run.out_dir).map_err(RunError::Invalid)?,
+        adapter: adapter_path(run.adapter_bin.as_deref())?,
+        out_dir: output_dir(&run.out_dir)?,
         image,
         kernel,
         artifact: model.artifact,
@@ -274,10 +294,25 @@ impl Prepared<'_> {
         }
     }
 
-    pub(crate) fn invoke(&self) -> Result<String, &'static str> {
-        let stage_error = |_| "could not stage the adapter inputs or output";
-        if !self.out_dir.is_dir() {
-            fs::create_dir(&self.out_dir).map_err(stage_error)?;
+    pub(crate) fn stage(&self) -> Result<Staged<'_>, Invalid> {
+        let stage_error = |_| Invalid("out-dir", "could not stage the adapter inputs or output");
+        if fs::symlink_metadata(&self.out_dir)
+            .is_err_and(|err| err.kind() == io::ErrorKind::NotFound)
+        {
+            match fs::create_dir(&self.out_dir) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(stage_error(err)),
+            }
+        }
+        if !fs::symlink_metadata(&self.out_dir)
+            .map_err(stage_error)?
+            .is_dir()
+        {
+            return Err(Invalid(
+                "out-dir",
+                "staging requires a non-symlink directory",
+            ));
         }
         let work = tempfile::tempdir_in(&self.out_dir).map_err(stage_error)?;
         let output = work.path().join("output");
@@ -317,22 +352,93 @@ impl Prepared<'_> {
                 .arg(bundle)
                 .args(["--accelerator", kernel.accelerator]);
         }
-        let status = command
+        Ok(Staged {
+            _work: work,
+            command,
+            output,
+            destination: &self.out_dir,
+            artifact: self.artifact,
+            max_bytes: self.run.max_bytes,
+        })
+    }
+}
+
+pub(crate) struct Staged<'a> {
+    _work: tempfile::TempDir,
+    command: Command,
+    output: PathBuf,
+    destination: &'a Path,
+    artifact: &'static str,
+    max_bytes: u64,
+}
+
+impl Staged<'_> {
+    pub(crate) fn invoke(mut self) -> Result<String, &'static str> {
+        let status = self
+            .command
             .status()
             .map_err(|_| "could not start or wait for the external adapter")?;
         if !status.success() {
             return Err("external adapter reported failure");
         }
-        let bytes = read_regular(&output.join(self.artifact), self.run.max_bytes, "artifact")
+        let bytes = read_regular(&self.output.join(self.artifact), self.max_bytes, "artifact")
             .map_err(
                 |_| "adapter did not produce the expected regular artifact within the byte limit",
             )?;
-        let mut file = tempfile::NamedTempFile::new_in(&self.out_dir).map_err(stage_error)?;
+        let mut file = tempfile::NamedTempFile::new_in(self.destination)
+            .map_err(|_| "could not stage the published artifact")?;
         file.write_all(&bytes)
             .and_then(|()| file.as_file().sync_all())
-            .map_err(stage_error)?;
-        file.persist_noclobber(self.out_dir.join(self.artifact))
+            .map_err(|_| "could not stage the published artifact")?;
+        file.persist_noclobber(self.destination.join(self.artifact))
             .map_err(|_| "could not publish the new artifact without overwriting")?;
         Ok(digest(&bytes))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_read_rejects_a_different_opened_file() {
+        let original = tempfile::NamedTempFile::new().unwrap();
+        let replacement = tempfile::NamedTempFile::new().unwrap();
+        fs::write(original.path(), b"first").unwrap();
+        fs::write(replacement.path(), b"other").unwrap();
+        let result = read_regular_with(original.path(), 5, "image", |_| replacement.reopen());
+        assert!(result.is_err());
+        assert_eq!(read_regular(original.path(), 5, "image").unwrap(), b"first");
+    }
+
+    #[test]
+    fn staging_rejects_an_output_directory_replaced_by_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let run = Run {
+            budget_id: "approved".into(),
+            intent_id: "once".into(),
+            profile: super::super::Profile::HfZeroGpu,
+            model: "z-image-turbo".into(),
+            out_dir: root.path().join("out"),
+            image: None,
+            prompt: Some("synthetic".into()),
+            bundle: None,
+            adapter_bin: None,
+            allow_remote_upload: false,
+            max_bytes: 1024,
+        };
+        let prepared = Prepared {
+            run: &run,
+            adapter: root.path().join("unused-adapter"),
+            out_dir: output_dir(&run.out_dir).unwrap(),
+            image: None,
+            kernel: None,
+            artifact: "artifact.png",
+        };
+        std::os::unix::fs::symlink(&target, &prepared.out_dir).unwrap();
+        assert!(matches!(prepared.stage(), Err(Invalid("out-dir", _))));
+        assert_eq!(fs::read_dir(target).unwrap().count(), 0);
     }
 }

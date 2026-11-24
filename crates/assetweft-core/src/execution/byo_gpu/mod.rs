@@ -29,10 +29,10 @@ pub struct KaggleValidation {
     pub accelerator: &'static str,
 }
 
-pub enum RunError {
+pub enum RunError<E> {
     Invalid(Invalid),
     Credentials,
-    Ledger(crate::library::LibraryError),
+    Ledger(E),
 }
 
 pub enum Outcome {

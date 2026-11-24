@@ -644,29 +644,41 @@ impl Application {
     pub fn run_byo_gpu(
         &mut self,
         run: &crate::execution::byo_gpu::Run,
-    ) -> Result<crate::execution::byo_gpu::Report, crate::execution::byo_gpu::RunError> {
+    ) -> Result<crate::execution::byo_gpu::Report, crate::execution::byo_gpu::RunError<LibraryError>>
+    {
         use crate::budget::State;
         use crate::execution::{
-            byo_gpu::{self, Outcome, Report, RunError},
+            byo_gpu::{self, Outcome, Profile, Report, RunError},
             consumption_adapter::ConsumptionBudgetOnce,
             ports::BudgetOnce,
         };
 
-        let prepared = byo_gpu::process::prepare(run)?;
+        let prepared = byo_gpu::process::prepare(run).map_err(RunError::Invalid)?;
         let request = prepared.request();
         let id = &request.id;
         let previous = self.call_intent(id).map_err(RunError::Ledger)?;
-        if previous
+        let staged = if previous
             .as_ref()
             .is_none_or(|i| i.state == State::Preparing)
         {
+            if run.profile == Profile::KaggleCli && !byo_gpu::process::kaggle_credentials_present()
+            {
+                return Err(RunError::Credentials);
+            }
             prepared.check_destination().map_err(RunError::Invalid)?;
-        }
+            Some(prepared.stage().map_err(RunError::Invalid)?)
+        } else {
+            None
+        };
         self.reserve_call(&request).map_err(RunError::Ledger)?;
 
         let mut invocation = None;
-        let recorded = ConsumptionBudgetOnce(&mut self.connection)
-            .submit_once(id, || invocation = Some(prepared.invoke()));
+        let recorded = if let Some(staged) = staged {
+            ConsumptionBudgetOnce(&mut self.connection)
+                .submit_once(id, || invocation = Some(staged.invoke()))
+        } else {
+            Ok(false)
+        };
         let attempted = invocation.is_some();
         let outcome = match invocation {
             Some(_) if recorded.is_err() => Outcome::Unknown {

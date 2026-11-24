@@ -97,14 +97,6 @@
   },
   {
     "rule": "HEX-LAYER",
-    "file": "crates/assetweft-core/src/execution/byo_gpu/mod.rs",
-    "reason": "boundary 层依赖 library::LibraryError",
-    "sha256": "ebbf274d51725ecc51aacaf9a4845859a833221c168a895bb3ce6f7cd8e236d8",
-    "class": "H",
-    "basis": "#139 tracks the legacy BYO GPU LibraryError exposed through the public RunError."
-  },
-  {
-    "rule": "HEX-LAYER",
     "file": "crates/assetweft-core/src/production/rigged_simple.rs",
     "reason": "domain 层依赖 assurance::rig_blender::RIGGED_SIMPLE",
     "sha256": "cc2d7e908467fbd1ddb1753e7477dbbce4c44f7e568148d599a34259e8d6669f",

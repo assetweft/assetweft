@@ -1,4 +1,4 @@
-use assetweft_core::{assurance as val, library::LibraryError};
+use assetweft_core::{assurance as val, library::LibraryError, sqlite::ProtoError};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -49,6 +49,27 @@ pub(super) fn existing_database(path: &Path) -> Result<(), Value> {
         )),
     }
 }
+pub(super) fn database_open_error(
+    command: &str,
+    call_id: Option<&String>,
+    failure: ProtoError,
+) -> (i32, Value) {
+    let (code, status) = match failure {
+        ProtoError::Busy(_) | ProtoError::Io(_) => (6, "INTERNAL"),
+        _ => (2, "INVALID_INPUT"),
+    };
+    (
+        code,
+        envelope(
+            command,
+            call_id,
+            status,
+            json!([error("db", status, failure)]),
+            Value::Null,
+        ),
+    )
+}
+
 pub(super) fn library_outcome(failure: &LibraryError) -> (i32, &'static str) {
     match failure {
         LibraryError::InvalidInput(_) | LibraryError::Constraint(_) => (2, "INVALID_INPUT"),

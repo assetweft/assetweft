@@ -35,7 +35,41 @@ impl std::error::Error for ValidationError {}
 /// # Errors
 /// 打开/读取失败返回 `Io`；超过 `limits.max_bytes` 返回 `InputTooLarge`。
 pub fn read_bounded(path: &Path, limits: ValidationLimits) -> Result<Vec<u8>, ValidationError> {
-    let meta = fs::metadata(path).map_err(|e| ValidationError::Io(e.to_string()))?;
+    let not_regular = || ValidationError::Io("input must be a regular file".into());
+    let metadata = fs::metadata(path).map_err(|e| ValidationError::Io(e.to_string()))?;
+    if !metadata.is_file() {
+        return Err(not_regular());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits().cast_signed());
+    }
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Darwin and BSD fcntl.h define O_NONBLOCK as 0x0004 (#83).
+        const O_NONBLOCK: i32 = 0x0004;
+        options.custom_flags(O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|e| ValidationError::Io(e.to_string()))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| ValidationError::Io(e.to_string()))?;
+    if !meta.is_file() {
+        return Err(not_regular());
+    }
     if meta.len() > limits.max_bytes {
         return Err(ValidationError::InputTooLarge {
             limit: limits.max_bytes,
@@ -43,7 +77,6 @@ pub fn read_bounded(path: &Path, limits: ValidationLimits) -> Result<Vec<u8>, Va
             bytes_read: 0,
         });
     }
-    let file = fs::File::open(path).map_err(|e| ValidationError::Io(e.to_string()))?;
     let mut buf = Vec::new();
     file.take(limits.max_bytes.saturating_add(1))
         .read_to_end(&mut buf)

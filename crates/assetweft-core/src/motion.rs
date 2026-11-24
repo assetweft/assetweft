@@ -1,4 +1,6 @@
-use crate::assurance::{ValidationLimits, read_bounded, rig_blender::RIGGED_SIMPLE};
+use crate::assurance::{
+    ValidationLimits, gltf_checks::parse_glb, read_bounded, rig_blender::RIGGED_SIMPLE,
+};
 use gltf::binary::Glb;
 use serde_json::{
     Value, json,
@@ -43,7 +45,7 @@ pub fn add_strike_with_idle(
 }
 
 fn check_sway_topology(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-    let gltf = gltf::Gltf::from_slice(bytes).map_err(|_| "UNSUPPORTED sway: invalid glTF")?;
+    let (gltf, _) = parse_glb(bytes).map_err(|reason| format!("UNSUPPORTED sway: {reason}"))?;
     let mut skins = gltf.skins();
     let skin = skins.next().ok_or("UNSUPPORTED sway: missing skin")?;
     if skins.next().is_some()
@@ -105,11 +107,9 @@ fn write_motion(
     with_idle: bool,
 ) -> Result<Value, Box<dyn Error>> {
     let source = read_bounded(input, limits)?;
-    if with_idle {
-        check_sway_topology(&source)?;
-    }
     if digest(&source) != RIGGED_SIMPLE {
         let reason = if with_idle {
+            check_sway_topology(&source)?;
             "UNSUPPORTED source: fixed-root distal sway topology matched, unverified Rigged Simple GLB SHA-256"
         } else {
             "UNSUPPORTED Rigged Simple GLB SHA-256"

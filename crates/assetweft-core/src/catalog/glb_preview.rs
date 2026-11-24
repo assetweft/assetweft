@@ -11,12 +11,18 @@ const PROFILE: StorageError = StorageError::Invalid("unsupported static GLB prev
 const EDGE: usize = 128;
 const MAX_INDICES: usize = 768;
 
-fn has_extensions(value: &Value) -> bool {
+fn strip_extras_and_find_extensions(value: &mut Value) -> bool {
     match value {
         Value::Object(fields) => {
-            fields.contains_key("extensions") || fields.values().any(has_extensions)
+            // gltf-json 1.4.1 without its extras feature deserializes extras as a struct (#116).
+            fields.remove("extras");
+            fields.contains_key("extensions")
+                || fields
+                    .iter_mut()
+                    .filter(|(key, _)| !matches!(key.as_str(), "attributes" | "targets"))
+                    .any(|(_, child)| strip_extras_and_find_extensions(child))
         }
-        Value::Array(items) => items.iter().any(has_extensions),
+        Value::Array(items) => items.iter_mut().any(strip_extras_and_find_extensions),
         _ => false,
     }
 }
@@ -34,8 +40,8 @@ pub(super) fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>, StorageError> {
     {
         return Err(INVALID);
     }
-    let value: Value = serde_json::from_slice(&glb.json).map_err(|_| INVALID)?;
-    if has_extensions(&value) {
+    let mut value: Value = serde_json::from_slice(&glb.json).map_err(|_| INVALID)?;
+    if strip_extras_and_find_extensions(&mut value) {
         return Err(PROFILE);
     }
     let root: json::Root = serde_json::from_value(value).map_err(|_| INVALID)?;
@@ -295,5 +301,29 @@ mod tests {
             glb.json = serde_json::to_vec(&doc).unwrap().into();
             assert!(thumbnail(&glb.to_vec().unwrap()).is_err(), "{parent}/{key}");
         }
+    }
+
+    #[test]
+    fn extras_keys_do_not_change_the_static_preview() {
+        let bytes = include_bytes!("../../../../examples/godot-static/triangle.glb");
+        let expected = thumbnail(bytes).unwrap();
+        let mut glb = gltf::binary::Glb::from_slice(bytes).unwrap();
+        let mut doc: Value = serde_json::from_slice(&glb.json).unwrap();
+        let render = |glb: &mut gltf::binary::Glb<'_>, doc: &Value| {
+            let mut json = serde_json::to_vec(doc).unwrap();
+            json.resize(json.len().next_multiple_of(4), b' ');
+            glb.json = json.into();
+            thumbnail(&glb.to_vec().unwrap())
+        };
+        doc["extras"] = json!([{"extensionsUsed": ["custom"], "extensions": true}]);
+        doc["materials"][0]["extras"] = json!({"extensions": {"custom": 1}});
+        assert_eq!(render(&mut glb, &doc).unwrap(), expected);
+        doc["materials"][0]["extensions"] = json!({"EXT_custom": {}});
+        assert!(matches!(
+            render(&mut glb, &doc),
+            Err(StorageError::Invalid(
+                "unsupported static GLB preview profile"
+            ))
+        ));
     }
 }

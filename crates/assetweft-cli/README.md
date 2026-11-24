@@ -137,7 +137,9 @@ optional external runtimes. `kaggle-validate` checks the bundle on disk and retu
 `credential_present` as a boolean. A valid private GPU bundle can pass validation
 with the boolean false. Use a real `owner/kernel-slug`, a kernel title, Python
 script or notebook, `is_private: true`, `enable_gpu: true`, and an in-bundle code file.
-Numeric kernel ID overrides are rejected.
+The JSON object accepts boolean flags and the Kaggle CLI 2.2.5 template strings
+`"true"` and `"false"`. Duplicate policy fields and numeric kernel ID overrides are
+rejected.
 Absolute paths, traversal and symlinked code paths are rejected. The accelerator
 defaults to `NvidiaTeslaT4` (T4 ×2). A `machine_shape` of `NvidiaL4` is also accepted.
 
@@ -145,10 +147,10 @@ Initialize the library explicitly, then use `budget approve` with `unit: "Task"`
 `approval: "ExplicitBounded"` and positive capacity. The `run` command requires
 `--allow-remote-upload` whenever a local image or bundle is supplied. HF 3D models
 require an image and HF 2D models require a prompt. Kaggle requires a private
-bundle and credential presence. Configure credentials using `HF_TOKEN`,
-`KAGGLE_API_TOKEN`, `KAGGLE_USERNAME` with `KAGGLE_KEY`, or a standard Kaggle
-configuration file as applicable. AssetWeft never reads the contents of a Kaggle
-credential file.
+bundle and credential presence for a new attempt. Configure credentials using
+`HF_TOKEN`, `KAGGLE_API_TOKEN`, `KAGGLE_USERNAME` with `KAGGLE_KEY`, or a standard
+Kaggle credential file such as `~/.kaggle/access_token` or `~/.kaggle/kaggle.json`.
+AssetWeft checks file presence without reading the contents.
 
 Set `--adapter-bin` or `ASSETWEFT_BYO_GPU_ADAPTER` to a trusted local executable.
 AssetWeft runs it without a shell and with the inherited environment. Use a
@@ -168,8 +170,11 @@ file. Supply an existing directory or a new directory under an existing parent.
 The global `--max-bytes` restricts each input file and the output file. On PASS/0,
 `results.state` is `SUCCEEDED` and `results.artifact` gives the file name and
 SHA-256. Read `budget receipts` for the stored digest. Repeating a settled intent
-with the same inputs returns that receipt with `invoked: false`. An uncertain attempt returns UNKNOWN/1,
-retains the reservation, and never launches the runner again for that intent.
+with the same inputs returns that receipt with `invoked: false` even after
+removing the current Kaggle credential. Local staging precedes reservation and
+can create a new output directory. A staging failure returns INVALID_INPUT/2 and
+leaves the ledger unchanged. An uncertain attempt returns UNKNOWN/1, retains
+the reservation, and never launches the runner again for that intent.
 `invoked` indicates entry into the claimed runner path, and does not prove a
 remote submission. The local unit is `Task` and `cash_cost` stays null.
 

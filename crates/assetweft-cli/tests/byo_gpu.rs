@@ -185,6 +185,91 @@ fn kaggle_validation_is_local_and_rejects_invalid_or_escaping_bundles() {
     }
 }
 
+#[test]
+fn kaggle_rejects_positional_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = bundle_in(dir.path());
+    let validate = || invoke(cli("kaggle-validate").arg("--bundle").arg(&bundle));
+    write_metadata(
+        &bundle,
+        &json!([
+            "testuser/private-trellis2",
+            null,
+            "Private fixture",
+            "src/main.py",
+            "python",
+            "script",
+            true,
+            true,
+            false,
+            "NvidiaL4",
+        ]),
+    );
+    let (code, result) = validate();
+    assert_eq!(code, 2, "{result}");
+}
+
+#[test]
+fn kaggle_accepts_only_supported_template_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = bundle_in(dir.path());
+    let validate = || invoke(cli("kaggle-validate").arg("--bundle").arg(&bundle));
+    let mut template = metadata();
+    template["is_private"] = json!("true");
+    template["enable_gpu"] = json!("true");
+    template["enable_tpu"] = json!("false");
+    write_metadata(&bundle, &template);
+    let (code, result) = validate();
+    assert_eq!(code, 0, "{result}");
+    for (field, value, path) in [
+        ("is_private", json!("false"), "bundle.is_private"),
+        ("enable_gpu", json!("false"), "bundle.enable_gpu"),
+        ("enable_tpu", json!("true"), "bundle.enable_gpu"),
+        ("enable_gpu", json!("yes"), "bundle"),
+        ("enable_gpu", json!(1), "bundle"),
+        ("id_no", json!(123), "bundle.id"),
+    ] {
+        let mut rejected = template.clone();
+        rejected[field] = value;
+        write_metadata(&bundle, &rejected);
+        let (code, result) = validate();
+        assert_eq!(code, 2, "{result}");
+        assert_eq!(result["errors"][0]["field_path"], path);
+    }
+}
+
+fn isolated_kaggle_auth<'a>(command: &'a mut Command, home: &Path) -> &'a mut Command {
+    command
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env_remove("KAGGLE_CONFIG_DIR")
+        .env_remove("KAGGLE_API_TOKEN")
+        .env_remove("KAGGLE_USERNAME")
+        .env_remove("KAGGLE_KEY")
+}
+
+#[test]
+fn kaggle_validation_detects_standard_token_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = bundle_in(dir.path());
+    let token = dir.path().join(".kaggle/access_token");
+    fs::create_dir(token.parent().unwrap()).unwrap();
+    fs::write(&token, DUMMY).unwrap();
+    let validate = || {
+        invoke(isolated_kaggle_auth(
+            cli("kaggle-validate").arg("--bundle").arg(&bundle),
+            dir.path(),
+        ))
+    };
+    let (code, result) = validate();
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["results"]["credential_present"], true);
+    fs::remove_file(token).unwrap();
+    let (code, result) = validate();
+    assert_eq!(code, 0, "{result}");
+    assert_eq!(result["results"]["credential_present"], false);
+}
+
 fn adapter(dir: &Path) -> PathBuf {
     let source = dir.join("runner.rs");
     let executable = dir.join(format!("runner{}", std::env::consts::EXE_SUFFIX));
@@ -447,6 +532,36 @@ fn approved_iteration_hashes_and_settles_one_task_then_returns_the_receipt() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn local_staging_failure_does_not_reserve_or_claim_a_task() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    fs::create_dir(&fixture.output).unwrap();
+    fs::set_permissions(&fixture.output, fs::Permissions::from_mode(0o500)).unwrap();
+    let run = || {
+        invoke(
+            fixture
+                .run("hf-zerogpu", "success")
+                .arg("--image")
+                .arg(&fixture.image)
+                .arg("--allow-remote-upload"),
+        )
+    };
+    let (code, result) = run();
+    fs::set_permissions(&fixture.output, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(code, 2, "{result}");
+    assert_eq!(result["errors"][0]["field_path"], "out-dir");
+    assert!(!fixture.marker.exists());
+    fixture.balance(0, 0, None);
+
+    let (code, result) = run();
+    assert_eq!(code, 0, "{result}");
+    fixture.one_invocation();
+    fixture.balance(0, 1, Some(State::Confirmed));
+}
+
 #[test]
 fn failed_or_missing_adapter_result_is_unknown_and_never_replayed() {
     for mode in ["failure", "missing-output"] {
@@ -480,16 +595,35 @@ fn kaggle_runner_gets_only_the_validated_private_kernel_and_accelerator() {
     let fixture = Fixture::new();
     let bundle = bundle_in(fixture.dir.path());
     fs::write(bundle.join("unrelated.txt"), "not a kernel input").unwrap();
-    let (code, result) = invoke(
-        fixture
-            .run("kaggle-cli", "kaggle")
+    let run = || {
+        let mut command = fixture.run("kaggle-cli", "kaggle");
+        isolated_kaggle_auth(&mut command, fixture.dir.path())
             .arg("--bundle")
-            .arg(bundle)
-            .arg("--allow-remote-upload")
-            .env("KAGGLE_API_TOKEN", DUMMY),
-    );
+            .arg(&bundle)
+            .arg("--allow-remote-upload");
+        command
+    };
+    let (code, missing) = invoke(&mut run());
+    assert_eq!(code, 3, "{missing}");
+    fixture.balance(0, 0, None);
+    assert!(!fixture.marker.exists());
+
+    let token = fixture.dir.path().join(".kaggle/access_token");
+    fs::create_dir(token.parent().unwrap()).unwrap();
+    fs::write(&token, DUMMY).unwrap();
+    let (code, result) = invoke(&mut run());
     assert_eq!(code, 0, "{result}");
     assert_eq!(result["results"]["state"], "SUCCEEDED");
+    fs::remove_file(token).unwrap();
+    let (code, replay) = invoke(&mut run());
+    assert_eq!(code, 0, "{replay}");
+    assert_eq!(replay["results"]["invoked"], false);
+    assert_eq!(replay["results"]["artifact"], result["results"]["artifact"]);
+
+    fs::write(bundle.join("src/main.py"), "# changed synthetic kernel").unwrap();
+    let (code, conflict) = invoke(&mut run());
+    assert_eq!(code, 2, "{conflict}");
+    assert_eq!(conflict["errors"][0]["field_path"], "budget");
     fixture.one_invocation();
     fixture.balance(0, 1, Some(State::Confirmed));
 }

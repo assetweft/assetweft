@@ -43,6 +43,7 @@ assetweft [--call-id ID] catalog references --db EXISTING_DB --version-id ID
 assetweft [--call-id ID] catalog current --db EXISTING_DB --asset-id ID
 assetweft [--call-id ID] catalog feedback-add --db EXISTING_DB --feedback-id ID --asset-id ID --version-id ID --decision ACCEPT|REJECT [--reason TEXT]
 assetweft [--call-id ID] catalog feedback-latest --db EXISTING_DB --asset-id ID [--version-id ID]
+assetweft [--call-id ID] catalog feedback-get --db EXISTING_DB --asset-id ID --version-id ID --feedback-id ID
 ```
 
 Global `--max-bytes N` bounds each file/JSON input separately (default and hard ceiling
@@ -61,7 +62,7 @@ Every invocation emits exactly one compact JSON document and newline on stdout:
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
-`catalog feedback-latest`, `byo-gpu profiles`, `byo-gpu kaggle-validate`, `byo-gpu run`, `arguments`,
+`catalog feedback-latest`, `catalog feedback-get`, `byo-gpu profiles`, `byo-gpu kaggle-validate`, `byo-gpu run`, `arguments`,
 `help` or `version`; nested values
 are unambiguous command discriminators.
 Help/version are JSON results with status HELP/VERSION and exit 0, never plain
@@ -89,8 +90,12 @@ For example, this programmatic left-sole track slides out 0.125 m and returns:
 ```
 
 For `grounded-humanoid`, the check measures the largest horizontal (XZ) distance
-from the first stance sample. Up to and including 0.01 m is PASS/0; the example
-returns FAIL/1. The same bytes with `--role hovering` return INAPPLICABLE/5
+from the first stance sample. It rounds the peak to the nearest 1 nm with
+`round_ties_even` and returns PASS/0 at or below 0.01 m. The receipt preserves
+the raw unrounded `max_slip_m` and reports `limit_m: 0.01`. Binary64 coordinates
+lose fine displacement precision at very large world coordinates. Use a nearby
+origin when sampling such tracks. The example returns FAIL/1. The same bytes
+with `--role hovering` return INAPPLICABLE/5
 with a reason and zero evaluated samples. Only PASS returns zero for this command.
 Missing, ambiguous or incomplete stance evidence returns NOT_RUN/3. Malformed
 track data returns INVALID_INPUT/2. Reports include the sample file SHA-256.
@@ -494,12 +499,20 @@ it matches that exact asset/version pair. Without it, it selects the newest
 opinion across the asset's versions. No match yields `results.feedback: null`.
 An omitted reason is represented as `reason: null` within a record.
 
-Both commands use regular-file database admission and the v1 JSON envelope.
+`catalog feedback-get` opens the existing library read-only and matches the
+exact asset, version and feedback IDs. It returns PASS/0 with the same scope
+and record shape as `feedback-latest`. No exact match yields
+`results.feedback: null`.
+
+All three commands use regular-file database admission and the v1 JSON envelope.
 Duplicate feedback IDs and write-time version/asset mismatches return
 INVALID_INPUT/2 at `catalog`. An uninitialized library returns
 INPUT_INCOMPLETE/3. Feedback is independent of candidate acceptance and the
 current head. A stdout failure can return exit 6 after an append commits.
-Inspect persisted feedback before deciding how to proceed.
+Use `feedback-get` with the original IDs to confirm that specific append and
+check its decision and reason against the attempted write. `feedback-latest`
+provides no per-ID confirmation. Never use its result to decide whether to
+retry with a new ID after exit 6. `feedback-get` performs no retry.
 
 ## Stored Catalog queries (AW-033:B bounded slice)
 

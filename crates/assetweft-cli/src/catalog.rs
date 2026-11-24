@@ -78,7 +78,7 @@ pub(super) fn query_response(
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
     let read_only = matches!(action, "file-availability" | "search" | "preview");
-    let opened = if read_only {
+    let opened = if read_only || action == "feedback-get" {
         Application::open_read_only(db)
     } else {
         Application::open_existing(db)
@@ -168,6 +168,11 @@ pub(super) fn query_response(
                 id("asset-id"),
                 args.get_one::<String>("version-id").map(String::as_str),
             )
+            .map(|record| {
+                json!({"scope":"stored_local_version_feedback","feedback":record.map(feedback_value)})
+            }),
+        "feedback-get" => app
+            .feedback_by_id(id("asset-id"), id("version-id"), id("feedback-id"))
             .map(|record| {
                 json!({"scope":"stored_local_version_feedback","feedback":record.map(feedback_value)})
             }),

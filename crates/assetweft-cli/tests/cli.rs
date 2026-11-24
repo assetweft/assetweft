@@ -326,6 +326,44 @@ fn semantic_identity_plan_cannot_bypass_core() {
     }
 }
 
+#[test]
+fn plan_rejects_duplicate_trusted_lock_roles() {
+    let dir = tempfile::tempdir().unwrap();
+    let all = cases();
+    let c = &all["cases"][0];
+    for change in [
+        Some("canonicalization_id"),
+        Some("canonicalization_version"),
+        None,
+    ] {
+        for reverse in [false, true] {
+            let mut context = c["context"].clone();
+            let locks = context["declared_locks"].as_array_mut().unwrap();
+            let i = locks.len();
+            let mut duplicate = locks[2].clone();
+            if let Some(field) = change {
+                duplicate[field] = json!("other");
+            }
+            locks.push(duplicate);
+            if reverse {
+                locks.swap(2, i);
+            }
+            let (out, v) = plan(dir.path(), &c["request"], &context);
+            let field = format!("context.declared_locks[{i}].role");
+            assert_eq!(out.status.code(), Some(2), "{change:?} {reverse}: {v}");
+            assert!(
+                v["errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["code"] == "INVALID_INPUT" && e["field_path"] == field),
+                "{change:?} {reverse}: {v}"
+            );
+            assert_eq!(v["results"]["execution"], "NOT_RUN");
+        }
+    }
+}
+
 // POSIX shutdown(SHUT_WR) disables writes even while another process holds the peer.
 #[cfg(unix)]
 fn broken_output() -> std::process::Stdio {
@@ -526,6 +564,18 @@ fn existing_database_open_lock_reports_internal_and_leaves_database_unchanged() 
         budget_args("approve", db.as_os_str(), allowance.as_os_str()),
         catalog_write_args("register-version", &db, &version),
         catalog_args("version", db.as_os_str(), OsStr::new("base")),
+        vec![
+            OsStr::new("catalog"),
+            OsStr::new("feedback-get"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+            OsStr::new("--asset-id"),
+            OsStr::new("character"),
+            OsStr::new("--version-id"),
+            OsStr::new("base"),
+            OsStr::new("--feedback-id"),
+            OsStr::new("absent"),
+        ],
     ];
     let (blocker, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
     blocker.execute_batch("PRAGMA journal_mode=DELETE").unwrap();
@@ -5540,6 +5590,88 @@ fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
     assert_eq!(app.asset_version("base").unwrap(), Some(original_version));
     assert_eq!(app.asset_version(&long_id).unwrap(), Some(long_version));
     assert_eq!(fs::read(original).unwrap(), bytes);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn feedback_get_recovers_exact_id_after_lost_append_receipt() {
+    for committed in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, app, _) = candidate_fixture(dir.path(), false);
+        app.close().unwrap();
+
+        let blocker = (!committed).then(|| {
+            let conn = assetweft_core::sqlite::open_and_configure(&db).unwrap().0;
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            conn
+        });
+        let lost = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+            .args(["catalog", "feedback-add", "--db"])
+            .arg(&db)
+            .args([
+                "--asset-id",
+                "character",
+                "--version-id",
+                "base",
+                "--feedback-id",
+                "A",
+                "--decision",
+                "REJECT",
+                "--reason",
+                "原样 A",
+            ])
+            .stdout(broken_output())
+            .output()
+            .unwrap();
+        assert_eq!(lost.status.code(), Some(6), "{lost:?}");
+        assert!(lost.stdout.is_empty());
+        drop(blocker);
+
+        let run = |action: &str, asset: &str, version: &str, extra: &[&str]| {
+            let mut args = vec![
+                OsStr::new("catalog"),
+                OsStr::new(action),
+                OsStr::new("--db"),
+                db.as_os_str(),
+            ];
+            args.extend(["--asset-id", asset, "--version-id", version].map(OsStr::new));
+            args.extend(extra.iter().map(OsStr::new));
+            let (out, v) = invoke(&args);
+            assert_eq!(out.status.code(), Some(0), "{v}");
+            assert!(out.stderr.is_empty(), "{out:?}");
+            assert_eq!(v["command"], format!("catalog {action}"));
+            assert_eq!(v["status"], "PASS");
+            assert_eq!(v["errors"], json!([]));
+            v["results"].clone()
+        };
+        let second = run(
+            "feedback-add",
+            "character",
+            "base",
+            &["--feedback-id", "B", "--decision", "ACCEPT"],
+        );
+        assert_eq!(second["feedback"]["feedback_id"], "B");
+        assert_eq!(
+            run("feedback-latest", "character", "base", &[])["feedback"],
+            second["feedback"]
+        );
+
+        let exact = run("feedback-get", "character", "base", &["--feedback-id", "A"]);
+        assert_eq!(exact["scope"], "stored_local_version_feedback");
+        let expected = if committed {
+            json!({"sequence":1,"feedback_id":"A","asset_id":"character",
+                "version_id":"base","decision":"REJECT","reason":"原样 A"})
+        } else {
+            Value::Null
+        };
+        assert_eq!(exact["feedback"], expected);
+        for (asset, version) in [("character", "proposed"), ("mesh0", "base")] {
+            assert_eq!(
+                run("feedback-get", asset, version, &["--feedback-id", "A"])["feedback"],
+                Value::Null
+            );
+        }
+    }
 }
 
 fn export_fixture(parent: &Path) -> (PathBuf, PathBuf, PathBuf) {

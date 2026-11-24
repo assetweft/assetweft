@@ -2,10 +2,23 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-bin=$(node -p 'require("node:path").resolve(process.argv[1])' "${ASSETWEFT_BIN:-$root/target/debug/assetweft}")
+if [ -n "${ASSETWEFT_BIN:-}" ]; then
+    bin="$ASSETWEFT_BIN"
+else
+    target_dir=${CARGO_TARGET_DIR:-}
+    if [ -z "$target_dir" ]; then
+        metadata=$(CDPATH= cd -- "$root" && cargo metadata --offline --format-version 1 --no-deps)
+        target_dir=$(printf '%s' "$metadata" | node -p 'JSON.parse(require("node:fs").readFileSync(0)).target_directory')
+    fi
+    bin="$target_dir/debug/assetweft"
+fi
+bin=$(node -p 'require("node:path").resolve(process.argv[1])' "$bin")
 [ -x "$bin" ] || { printf 'Build the assetweft CLI first: %s\n' "$bin" >&2; exit 1; }
+sha256=$(node -p 'require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex")' "$bin")
+printf 'assetweft_bin=%s\nassetweft_sha256=%s\n' "$bin" "$sha256"
 command -v sqlite3 >/dev/null
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/assetweft-recipe.XXXXXX")
+tmp_parent=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P)
+tmp=$(mktemp -d "$tmp_parent/assetweft-recipe.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
 trap 'exit 1' HUP INT TERM
 

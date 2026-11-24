@@ -34,6 +34,16 @@ pub(crate) fn latest(
     .next())
 }
 
+pub(crate) fn by_id(
+    port: &mut impl FeedbackPort,
+    asset_id: &str,
+    version_id: &str,
+    feedback_id: &str,
+) -> Result<Option<FeedbackRecord>, MetadataError> {
+    domain::validate_feedback_identity(asset_id, version_id, feedback_id)?;
+    port.by_id(asset_id, version_id, feedback_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +67,16 @@ mod tests {
             ));
             Ok(vec![])
         }
+        fn by_id(
+            &mut self,
+            asset_id: &str,
+            version_id: &str,
+            feedback_id: &str,
+        ) -> Result<Option<FeedbackRecord>, MetadataError> {
+            self.calls
+                .push(format!("by_id:{asset_id}:{version_id}:{feedback_id}"));
+            Ok(None)
+        }
     }
     #[test]
     fn validation_precedes_port_and_latest_is_a_bounded_exact_query() {
@@ -70,6 +90,7 @@ mod tests {
         };
         assert_eq!(append(&mut m, &f).unwrap().feedback, f);
         assert_eq!(latest(&mut m, "asset", Some("v1")).unwrap(), None);
+        assert_eq!(by_id(&mut m, "asset", "v1", "f").unwrap(), None);
         history(
             &mut m,
             HistoryQuery {
@@ -85,6 +106,7 @@ mod tests {
             [
                 "append:asset:v1",
                 "history:asset:Some(\"v1\"):None:1",
+                "by_id:asset:v1:f",
                 "history:asset:None:Some(7):2"
             ]
         );
@@ -93,6 +115,10 @@ mod tests {
         f.reason = Some(" ".into());
         assert_eq!(
             append(&mut m, &f),
+            Err(MetadataError::InvalidInput("feedback identity"))
+        );
+        assert_eq!(
+            by_id(&mut m, &f.asset_id, &f.version_id, &f.feedback_id),
             Err(MetadataError::InvalidInput("feedback identity"))
         );
         f.feedback_id = "f".into();

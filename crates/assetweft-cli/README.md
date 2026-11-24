@@ -13,6 +13,7 @@ query stored exact metadata and the local fixture head through Catalog.
 
 ```
 assetweft [--call-id ID] inspect FILE.glb
+assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
 assetweft [--call-id ID] motion-stance SAMPLES.json --role grounded-humanoid|hovering
 assetweft [--call-id ID] motion-strike RiggedSimple.glb [--with-idle] --out NEW_FILE.glb
 assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
@@ -693,7 +694,12 @@ It measures two managed GLB versions of one asset: the original Cesium Rigged
 Simple and the pinned derivative with the added strike and idle clips. Both
 owners declare CC-BY-4.0 and the derivative declares a procedural edit.
 
-For each owner, use `assetweft_core::motion::components::rigged_simple_components`
+Use `assetweft rigged-simple-components FILE --out-dir NEW_DIRECTORY` to project a
+pinned `RiggedSimple.glb` or its verified `motion-strike --with-idle` derivative into
+`mesh.json`, `materials.json`, `rig.json`, and `motion.json`. The command uses the same
+bounded regular-file admission as validation, creates a new output directory only, and
+returns `NOT_RUN/1` without creating it for every other GLB. Its PASS receipt is the
+component manifest; the four files are the exact bytes consumed by the candidate loop.
 on its GLB bytes. Commit the four returned JSON payloads as managed Catalog
 versions and attach them with exact role references. The derivative reuses the
 original mesh, materials and rig version IDs and attaches its own motion version.

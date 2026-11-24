@@ -8,6 +8,23 @@ From the repository root, write the derivative to a new file under an existing d
 cargo run --locked -p assetweft-cli -- motion-strike examples/rigged-simple/RiggedSimple.glb --out strike.glb
 ```
 
+## Unified CLI character loop
+
+`./examples/rigged-simple/verify_character_loop.sh` is the reproducible local AW-035:A
+loop. It exercises the bounded `EXT_texture_webp` static-mesh admission, rejects that
+static mesh for the rigged role, commits the pinned Rigged Simple components through the
+CLI/CAS/workflow path, and accepts exactly the motion-only edit. It uses a local adapter
+fixture only; live paid GPU execution is `NOT_RUN`.
+
+```sh
+cargo build --locked --offline -p assetweft-cli
+./examples/rigged-simple/verify_character_loop.sh
+./examples/rigged-simple/verify_character_loop.sh --blender /opt/homebrew/bin/blender --trellis-glb /path/to/trellis2.glb
+```
+
+Pass `--godot /path/to/godot` only to run the optional Godot controls. Without it the
+script prints `ENGINE_GODOT=NOT_RUN`; it never claims a Godot engine result.
+
 Open the output in a glTF animation player and select **AssetWeft_InPlaceStrike**. The original animation is still the first clip. The added clip holds the rest pose for 0.25 s, bends the distal cylinder segment through 90° by 0.5 s, and recovers by 1 s. This two-joint cylinder supports a single child rotation around local Y. Node 3 (`Bone`) anchors the skeleton in world space. Node 4 (`Bone.001`) drives the weighted body through its existing skin. The clip has one rotation channel and keeps the scene root, armature, root joint and child translation fixed. It has no limbs, contact targets or locomotion.
 
 Add `--with-idle` to include **AssetWeft_Idle**. With the player set to repeat, the distal joint sways from rest to +8°, then −8°, then rest each second. The fixed-root sway requires a mesh bound to a single skin with two directly connected joints. An incompatible hierarchy returns `NOT_RUN` with the structural reason. A topology match still requires the exact verified source before either clip is written.

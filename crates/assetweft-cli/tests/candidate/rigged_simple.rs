@@ -41,6 +41,77 @@ fn role_name(role: ComponentRole) -> &'static str {
     }
 }
 
+#[test]
+fn cli_decomposes_only_pinned_rigged_simple_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let original =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/rigged-simple/RiggedSimple.glb");
+    let output = dir.path().join("components");
+    let (out, reply) = candidate_invoke(&[
+        "rigged-simple-components".as_ref(),
+        original.as_os_str(),
+        "--out-dir".as_ref(),
+        output.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{reply}");
+    assert_eq!(reply["status"], "PASS");
+    assert_eq!(reply["results"]["scope"], "rigged_simple_components_v1");
+    for (role, bytes) in rigged_simple_components(&fs::read(&original).unwrap()).unwrap() {
+        let name = role_name(role);
+        assert_eq!(
+            fs::read(output.join(format!("{name}.json"))).unwrap(),
+            bytes
+        );
+    }
+    let derivative = dir.path().join("strike.glb");
+    let (out, reply) = candidate_invoke(&[
+        "motion-strike".as_ref(),
+        original.as_os_str(),
+        "--with-idle".as_ref(),
+        "--out".as_ref(),
+        derivative.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{reply}");
+    let derivative_output = dir.path().join("derivative-components");
+    let (out, reply) = candidate_invoke(&[
+        "rigged-simple-components".as_ref(),
+        derivative.as_os_str(),
+        "--out-dir".as_ref(),
+        derivative_output.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{reply}");
+    for (role, bytes) in rigged_simple_components(&fs::read(&derivative).unwrap()).unwrap() {
+        let name = role_name(role);
+        assert_eq!(
+            fs::read(derivative_output.join(format!("{name}.json"))).unwrap(),
+            bytes
+        );
+    }
+    let before = fs::read(output.join("mesh.json")).unwrap();
+    let (out, existing) = candidate_invoke(&[
+        "rigged-simple-components".as_ref(),
+        original.as_os_str(),
+        "--out-dir".as_ref(),
+        output.as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{existing}");
+    assert_eq!(existing["status"], "INVALID_INPUT");
+    assert_eq!(fs::read(output.join("mesh.json")).unwrap(), before);
+
+    let mesh_only = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../assetweft-core/tests/fixtures/validation/mesh_only.glb");
+    let rejected = dir.path().join("rejected");
+    let (out, reply) = candidate_invoke(&[
+        "rigged-simple-components".as_ref(),
+        mesh_only.as_os_str(),
+        "--out-dir".as_ref(),
+        rejected.as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{reply}");
+    assert_eq!(reply["status"], "NOT_RUN");
+    assert!(!rejected.exists());
+}
+
 fn seed(dir: &Path) -> PathBuf {
     let original =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/rigged-simple/RiggedSimple.glb");

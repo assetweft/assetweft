@@ -7,6 +7,7 @@
 | 主题 | 现行入口 |
 |---|---|
 | 能力地图与正常判据 | [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md) |
+| 内部技术预览与运行边界 | [docs/TECH_PREVIEW.md](docs/TECH_PREVIEW.md) |
 | 开发规范（DDD × 六边形 · 去注释化） | [docs/DEVELOPMENT_STANDARDS.md](docs/DEVELOPMENT_STANDARDS.md) |
 | 本地素材工作台（AW-032:A） | [apps/workbench/README.md](apps/workbench/README.md) |
 | CLI v1 协议、命令与退出码 | [crates/assetweft-cli/README.md](crates/assetweft-cli/README.md) |

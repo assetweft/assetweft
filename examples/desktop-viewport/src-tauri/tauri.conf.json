@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AW005 Static Experiment",
+  "version": "0.0.0",
+  "identifier": "dev.assetweft.viewportstatic1115",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 2
 
       - name: Toolchain (pinned by rust-toolchain.toml)
         shell: bash
@@ -69,3 +69,57 @@ jobs:
 
       - name: Default SQLite busy wait on the budget writer
         run: python3 tools/default-busy-wait.py
+
+      # Isolated M6 app is not a member of the root Rust workspace.
+      - name: Detect isolated viewport changes
+        id: viewport
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          set -eu
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo "affected=true" >> "$GITHUB_OUTPUT"
+          else
+            base="$PUSH_BASE"
+            if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE"; fi
+            if [[ ! "$base" =~ ^[0-9a-f]{40}$ ]] || [[ "$base" = 0000000000000000000000000000000000000000 ]]; then
+              echo "affected=true" >> "$GITHUB_OUTPUT"
+            else
+              git fetch --no-tags --depth=1 origin "$base"
+              git diff --name-only "$base" HEAD > "$RUNNER_TEMP/viewport-changes.txt"
+              if grep -Eq '^(examples/desktop-viewport/|crates/assetweft-core/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/native-recovery\.yml$)' "$RUNNER_TEMP/viewport-changes.txt"; then
+                echo "affected=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "affected=false" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          fi
+
+      - name: Viewport Node (existing pinned action)
+        if: steps.viewport.outputs.affected == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - name: Isolated viewport frontend
+        if: steps.viewport.outputs.affected == 'true'
+        shell: bash
+        working-directory: examples/desktop-viewport
+        run: |
+          set -eu
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm run build
+          node --test evidence.test.mjs
+
+      - name: Isolated viewport native check (not render acceptance)
+        if: steps.viewport.outputs.affected == 'true'
+        shell: bash
+        run: |
+          set -eu
+          cargo check --locked --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml
+          cargo test --locked --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml
+          cargo fmt --manifest-path examples/desktop-viewport/src-tauri/Cargo.toml -- --check

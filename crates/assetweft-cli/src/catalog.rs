@@ -1,4 +1,6 @@
-use crate::protocol::{envelope, error, existing_database, library_outcome, read_json};
+use crate::protocol::{
+    database_open_error, envelope, error, existing_database, library_outcome, read_json,
+};
 use assetweft_core::{
     application::Application,
     assurance as val,
@@ -75,14 +77,15 @@ pub(super) fn query_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let opened = if matches!(action, "file-availability" | "search" | "preview") {
+    let read_only = matches!(action, "file-availability" | "search" | "preview");
+    let opened = if read_only {
         Application::open_read_only(db)
     } else {
         Application::open_existing(db)
     };
     let mut app = match opened {
         Ok(app) => app,
-        Err(e) => {
+        Err(e) if read_only => {
             return finish(
                 2,
                 "INVALID_INPUT",
@@ -90,6 +93,7 @@ pub(super) fn query_response(
                 Value::Null,
             );
         }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     if action == "preview" {
         let version = id("version-id");
@@ -336,14 +340,7 @@ pub(super) fn write_response(
     }
     let mut app = match Application::open_existing(db) {
         Ok(app) => app,
-        Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e)]),
-                Value::Null,
-            );
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     let storage_error = |e: StorageError| {
         let (code, status) = storage_outcome(&e);

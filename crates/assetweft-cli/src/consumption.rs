@@ -1,10 +1,16 @@
-use crate::protocol::{envelope, error, existing_database, library_outcome, read_json};
+use crate::protocol::{
+    database_open_error, envelope, error, existing_database, library_outcome, read_json,
+};
 use assetweft_core::{
     application::Application,
     assurance as val,
     budget::{Allowance, Approval, Intent, Request, State, Unit},
 };
 use clap::ArgMatches;
+use serde::{
+    Deserialize,
+    de::{self, IntoDeserializer},
+};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -12,31 +18,58 @@ use std::path::PathBuf;
 #[serde(deny_unknown_fields)]
 struct AllowanceInput {
     id: String,
-    unit: UnitInput,
+    #[serde(deserialize_with = "deserialize_unit")]
+    unit: Unit,
     capacity: u64,
+    #[serde(deserialize_with = "deserialize_approval")]
     approval: Approval,
     source: String,
 }
-#[derive(serde::Deserialize)]
-enum UnitInput {
-    Token,
-    Task,
-    Second,
-    CurrencyMinor(CurrencyObject),
+fn deserialize_approval<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Approval, D::Error> {
+    Approval::deserialize(String::deserialize(deserializer)?.into_deserializer())
 }
-impl UnitInput {
-    fn into_unit(self) -> Unit {
-        match self {
-            Self::Token => Unit::Token,
-            Self::Task => Unit::Task,
-            Self::Second => Unit::Second,
-            Self::CurrencyMinor(CurrencyObject(c)) => Unit::CurrencyMinor {
-                currency: c.currency,
-                decimals: c.decimals,
-            },
+
+fn deserialize_unit<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Unit, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct CurrencyUnit {
+        #[serde(rename = "CurrencyMinor")]
+        currency_minor: CurrencyObject,
+    }
+
+    struct UnitVisitor;
+    impl<'de> de::Visitor<'de> for UnitVisitor {
+        type Value = Unit;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Token, Task or Second as a string, or a CurrencyMinor object")
+        }
+
+        fn visit_str<E: de::Error>(self, unit: &str) -> Result<Unit, E> {
+            match unit {
+                "Token" => Ok(Unit::Token),
+                "Task" => Ok(Unit::Task),
+                "Second" => Ok(Unit::Second),
+                _ => Err(E::unknown_variant(unit, &["Token", "Task", "Second"])),
+            }
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Unit, M::Error> {
+            let CurrencyUnit {
+                currency_minor: CurrencyObject(input),
+            } = CurrencyUnit::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(Unit::CurrencyMinor {
+                currency: input.currency,
+                decimals: input.decimals,
+            })
         }
     }
+
+    deserializer.deserialize_any(UnitVisitor)
 }
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CurrencyInput {
@@ -83,7 +116,7 @@ impl<'de> serde::Deserialize<'de> for AllowanceObject {
                 )?;
                 Ok(AllowanceObject(Allowance {
                     id: input.id,
-                    unit: input.unit.into_unit(),
+                    unit: input.unit,
                     capacity: input.capacity,
                     approval: input.approval,
                     source: input.source,
@@ -99,7 +132,8 @@ struct RequestInput {
     id: String,
     account: String,
     input_fingerprint: String,
-    unit: UnitInput,
+    #[serde(deserialize_with = "deserialize_unit")]
+    unit: Unit,
     quote: Option<u64>,
     reservation: u64,
     source: String,
@@ -124,7 +158,7 @@ impl<'de> serde::Deserialize<'de> for RequestObject {
                     id: input.id,
                     account: input.account,
                     input_fingerprint: input.input_fingerprint,
-                    unit: input.unit.into_unit(),
+                    unit: input.unit,
                     quote: input.quote,
                     reservation: input.reservation,
                     source: input.source,
@@ -161,14 +195,15 @@ pub(super) fn budget_response(
     if let Err(e) = existing_database(db) {
         return finish(2, "INVALID_INPUT", json!([e]), Value::Null);
     }
-    let opened = if action == "receipts" {
+    let read_only = action == "receipts";
+    let opened = if read_only {
         Application::open_read_only(db)
     } else {
         Application::open_existing(db)
     };
     let mut app = match opened {
         Ok(app) => app,
-        Err(e) => {
+        Err(e) if read_only => {
             return finish(
                 2,
                 "INVALID_INPUT",
@@ -176,6 +211,7 @@ pub(super) fn budget_response(
                 Value::Null,
             );
         }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     let result = match action {
         "approve" => {

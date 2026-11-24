@@ -1,4 +1,6 @@
-use crate::protocol::{envelope, error, existing_database, library_outcome, read_json, source};
+use crate::protocol::{
+    database_open_error, envelope, error, existing_database, library_outcome, read_json, source,
+};
 use assetweft_core::{
     LockMode,
     application::Application,
@@ -6,7 +8,6 @@ use assetweft_core::{
     candidate::{Acceptance, FixtureContract, Proposal, RIGGED_SIMPLE_MOTION_STRUCTURE_V1},
     library::ComponentRole,
     production::specification as spec,
-    sqlite::ProtoError,
     workflow::{Outcome, State, Step, StepRecord},
 };
 use clap::ArgMatches;
@@ -145,14 +146,7 @@ pub(super) fn candidate_write_response(
     }
     let mut app = match Application::open_existing(db) {
         Ok(app) => app,
-        Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e)]),
-                Value::Null,
-            );
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     let result = match action {
         "initialize" => {
@@ -219,14 +213,7 @@ pub(super) fn candidate_response(
     }
     let mut app = match Application::open_existing(db) {
         Ok(app) => app,
-        Err(e) => {
-            return finish(
-                2,
-                "INVALID_INPUT",
-                json!([error("db", "INVALID_INPUT", e)]),
-                Value::Null,
-            );
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     let result = match action {
         "show" => app.candidate(id).map(|candidate| {
@@ -436,13 +423,7 @@ pub(super) fn workflow_response(
     };
     let mut app = match opened {
         Ok(app) => app,
-        Err(e) => {
-            let (code, status) = match e {
-                ProtoError::Busy(_) | ProtoError::Io(_) => (6, "INTERNAL"),
-                _ => (2, "INVALID_INPUT"),
-            };
-            return finish(code, status, json!([error("db", status, e)]), Value::Null);
-        }
+        Err(e) => return database_open_error(wire, call_id, e),
     };
     if action == "create" {
         let path = args.get_one::<PathBuf>("steps").expect("required");

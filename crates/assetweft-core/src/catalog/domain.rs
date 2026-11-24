@@ -210,15 +210,13 @@ pub struct HistoryQuery<'a> {
     pub before_sequence: Option<i64>,
     pub limit: u16,
 }
-fn identity(id: &str) -> bool {
-    !id.trim().is_empty()
-        && id.len() <= 256
-        && !id.contains(['/', '\\', '\0'])
-        && id != "."
-        && id != ".."
-}
 pub(crate) fn validate_feedback(f: &Feedback) -> Result<(), MetadataError> {
-    if !identity(&f.feedback_id) || !identity(&f.asset_id) || !identity(&f.version_id) {
+    if !valid_id(&f.feedback_id)
+        || f.feedback_id.trim().is_empty()
+        || f.feedback_id.len() > 256
+        || !valid_id(&f.asset_id)
+        || !valid_id(&f.version_id)
+    {
         return Err(MetadataError::InvalidInput("feedback identity"));
     }
     if f.reason
@@ -230,7 +228,7 @@ pub(crate) fn validate_feedback(f: &Feedback) -> Result<(), MetadataError> {
     Ok(())
 }
 pub(crate) fn validate_history(q: HistoryQuery<'_>) -> Result<(), MetadataError> {
-    if !identity(q.asset_id) || q.version_id.is_some_and(|id| !identity(id)) {
+    if !valid_id(q.asset_id) || q.version_id.is_some_and(|id| !valid_id(id)) {
         return Err(MetadataError::InvalidInput("feedback query identity"));
     }
     if q.limit == 0 || q.limit > MAX_HISTORY_LIMIT || q.before_sequence.is_some_and(|s| s <= 0) {

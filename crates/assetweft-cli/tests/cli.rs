@@ -16,6 +16,10 @@ fn invoke(args: &[&OsStr]) -> (Output, Value) {
         .args(args)
         .output()
         .unwrap();
+    parse_output(out)
+}
+
+fn parse_output(out: Output) -> (Output, Value) {
     let v: Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("stdout protocol: {e}: {:?}", out));
     assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
@@ -498,6 +502,63 @@ fn workflow_open_lock_reports_internal_and_does_not_cancel() {
 }
 
 #[test]
+fn existing_database_open_lock_reports_internal_and_leaves_database_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app, contract, _, _) = candidate_write_fixture(dir.path());
+    app.close().unwrap();
+    let allowance = dir.path().join("allowance.json");
+    fs::write(
+        &allowance,
+        json!({"id":"locked-budget","unit":"Token","capacity":1,
+            "approval":"ExplicitBounded","source":"TEST_FIXTURE"})
+        .to_string(),
+    )
+    .unwrap();
+    let version = dir.path().join("version.json");
+    fs::write(
+        &version,
+        catalog_write_wire("locked-version", "UNKNOWN", false).to_string(),
+    )
+    .unwrap();
+    let commands = [
+        candidate_write_args("initialize", &db, &contract),
+        candidate_args("show", db.as_os_str(), OsStr::new("absent")),
+        budget_args("approve", db.as_os_str(), allowance.as_os_str()),
+        catalog_write_args("register-version", &db, &version),
+        catalog_args("version", db.as_os_str(), OsStr::new("base")),
+    ];
+    let (blocker, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+    blocker.execute_batch("PRAGMA journal_mode=DELETE").unwrap();
+    let before = sha256(&fs::read(&db).unwrap());
+    blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let locked_results: Vec<_> = commands
+        .iter()
+        .map(|command| {
+            let mut args = vec![OsStr::new("--call-id"), OsStr::new("locked-open")];
+            args.extend(command);
+            invoke(&args)
+        })
+        .collect();
+    blocker.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(sha256(&fs::read(&db).unwrap()), before);
+    for (out, v) in &locked_results {
+        assert!(out.stderr.is_empty());
+        assert_eq!(out.status.code(), Some(6), "{locked_results:?}");
+        assert_eq!(v["status"], "INTERNAL");
+        assert_eq!(v["call_id"], "locked-open");
+        assert_eq!(v["errors"][0]["code"], "INTERNAL");
+        assert_eq!(v["errors"][0]["field_path"], "db");
+        assert!(v["errors"][0]["message"].as_str().unwrap().contains("BUSY"));
+        assert!(v["results"].is_null());
+    }
+    for command in &commands {
+        let (out, v) = invoke(command);
+        assert_eq!(out.status.code(), Some(0), "{v}");
+        assert_eq!(v["status"], "PASS");
+    }
+}
+
+#[test]
 fn workflow_status_projects_persisted_state_deterministically() {
     let dir = tempfile::tempdir().unwrap();
     let db = seed_workflow(dir.path());
@@ -796,6 +857,61 @@ fn create_args<'a>(db: &'a OsStr, run: &'a OsStr, steps: &'a OsStr) -> Vec<&'a O
     let mut args = workflow_args("create", db, run);
     args.extend([OsStr::new("--steps"), steps]);
     args
+}
+
+#[cfg(unix)]
+#[test]
+fn workflow_create_rejects_steps_fifo_without_waiting_for_a_writer() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.sqlite");
+    let (out, v) = invoke(&library_init_args(db.as_os_str()));
+    assert!(out.status.success(), "{v}");
+    let fifo = dir.path().join("steps.fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_assetweft"))
+        .args(create_args(
+            db.as_os_str(),
+            OsStr::new("fifo-run"),
+            fifo.as_os_str(),
+        ))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            child.wait().unwrap();
+            panic!("workflow create blocked on a writerless FIFO for 5 seconds");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let (out, v) = parse_output(child.wait_with_output().unwrap());
+    assert_eq!(out.status.code(), Some(2), "{v}");
+    assert_eq!(v["status"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["code"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["field_path"], "steps");
+    assert!(v["results"].is_null());
+    let (conn, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM aw_workflow_runs", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[test]
@@ -1531,6 +1647,7 @@ fn budget_wire_rejects_bad_shapes_and_core_rejections_leave_no_partial_allowance
         r#"{"CurrencyMinor":{"currency":"USD","decimals":1.5}}"#,
         r#"{"CurrencyMinor":{"currency":"USD","decimals":256}}"#,
         r#"{"CurrencyMinor":{"currency":"USD","decimals":2},"Token":null}"#,
+        r#"{"CurrencyMinor":{"currency":"USD","decimals":2},"CurrencyMinor":{"currency":"USD","decimals":2}}"#,
     ] {
         bad.push(format!(r#"{{"id":"shape-rejected","unit":{unit},"capacity":0,"approval":"ExplicitBounded","source":"s"}}"#));
     }
@@ -1618,6 +1735,57 @@ fn budget_wire_rejects_bad_shapes_and_core_rejections_leave_no_partial_allowance
     let (out, v) = invoke(&args);
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(v["errors"][0]["field_path"], "allowance");
+}
+
+#[test]
+fn budget_approve_rejects_null_tagged_unit_and_approval_without_persisting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, good) = budget_fixture(dir.path());
+    let args = budget_args("approve", db.as_os_str(), path.as_os_str());
+    for (field, alias) in [
+        ("unit", "Token"),
+        ("unit", "Task"),
+        ("unit", "Second"),
+        ("approval", "ExplicitBounded"),
+        ("approval", "ZeroAdditionalCost"),
+    ] {
+        let mut input = good.clone();
+        input["capacity"] = json!(0);
+        input[field] = json!({(alias): null});
+        fs::write(&path, input.to_string()).unwrap();
+        let (out, v) = invoke(&args);
+        assert_eq!(out.status.code(), Some(2), "{field} {alias}: {v}");
+        assert_eq!(v["status"], "INVALID_INPUT");
+        assert_eq!(v["errors"][0]["code"], "INVALID_INPUT");
+        assert_eq!(v["errors"][0]["field_path"], "allowance");
+        assert!(v["results"].is_null());
+        let (conn, _) = assetweft_core::sqlite::open_and_configure(&db).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM aw_budget_accounts", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+#[test]
+fn budget_reserve_rejects_null_tagged_unit_without_persisting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, path, mut request) = intent_fixture(dir.path());
+    request["unit"] = json!({"Token":null});
+    fs::write(&path, request.to_string()).unwrap();
+    let (out, v) = invoke(&budget_args("reserve", db.as_os_str(), path.as_os_str()));
+    assert_eq!(out.status.code(), Some(2), "{v}");
+    assert_eq!(v["status"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["code"], "INVALID_INPUT");
+    assert_eq!(v["errors"][0]["field_path"], "request");
+    assert!(v["results"].is_null());
+    assert!(local_intent(&db, request["id"].as_str().unwrap()).is_null());
+    assert_eq!(
+        declared_balance(&db, request["account"].as_str().unwrap())["reserved"],
+        0
+    );
 }
 
 #[test]
@@ -5310,7 +5478,7 @@ fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
             add(&proposed, "first", "ACCEPT", &[]),
             "UNIQUE constraint failed: aw_feedback.feedback_id",
         ),
-        (add(&long, "long", "ACCEPT", &[]), "feedback identity"),
+        (add(&base, &long_id, "ACCEPT", &[]), "feedback identity"),
         (
             add(&base, "blank", "ACCEPT", &["--reason", " "]),
             "feedback reason",
@@ -5329,13 +5497,21 @@ fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
             "{value}"
         );
     }
-    let (out, value) = run("feedback-latest", &db, &long);
-    assert_eq!(out.status.code(), Some(2), "{value}");
-    assert_eq!(value["errors"][0]["field_path"], "catalog");
+    latest(&long, &Value::Null);
     latest(&mismatch, &Value::Null);
     latest(&asset, &second);
     latest(&base, &first);
     latest(&proposed, &second);
+    let third = json!({"sequence":3,"feedback_id":"long","asset_id":"character",
+        "version_id":long_id,"decision":"ACCEPT","reason":null});
+    success(
+        "feedback-add",
+        &add(&long, "long", "ACCEPT", &[]),
+        "appended_local_version_feedback",
+        &third,
+    );
+    latest(&long, &third);
+    latest(&asset, &third);
 
     let missing = dir.path().join("missing.sqlite");
     for (action, args) in [
@@ -5349,7 +5525,7 @@ fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
     }
 
     let mut app = Application::open(&db).unwrap();
-    for (asset_id, count) in [("character", 2), ("mesh0", 0)] {
+    for (asset_id, count) in [("character", 3), ("mesh0", 0)] {
         let history = app
             .feedback_history(HistoryQuery {
                 asset_id,

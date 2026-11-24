@@ -226,9 +226,23 @@ pub(crate) fn read(conn: &Connection, id: &str) -> Result<Option<Candidate>, Lib
             |r| r.get(0),
         )
         .optional()?;
-    value
-        .map(|s| serde_json::from_str(&s).map_err(|_| invalid("stored descriptor")))
-        .transpose()
+    value.map(decode_candidate).transpose()
+}
+
+fn decode_candidate(encoded: String) -> Result<Candidate, LibraryError> {
+    serde_json::from_str(&encoded).map_err(|_| invalid("stored descriptor"))
+}
+
+fn list(conn: &Connection, limit: u16) -> Result<Vec<(String, Candidate)>, LibraryError> {
+    library::require_current(conn)?;
+    let mut stmt = conn
+        .prepare("SELECT id,descriptor FROM aw_candidates ORDER BY id COLLATE BINARY LIMIT ?1")?;
+    let rows = stmt.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.map(|row| {
+        let (id, encoded) = row?;
+        Ok((id, decode_candidate(encoded)?))
+    })
+    .collect()
 }
 pub(crate) fn snapshot(
     conn: &mut Connection,
@@ -439,6 +453,9 @@ pub(crate) struct SqliteCandidateRead<'a> {
     pub conn: &'a Connection,
 }
 impl super::staging_ports::CandidateRead for SqliteCandidateRead<'_> {
+    fn list(&mut self, limit: u16) -> Result<Vec<(String, Candidate)>, StagingError> {
+        list(self.conn, limit).map_err(Into::into)
+    }
     fn candidate(&mut self, id: &str) -> Result<Option<Candidate>, StagingError> {
         read(self.conn, id).map_err(Into::into)
     }

@@ -498,3 +498,80 @@ fn ordered_connections_cancel_and_claim_conserve_capacity() {
             .unwrap();
     }
 }
+
+#[test]
+fn budget_list_is_bounded_ordered_and_filterable() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    let app = Application::open(&path).unwrap();
+    assert!(matches!(
+        app.list_budgets(1),
+        Err(LibraryError::Uninitialized)
+    ));
+    assert!(matches!(
+        app.list_budget_intents(None, 1),
+        Err(LibraryError::Uninitialized)
+    ));
+    drop(app);
+    let mut app = setup(&path);
+    assert!(app.list_budgets(100).unwrap().is_empty());
+    assert!(app.list_budget_intents(None, 100).unwrap().is_empty());
+    for id in ["z", "a", "A"] {
+        app.approve_budget(&Allowance {
+            id: id.into(),
+            ..allowance(Unit::Token, 10)
+        })
+        .unwrap();
+        app.reserve_call(&Request {
+            account: id.into(),
+            ..request(id, 1)
+        })
+        .unwrap();
+    }
+    app.reserve_call(&request("b", 1)).unwrap();
+    let accounts = app.list_budgets(2).unwrap();
+    assert_eq!(
+        accounts
+            .iter()
+            .map(|b| b.allowance.id.as_str())
+            .collect::<Vec<_>>(),
+        ["A", "a"]
+    );
+    assert_eq!(accounts[1], app.budget_balance("a").unwrap());
+    let all = app.list_budget_intents(None, 2).unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|i| i.request.id.as_str())
+            .collect::<Vec<_>>(),
+        ["A", "a"]
+    );
+    let filtered = app.list_budget_intents(Some("a"), 2).unwrap();
+    assert_eq!(
+        filtered
+            .iter()
+            .map(|i| i.request.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(
+        app.list_budget_intents(Some("a"), 1).unwrap(),
+        filtered[..1]
+    );
+    assert!(
+        app.list_budget_intents(Some("missing"), 1)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(app.list_budget_intents(Some(""), 1).is_err());
+    assert!(app.list_budget_intents(Some(&"x".repeat(4097)), 1).is_err());
+    for limit in [0, 101] {
+        assert!(matches!(
+            app.list_budgets(limit),
+            Err(LibraryError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            app.list_budget_intents(None, limit),
+            Err(LibraryError::InvalidInput(_))
+        ));
+    }
+}

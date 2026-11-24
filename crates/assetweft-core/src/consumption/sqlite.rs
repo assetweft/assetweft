@@ -20,6 +20,10 @@ pub(crate) fn balance(c: &Connection, id: &str) -> Result<Balance> {
         [id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
+    decode_balance((d, r, s))
+}
+
+fn decode_balance((d, r, s): (String, i64, i64)) -> Result<Balance> {
     Ok(Balance {
         allowance: decode(&d)?,
         reserved: u64::try_from(r).map_err(|_| invalid("negative reserved"))?,
@@ -51,32 +55,35 @@ pub(crate) fn approve(c: &mut Connection, a: &Allowance) -> Result<()> {
 }
 pub(crate) fn intent(c: &Connection, id: &str) -> Result<Option<Intent>> {
     require_current(c)?;
-    let row: Option<(String, String, bool, Option<i64>)> = c
+    let row: Option<IntentRow> = c
         .query_row(
             "SELECT descriptor,state,cancelled,charge FROM aw_budget_intents WHERE id=?1",
             [id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    row.map(|(d, s, cancelled, charge)| {
-        Ok(Intent {
-            request: decode(&d)?,
-            state: match s.as_str() {
-                "PREPARING" => State::Preparing,
-                "ATTEMPTING" => State::Attempting,
-                "UNKNOWN" => State::Unknown,
-                "CONFIRMED" => State::Confirmed,
-                "RELEASED" => State::Released,
-                _ => return Err(LibraryError::UnknownValue(s)),
-            },
-            cancelled,
-            charge: charge
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| invalid("negative charge"))?,
-        })
+    row.map(decode_intent).transpose()
+}
+
+type IntentRow = (String, String, bool, Option<i64>);
+
+fn decode_intent((d, s, cancelled, charge): IntentRow) -> Result<Intent> {
+    Ok(Intent {
+        request: decode(&d)?,
+        state: match s.as_str() {
+            "PREPARING" => State::Preparing,
+            "ATTEMPTING" => State::Attempting,
+            "UNKNOWN" => State::Unknown,
+            "CONFIRMED" => State::Confirmed,
+            "RELEASED" => State::Released,
+            _ => return Err(LibraryError::UnknownValue(s)),
+        },
+        cancelled,
+        charge: charge
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| invalid("negative charge"))?,
     })
-    .transpose()
 }
 pub(crate) fn reserve(c: &mut Connection, r: &Request) -> Result<Intent> {
     let amount = number(r.reservation)?;
@@ -231,8 +238,38 @@ impl super::ports::BudgetLedger for SqliteBudgetLedger<'_> {
         reconcile(self.0, id, r).map_err(Into::into)
     }
 }
+fn list_budgets(conn: &Connection, limit: u16) -> Result<Vec<Balance>> {
+    require_current(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT descriptor,reserved,spent FROM aw_budget_accounts ORDER BY id COLLATE BINARY LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    rows.map(|row| decode_balance(row?)).collect()
+}
+
+fn list_intents(conn: &Connection, account: Option<&str>, limit: u16) -> Result<Vec<Intent>> {
+    require_current(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT descriptor,state,cancelled,charge FROM aw_budget_intents WHERE ?2 IS NULL OR account=?2 ORDER BY id COLLATE BINARY LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit, account], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    rows.map(|row| decode_intent(row?)).collect()
+}
+
 pub(crate) struct BudgetQuery<'a>(pub(crate) &'a Connection);
 impl super::ports::BudgetQueries for BudgetQuery<'_> {
+    fn list_budgets(&mut self, limit: u16) -> super::domain::Result<Vec<Balance>> {
+        list_budgets(self.0, limit).map_err(Into::into)
+    }
+    fn list_intents(
+        &mut self,
+        account: Option<&str>,
+        limit: u16,
+    ) -> super::domain::Result<Vec<Intent>> {
+        list_intents(self.0, account, limit).map_err(Into::into)
+    }
     fn balance(&mut self, id: &str) -> super::domain::Result<Balance> {
         balance(self.0, id).map_err(Into::into)
     }

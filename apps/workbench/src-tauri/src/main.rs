@@ -8,11 +8,14 @@ use std::{
     path::PathBuf,
     sync::{Mutex, MutexGuard},
 };
-use tauri::State;
+use tauri::{Manager, State};
 use workbench_service::{
-    AppendFeedbackRequest, FeedbackRecordDto, ImportLocalFileRequest, ImportResultDto,
-    LibrarySessionDto, PreviewDto, ServiceError, ValidationDto, VersionDetailDto, VersionListDto,
-    WorkbenchService,
+    AppendFeedbackRequest, ApproveBudgetRequest, BudgetAccountDto, BudgetIntentDto,
+    BudgetOverviewDto, ByoGpuRunDto, CandidateAttemptDto, CandidateHeadDto, CandidateItemDto,
+    CandidateOverviewDto, FeedbackRecordDto, ImportLocalFileRequest, ImportResultDto,
+    InitHeadRequest, LibrarySessionDto, PreviewDto, ProposeCandidateRequest, ReconcileCallRequest,
+    ReserveCallRequest, RunByoGpuRequest, ServiceError, ValidationDto, VersionDetailDto,
+    VersionListDto, WorkbenchService,
 };
 
 type Service = Mutex<WorkbenchService>;
@@ -89,11 +92,106 @@ fn workbench_bootstrap_state(
         .transpose()
 }
 
+#[tauri::command]
+fn budget_overview(
+    state: State<'_, Service>,
+    limit: u16,
+) -> Result<BudgetOverviewDto, ServiceError> {
+    lock(&state)?.budget_overview(limit)
+}
+
+#[tauri::command]
+fn approve_budget(
+    state: State<'_, Service>,
+    req: ApproveBudgetRequest,
+) -> Result<BudgetAccountDto, ServiceError> {
+    lock(&state)?.approve_budget(req)
+}
+
+#[tauri::command]
+fn reserve_call(
+    state: State<'_, Service>,
+    req: ReserveCallRequest,
+) -> Result<BudgetIntentDto, ServiceError> {
+    lock(&state)?.reserve_call(req)
+}
+
+#[tauri::command]
+fn cancel_call(
+    state: State<'_, Service>,
+    intent_id: String,
+) -> Result<BudgetIntentDto, ServiceError> {
+    lock(&state)?.cancel_call(&intent_id)
+}
+
+#[tauri::command]
+fn reconcile_call(
+    state: State<'_, Service>,
+    req: ReconcileCallRequest,
+) -> Result<BudgetIntentDto, ServiceError> {
+    lock(&state)?.reconcile_call(req)
+}
+
+#[tauri::command]
+fn candidate_overview(
+    state: State<'_, Service>,
+    limit: u16,
+) -> Result<CandidateOverviewDto, ServiceError> {
+    lock(&state)?.candidate_overview(limit)
+}
+
+#[tauri::command]
+fn initialize_candidate_head(
+    state: State<'_, Service>,
+    req: InitHeadRequest,
+) -> Result<CandidateHeadDto, ServiceError> {
+    lock(&state)?.initialize_candidate_head(req)
+}
+
+#[tauri::command]
+fn propose_candidate(
+    state: State<'_, Service>,
+    req: ProposeCandidateRequest,
+) -> Result<CandidateItemDto, ServiceError> {
+    lock(&state)?.propose_candidate(req)
+}
+
+#[tauri::command]
+fn attempt_accept_candidate(
+    state: State<'_, Service>,
+    candidate_id: String,
+) -> Result<CandidateAttemptDto, ServiceError> {
+    lock(&state)?.attempt_accept_candidate(&candidate_id)
+}
+
+#[tauri::command]
+async fn run_byo_gpu(
+    app: tauri::AppHandle,
+    req: RunByoGpuRequest,
+) -> Result<ByoGpuRunDto, ServiceError> {
+    tauri::async_runtime::spawn_blocking(move || lock(&app.state::<Service>())?.run_byo_gpu(req))
+        .await
+        .map_err(|error| ServiceError {
+            code: "INTERNAL",
+            message: error.to_string(),
+        })?
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Service::default())
         .invoke_handler(tauri::generate_handler![
             open_library,
+            budget_overview,
+            approve_budget,
+            reserve_call,
+            cancel_call,
+            reconcile_call,
+            candidate_overview,
+            initialize_candidate_head,
+            propose_candidate,
+            attempt_accept_candidate,
+            run_byo_gpu,
             list_versions,
             get_version_detail,
             load_preview,

@@ -924,3 +924,35 @@ fn persisted_descriptor_identity_is_bound_to_the_lookup_key() {
     assert_eq!(a.candidate_current("character").unwrap(), head);
     assert_eq!(candidate_receipts(&path), receipts);
 }
+
+#[test]
+fn candidate_list_is_bounded_and_ordered() {
+    use assetweft_core::library::LibraryError;
+    let dir = tempfile::tempdir().unwrap();
+    let uninitialized = Application::open(&dir.path().join("db")).unwrap();
+    assert!(matches!(
+        uninitialized.list_candidates(1),
+        Err(LibraryError::Uninitialized)
+    ));
+    let (_dir, mut app, fixture) = setup();
+    assert!(app.list_candidates(100).unwrap().is_empty());
+    for id in ["z", "a", "A"] {
+        app.propose_candidate(&Proposal {
+            id: id.into(),
+            ..fixture.clone()
+        })
+        .unwrap();
+    }
+    let rows = app.list_candidates(2).unwrap();
+    assert_eq!(
+        rows.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["A", "a"]
+    );
+    assert_eq!(Some(rows[0].clone()), app.candidate("A").unwrap());
+    for limit in [0, 101] {
+        assert!(matches!(
+            app.list_candidates(limit),
+            Err(LibraryError::InvalidInput(_))
+        ));
+    }
+}

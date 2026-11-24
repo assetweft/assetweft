@@ -1,9 +1,12 @@
 use assetweft_core::{
+    LockMode,
     application::Application,
     assurance::{
         RoleRequirement, SourceClass, SourceDeclaration, ValidationLimits, ValidationReport,
     },
-    candidate::Current,
+    budget,
+    candidate::{Acceptance, AcceptanceReport, Candidate, Current, FixtureContract, Proposal},
+    execution::byo_gpu,
     history::{Decision, Feedback, FeedbackRecord, HistoryQuery},
     library::{AssetVersion, ComponentReference, ComponentRole, LibraryError, Presence},
     storage::{FileAvailability, StorageError, StoredObject},
@@ -106,8 +109,8 @@ fn capabilities() -> Vec<Capability> {
         ),
         (
             "generation_incremental_ui",
-            "NOT_RUN",
-            "Planned in AW-032:B. Use CLI assetweft byo-gpu / plan / candidate.",
+            "READY",
+            "Budget allowances, remote UNKNOWN reconciliation, BYO GPU opt-in execution, and incremental candidate acceptance. Paid remote APIs remain NOT_RUN.",
         ),
         (
             "rig_morph_animation_editor",
@@ -747,5 +750,613 @@ impl WorkbenchService {
             content_hash: stored.content_hash,
             byte_length: stored.byte_length,
         })
+    }
+}
+
+const UNKNOWN_NOTICE: &str =
+    "Remote state UNKNOWN: do NOT duplicate-submit; reconcile with provider receipt";
+const CANCEL_NOTICE: &str = "Local cancel recorded; remote stop or refund is NOT claimed.";
+const FIXTURE_CONTRACT: &str = "TEST_FIXTURE_GLB_STRUCTURE_V1";
+
+// JSON numbers above JavaScript’s safe integer range would round in the webview.
+fn exact_count<S: serde::Serializer>(
+    n: &u64,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    if *n <= 9_007_199_254_740_991 {
+        serializer.serialize_u64(*n)
+    } else {
+        serializer.collect_str(n)
+    }
+}
+
+fn optional_count<S: serde::Serializer>(
+    n: &Option<u64>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match n {
+        Some(n) => exact_count(n, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+#[derive(Serialize)]
+struct BudgetUnitDto {
+    label: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decimals: Option<u8>,
+}
+
+impl From<budget::Unit> for BudgetUnitDto {
+    fn from(unit: budget::Unit) -> Self {
+        let mut dto = Self {
+            label: "",
+            currency: None,
+            decimals: None,
+        };
+        dto.label = match unit {
+            budget::Unit::Token => "Token",
+            budget::Unit::Task => "Task",
+            budget::Unit::Second => "Second",
+            budget::Unit::CurrencyMinor { currency, decimals } => {
+                dto.currency = Some(currency);
+                dto.decimals = Some(decimals);
+                "CurrencyMinor"
+            }
+        };
+        dto
+    }
+}
+
+#[derive(Serialize)]
+pub struct BudgetAccountDto {
+    id: String,
+    unit: BudgetUnitDto,
+    approval: &'static str,
+    source: String,
+    #[serde(serialize_with = "exact_count")]
+    capacity: u64,
+    #[serde(serialize_with = "exact_count")]
+    reserved: u64,
+    #[serde(serialize_with = "exact_count")]
+    spent: u64,
+    #[serde(serialize_with = "exact_count")]
+    available: u64,
+}
+
+impl TryFrom<budget::Balance> for BudgetAccountDto {
+    type Error = ServiceError;
+
+    fn try_from(balance: budget::Balance) -> Result<Self> {
+        let budget::Balance {
+            allowance,
+            reserved,
+            spent,
+        } = balance;
+        let available = allowance
+            .capacity
+            .checked_sub(reserved)
+            .and_then(|n| n.checked_sub(spent))
+            .ok_or_else(|| ServiceError::new("CORRUPT", "Allowance totals exceed capacity"))?;
+        Ok(Self {
+            id: allowance.id,
+            unit: allowance.unit.into(),
+            approval: match allowance.approval {
+                budget::Approval::ZeroAdditionalCost => "ZERO_ADDITIONAL_COST",
+                budget::Approval::ExplicitBounded => "EXPLICIT_BOUNDED",
+            },
+            source: allowance.source,
+            capacity: allowance.capacity,
+            reserved,
+            spent,
+            available,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct BudgetReceiptDto {
+    id: String,
+    source: String,
+    resolution: ResolutionDto,
+    usage: Vec<BudgetUsageDto>,
+}
+
+#[derive(Serialize)]
+enum ResolutionDto {
+    Unresolved,
+    Confirmed {
+        #[serde(serialize_with = "exact_count")]
+        charge: u64,
+    },
+    AuthoritativeNoCharge,
+}
+
+#[derive(Serialize)]
+struct BudgetUsageDto {
+    unit: BudgetUnitDto,
+    #[serde(serialize_with = "optional_count")]
+    amount: Option<u64>,
+    source: String,
+}
+
+impl From<budget::Receipt> for BudgetReceiptDto {
+    fn from(receipt: budget::Receipt) -> Self {
+        Self {
+            id: receipt.id,
+            source: receipt.source,
+            resolution: match receipt.resolution {
+                budget::Resolution::Unresolved => ResolutionDto::Unresolved,
+                budget::Resolution::Confirmed { charge } => ResolutionDto::Confirmed { charge },
+                budget::Resolution::AuthoritativeNoCharge => ResolutionDto::AuthoritativeNoCharge,
+            },
+            usage: receipt
+                .usage
+                .into_iter()
+                .map(|usage| BudgetUsageDto {
+                    unit: usage.unit.into(),
+                    amount: usage.amount,
+                    source: usage.source,
+                })
+                .collect(),
+        }
+    }
+}
+
+pub type ApproveBudgetRequest = budget::Allowance;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReserveCallRequest {
+    id: String,
+    account: String,
+    input_fingerprint: String,
+    unit: budget::Unit,
+    quote: Option<u64>,
+    reservation: u64,
+    source: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconcileCallRequest {
+    intent_id: String,
+    receipt_id: String,
+    source: String,
+    resolution: budget::Resolution,
+    #[serde(default)]
+    usage: Vec<budget::Usage>,
+}
+
+#[derive(Serialize)]
+pub struct BudgetOverviewDto {
+    accounts: Vec<BudgetAccountDto>,
+    intents: Vec<BudgetIntentDto>,
+    profiles: serde_json::Value,
+}
+
+#[derive(Serialize)]
+pub struct BudgetIntentDto {
+    id: String,
+    account: String,
+    unit: BudgetUnitDto,
+    #[serde(serialize_with = "optional_count")]
+    quote: Option<u64>,
+    #[serde(serialize_with = "exact_count")]
+    reservation: u64,
+    state: &'static str,
+    cancelled: bool,
+    #[serde(serialize_with = "optional_count")]
+    charge: Option<u64>,
+    receipts: Vec<BudgetReceiptDto>,
+    warning: Option<String>,
+}
+
+impl BudgetIntentDto {
+    fn from_core(intent: budget::Intent, app: &Application) -> Result<Self> {
+        use budget::State;
+        let state = match intent.state {
+            State::Preparing => "PREPARING",
+            State::Attempting => "ATTEMPTING",
+            State::Unknown => "UNKNOWN",
+            State::Confirmed => "CONFIRMED",
+            State::Released => "RELEASED",
+        };
+        let warning = match (intent.state == State::Unknown, intent.cancelled) {
+            (true, true) => Some(format!("{UNKNOWN_NOTICE}. {CANCEL_NOTICE}")),
+            (true, false) => Some(UNKNOWN_NOTICE.into()),
+            (false, true) => Some(CANCEL_NOTICE.into()),
+            (false, false) => None,
+        };
+        let request = intent.request;
+        Ok(Self {
+            receipts: app
+                .call_receipts(&request.id)?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            id: request.id,
+            account: request.account,
+            unit: request.unit.into(),
+            quote: request.quote,
+            reservation: request.reservation,
+            state,
+            cancelled: intent.cancelled,
+            charge: intent.charge,
+            warning,
+        })
+    }
+
+    fn read(app: &Application, id: &str) -> Result<Self> {
+        let intent = app
+            .call_intent(id)?
+            .ok_or_else(|| ServiceError::input("Unknown call"))?;
+        Self::from_core(intent, app)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunByoGpuRequest {
+    budget_id: String,
+    intent_id: String,
+    profile: String,
+    model: String,
+    out_dir: PathBuf,
+    image: Option<PathBuf>,
+    prompt: Option<String>,
+    bundle: Option<PathBuf>,
+    adapter_bin: Option<PathBuf>,
+    #[serde(default)]
+    allow_remote_upload: bool,
+    max_bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ByoGpuRunDto {
+    status: &'static str,
+    profile: &'static str,
+    model: String,
+    intent_id: String,
+    invoked: bool,
+    artifact_file: Option<&'static str>,
+    artifact_sha256: Option<String>,
+    cash_cost: Option<u64>,
+    message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitHeadRequest {
+    version_id: String,
+    max_component_bytes: u64,
+    required_quality: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "ComponentRole", rename_all = "lowercase")]
+enum EditableRoleDef {
+    Mesh,
+    Materials,
+    Rig,
+    Motion,
+    Vfx,
+    Audio,
+    Dialogue,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct EditableRole(#[serde(with = "EditableRoleDef")] ComponentRole);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposeCandidateRequest {
+    id: String,
+    base_version: String,
+    candidate_version: String,
+    expected_revision: i64,
+    editable: Vec<EditableRole>,
+    lock_mode: String,
+    max_component_bytes: u64,
+    required_quality: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateHeadDto {
+    asset_id: String,
+    version_id: String,
+    revision: i64,
+    contract_id: String,
+}
+
+impl From<Current> for CandidateHeadDto {
+    fn from(current: Current) -> Self {
+        Self {
+            asset_id: current.asset_id,
+            version_id: current.version_id,
+            revision: current.revision,
+            contract_id: current.contract.contract_id,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateAttemptDto {
+    candidate_id: String,
+    decision: &'static str,
+    reason: Option<String>,
+    current_revision: Option<i64>,
+    report: Option<AcceptanceReport>,
+}
+
+impl From<Acceptance> for CandidateAttemptDto {
+    fn from(result: Acceptance) -> Self {
+        let (candidate, decision, reason, current, report) = match result {
+            Acceptance::Accepted {
+                candidate,
+                current,
+                report,
+            } => (candidate, "ACCEPTED", None, Some(current), Some(report)),
+            Acceptance::Conflict {
+                candidate,
+                current,
+                report,
+            } => (
+                candidate,
+                "CONFLICT",
+                Some("Current head differs from the proposed base version or revision".into()),
+                Some(current),
+                Some(report),
+            ),
+            Acceptance::Rejected { candidate, report } => (
+                candidate,
+                "REJECTED",
+                Some("Fixture structural checks rejected the candidate".into()),
+                None,
+                Some(report),
+            ),
+            Acceptance::NotRun {
+                candidate,
+                reason,
+                report,
+            } => (candidate, "NOT_RUN", Some(reason), None, report),
+        };
+        Self {
+            candidate_id: candidate.id,
+            decision,
+            reason,
+            current_revision: current.map(|head| head.revision),
+            report,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateItemDto {
+    id: String,
+    asset_id: String,
+    base_version: String,
+    candidate_version: String,
+    expected_revision: i64,
+    editable: Vec<String>,
+    lock_mode: &'static str,
+    attempt: Option<CandidateAttemptDto>,
+}
+
+impl CandidateItemDto {
+    fn from_core(candidate: Candidate, app: &mut Application) -> Result<Self> {
+        let asset = app
+            .asset_version(&candidate.base_version)?
+            .ok_or_else(|| ServiceError::new("CORRUPT", "Candidate base version is missing"))?;
+        Ok(Self {
+            attempt: app.candidate_attempt(&candidate.id)?.map(Into::into),
+            id: candidate.id,
+            asset_id: asset.asset_id,
+            base_version: candidate.base_version,
+            candidate_version: candidate.candidate_version,
+            expected_revision: candidate.expected_revision,
+            editable: candidate.editable,
+            lock_mode: LockMode::Byte.as_str(),
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct CandidateOverviewDto {
+    heads: Vec<CandidateHeadDto>,
+    candidates: Vec<CandidateItemDto>,
+}
+
+impl WorkbenchService {
+    pub fn budget_overview(&mut self, limit: u16) -> Result<BudgetOverviewDto> {
+        let app = &self.opened()?.app;
+        Ok(BudgetOverviewDto {
+            accounts: app
+                .list_budgets(limit)?
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_>>()?,
+            intents: app
+                .list_budget_intents(None, limit)?
+                .into_iter()
+                .map(|intent| BudgetIntentDto::from_core(intent, app))
+                .collect::<Result<_>>()?,
+            profiles: serde_json::to_value(byo_gpu::profiles())
+                .map_err(|err| ServiceError::new("INTERNAL", err))?,
+        })
+    }
+
+    pub fn approve_budget(&mut self, req: ApproveBudgetRequest) -> Result<BudgetAccountDto> {
+        let app = &mut self.opened()?.app;
+        app.approve_budget(&req)?;
+        app.budget_balance(&req.id)?.try_into()
+    }
+
+    pub fn reserve_call(&mut self, req: ReserveCallRequest) -> Result<BudgetIntentDto> {
+        let app = &mut self.opened()?.app;
+        let intent = app.reserve_call(&budget::Request {
+            id: req.id,
+            account: req.account,
+            unit: req.unit,
+            input_fingerprint: req.input_fingerprint,
+            source: req.source,
+            quote: req.quote,
+            reservation: req.reservation,
+        })?;
+        BudgetIntentDto::from_core(intent, app)
+    }
+
+    pub fn cancel_call(&mut self, intent_id: &str) -> Result<BudgetIntentDto> {
+        let app = &mut self.opened()?.app;
+        app.cancel_call(intent_id)?;
+        BudgetIntentDto::read(app, intent_id)
+    }
+
+    pub fn reconcile_call(&mut self, req: ReconcileCallRequest) -> Result<BudgetIntentDto> {
+        let app = &mut self.opened()?.app;
+        app.reconcile_call(
+            &req.intent_id,
+            &budget::Receipt {
+                id: req.receipt_id,
+                source: req.source,
+                resolution: req.resolution,
+                usage: req.usage,
+            },
+        )?;
+        BudgetIntentDto::read(app, &req.intent_id)
+    }
+
+    pub fn run_byo_gpu(&mut self, req: RunByoGpuRequest) -> Result<ByoGpuRunDto> {
+        let profile = byo_gpu::Profile::from_id(&req.profile)
+            .ok_or_else(|| ServiceError::input("Unknown BYO GPU profile"))?;
+        let run = byo_gpu::Run {
+            budget_id: req.budget_id,
+            intent_id: req.intent_id,
+            profile,
+            model: req.model,
+            out_dir: req.out_dir,
+            image: req.image,
+            prompt: req.prompt,
+            bundle: req.bundle,
+            adapter_bin: req.adapter_bin,
+            allow_remote_upload: req.allow_remote_upload,
+            max_bytes: req.max_bytes,
+        };
+        let report = self
+            .opened()?
+            .app
+            .run_byo_gpu(&run)
+            .map_err(|error| match error {
+                byo_gpu::RunError::Invalid(byo_gpu::Invalid(field, message)) => {
+                    ServiceError::input(format!("{field} — {message}"))
+                }
+                byo_gpu::RunError::Credentials => {
+                    ServiceError::new("INPUT_INCOMPLETE", "Kaggle runner credentials are required")
+                }
+                byo_gpu::RunError::Ledger(error) => error.into(),
+            })?;
+        let (status, artifact_file, artifact_sha256, message) = match report.outcome {
+            byo_gpu::Outcome::Succeeded { sha256 } => {
+                let message = if report.attempted {
+                    "Generated artifact recorded. Format validation and candidate acceptance are separate actions."
+                } else {
+                    "Settled receipt replayed with invoked=false. Artifact hash is historical."
+                };
+                (
+                    "SUCCEEDED",
+                    Some(report.artifact),
+                    Some(sha256),
+                    message.into(),
+                )
+            }
+            byo_gpu::Outcome::Unknown { diagnostic } => (
+                "UNKNOWN",
+                None,
+                None,
+                format!("{diagnostic}. {UNKNOWN_NOTICE}"),
+            ),
+            byo_gpu::Outcome::Released => (
+                "RELEASED",
+                None,
+                None,
+                "Local Task reservation was released.".into(),
+            ),
+        };
+        Ok(ByoGpuRunDto {
+            status,
+            profile: profile.id(),
+            model: run.model,
+            intent_id: run.intent_id,
+            invoked: report.attempted,
+            artifact_file,
+            artifact_sha256,
+            cash_cost: None,
+            message,
+        })
+    }
+
+    pub fn candidate_overview(&mut self, limit: u16) -> Result<CandidateOverviewDto> {
+        let app = &mut self.opened()?.app;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut heads = Vec::new();
+        let mut candidates = Vec::new();
+        for candidate in app.list_candidates(limit)? {
+            let item = CandidateItemDto::from_core(candidate, app)?;
+            if seen.insert(item.asset_id.clone())
+                && let Some(head) = app.candidate_current(&item.asset_id)?
+            {
+                heads.push(head.into());
+            }
+            candidates.push(item);
+        }
+        Ok(CandidateOverviewDto { heads, candidates })
+    }
+
+    pub fn initialize_candidate_head(&mut self, req: InitHeadRequest) -> Result<CandidateHeadDto> {
+        Ok(self
+            .opened()?
+            .app
+            .initialize_candidate_current(
+                &req.version_id,
+                &FixtureContract {
+                    contract_id: FIXTURE_CONTRACT.into(),
+                    max_component_bytes: req.max_component_bytes,
+                    required_quality: req.required_quality,
+                },
+            )?
+            .into())
+    }
+
+    pub fn propose_candidate(&mut self, req: ProposeCandidateRequest) -> Result<CandidateItemDto> {
+        let app = &mut self.opened()?.app;
+        let candidate = app.propose_candidate(&Proposal {
+            id: req.id,
+            base_version: req.base_version,
+            candidate_version: req.candidate_version,
+            expected_revision: req.expected_revision,
+            editable: req.editable.into_iter().map(|role| role.0).collect(),
+            lock_mode: LockMode::parse(&req.lock_mode).map_err(ServiceError::input)?,
+            contract: Some(FixtureContract {
+                contract_id: FIXTURE_CONTRACT.into(),
+                max_component_bytes: req.max_component_bytes,
+                required_quality: req.required_quality,
+            }),
+        })?;
+        CandidateItemDto::from_core(candidate, app)
+    }
+
+    pub fn attempt_accept_candidate(&mut self, candidate_id: &str) -> Result<CandidateAttemptDto> {
+        Ok(self
+            .opened()?
+            .app
+            .attempt_accept_candidate(candidate_id)?
+            .into())
     }
 }

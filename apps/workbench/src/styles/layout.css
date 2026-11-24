@@ -8,14 +8,24 @@ body {
 }
 .workbench {
   display: grid;
-  grid-template-areas: "topbar topbar topbar" "sidebar stage inspector";
-  grid-template-columns: minmax(0, 260px) minmax(0, 1fr) minmax(0, 330px);
   grid-template-rows: auto minmax(0, 1fr);
   min-block-size: 100dvb;
   block-size: 100dvb;
 }
+.catalog-workspace {
+  display: grid;
+  grid-template-areas: "sidebar stage inspector";
+  grid-template-columns: minmax(0, 260px) minmax(0, 1fr) minmax(0, 330px);
+  grid-template-rows: minmax(0, 1fr);
+}
+.workspace-panel {
+  align-content: start;
+  min-inline-size: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: var(--aw-space-16) max(var(--aw-space-16), calc((100% - 1100px) / 2));
+}
 .topbar {
-  grid-area: topbar;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -27,6 +37,7 @@ body {
 }
 .topbar nav, .actions { display: flex; flex-wrap: wrap; gap: var(--aw-space-8); }
 .topbar nav { flex: none; }
+.topbar [role="tablist"] { flex: 0 1 auto; }
 .identity { min-inline-size: 0; }
 .identity p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar, .stage, .inspector {
@@ -56,15 +67,15 @@ body {
 }
 .stage-bar { display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: var(--aw-space-8); }
 @container (max-width: 1060px) {
-  .workbench { grid-template-columns: minmax(0, 22%) minmax(0, 1fr) minmax(0, 31%); }
+  .catalog-workspace { grid-template-columns: minmax(0, 22%) minmax(0, 1fr) minmax(0, 31%); }
   .sidebar, .inspector, .stage { padding: var(--aw-space-12); }
 }
 @container (max-width: 720px) {
-  .workbench {
-    grid-template-areas: "topbar" "sidebar" "stage" "inspector";
+  .workbench { grid-template-rows: auto 1fr; block-size: auto; }
+  .catalog-workspace {
+    grid-template-areas: "sidebar" "stage" "inspector";
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(360px, 58dvb) auto;
-    block-size: auto;
+    grid-template-rows: auto minmax(360px, 58dvb) auto;
   }
   .topbar { align-items: start; flex-direction: column; }
   .topbar nav { flex: auto; }

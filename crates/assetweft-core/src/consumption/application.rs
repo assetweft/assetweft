@@ -1,4 +1,32 @@
-use super::{domain::*, ports::BudgetLedger};
+use super::{
+    domain::*,
+    ports::{BudgetLedger, BudgetQueries},
+};
+
+fn list_limit(limit: u16) -> Result<()> {
+    if !(1..=100).contains(&limit) {
+        return Err(BudgetError::InvalidInput("list limit"));
+    }
+    Ok(())
+}
+
+pub(crate) fn list_budgets(queries: &mut impl BudgetQueries, limit: u16) -> Result<Vec<Balance>> {
+    list_limit(limit)?;
+    queries.list_budgets(limit)
+}
+
+pub(crate) fn list_intents(
+    queries: &mut impl BudgetQueries,
+    account: Option<&str>,
+    limit: u16,
+) -> Result<Vec<Intent>> {
+    list_limit(limit)?;
+    if let Some(account) = account {
+        text(account)?;
+    }
+    queries.list_intents(account, limit)
+}
+
 pub(crate) fn approve(ledger: &mut impl BudgetLedger, a: &Allowance) -> Result<()> {
     validate_allowance(a)?;
     ledger.approve(a)

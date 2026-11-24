@@ -60,6 +60,8 @@
 - **入口**：[Skill](../skills/assetweft-cli/SKILL.md) · [离线评估](../skills/assetweft-cli/eval_recipe.sh)
 - **正常判据**：构建后运行评估脚本，缺预算、额度不足、缺上传授权均拒绝且调用次数为零；成功路径核对单行 JSON、历史回执重放、SQLite 工作流及 CAS 字节。远端 GPU、付费 API、完整渲染与可选 MCP 适配器为 `NOT_RUN`。
 
-## 11. AW-032:A 本地素材工作台
+## 11. AW-032:A/B 本地素材工作台
 - **入口**：[构建与启动](../apps/workbench/README.md) · `assetweft catalog list --db <DB> [--limit <N>]`
-- **正常判据**：无需配置数据库服务器或登录，能打开或初始化本地 SQLite，索引、受管文件和版本反馈与 Core 一致；GLB 只显示静态网格，支持 PNG/WAV 预览。生成与高级编辑保持 `NOT_RUN`，云端同步与登录已禁用。
+- **正常判据**：无需配置数据库服务器或登录，能打开或初始化本地 SQLite，索引、受管文件和版本反馈与 Core 一致；GLB 只显示静态网格，支持 PNG/WAV 预览。高级编辑保持 `NOT_RUN`，云端同步与登录已禁用。
+- **生成与预算**：Generation & Budgets 展示额度、用量与回执。未知金额保持 `null`，远端 UNKNOWN 禁盲重试，本地取消保留远端未决额度。BYO GPU 仅按显式操作执行，本地文件上传默认未授权，历史回执重放不调用执行器。
+- **增量候选**：Incremental Candidates 展示候选及关联资产头，测试夹具采用 BYTE 锁和期望修订号。接受以 Core 事务为准，陈旧分支保留。生成、格式校验、版本反馈、结构接受各有独立结果。

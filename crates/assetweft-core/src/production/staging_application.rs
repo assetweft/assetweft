@@ -85,6 +85,26 @@ pub(crate) fn propose_rigged_simple(
     )?;
     port.freeze(FrozenProposal { candidate })
 }
+pub(crate) fn list(
+    port: &mut impl super::staging_ports::CandidateRead,
+    limit: u16,
+) -> Result<Vec<Candidate>, StagingError> {
+    if !(1..=100).contains(&limit) {
+        return Err(StagingError::InvalidInput("list limit"));
+    }
+    port.list(limit)?
+        .into_iter()
+        .map(|(id, candidate)| check_identity(&id, candidate))
+        .collect()
+}
+
+fn check_identity(id: &str, candidate: Candidate) -> Result<Candidate, StagingError> {
+    if candidate.id != id {
+        return Err(StagingError::InvalidInput("candidate identity"));
+    }
+    Ok(candidate)
+}
+
 pub(crate) fn read(
     port: &mut impl super::staging_ports::CandidateRead,
     id: &str,
@@ -92,12 +112,9 @@ pub(crate) fn read(
     if !staging_domain::id_ok(id) {
         return Err(StagingError::InvalidInput("candidate id"));
     }
-    match port.candidate(id)? {
-        Some(candidate) if candidate.id != id => {
-            Err(StagingError::InvalidInput("candidate identity"))
-        }
-        candidate => Ok(candidate),
-    }
+    port.candidate(id)?
+        .map(|candidate| check_identity(id, candidate))
+        .transpose()
 }
 
 #[cfg(test)]
@@ -156,6 +173,9 @@ mod tests {
         }
     }
     impl CandidateRead for Port {
+        fn list(&mut self, _: u16) -> Result<Vec<(String, Candidate)>, StagingError> {
+            panic!("unexpected list")
+        }
         fn candidate(&mut self, _: &str) -> Result<Option<Candidate>, StagingError> {
             self.calls.push("read".into());
             Ok(self.stored.clone())

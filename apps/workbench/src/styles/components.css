@@ -32,6 +32,7 @@ textarea { resize: vertical; }
 .mono, .badge { font-family: var(--aw-font-mono); font-variant-numeric: tabular-nums; }
 .badge {
   display: inline-block;
+  justify-self: start;
   max-inline-size: 100%;
   overflow-wrap: anywhere;
   padding: 1px var(--aw-space-4);

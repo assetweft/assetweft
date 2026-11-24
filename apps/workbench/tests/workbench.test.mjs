@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { build } from 'esbuild';
@@ -126,7 +129,31 @@ test('preserves Core errors and does not report rejected feedback as saved', asy
   assert.deepEqual(state.detail.history, []);
 });
 
-test('tokens are byte-identical and component CSS and DOM construction pass the gate', () => {
+test('committed tokens, component CSS and DOM construction pass the gate', () => {
   const output = execFileSync(process.execPath, ['scripts/check_tokens.mjs'], { cwd: project, encoding: 'utf8' });
   assert.match(output, /token diff = 0/);
+});
+
+test('token gate accepts CRLF and rejects a changed token value', (t) => {
+  const fixture = mkdtempSync(join(tmpdir(), 'aw-token-gate-'));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  for (const directory of ['scripts', 'src', 'tokens']) {
+    cpSync(join(project, directory), join(fixture, directory), { recursive: true });
+  }
+
+  const stylesheet = join(fixture, 'src/styles/tokens.css');
+  const crlf = readFileSync(stylesheet, 'utf8').replace(/\r?\n/g, '\r\n');
+  const args = ['scripts/check_tokens.mjs'];
+  const options = { cwd: fixture, encoding: 'utf8' };
+  writeFileSync(stylesheet, crlf);
+  const green = spawnSync(process.execPath, args, options);
+  assert.equal(green.status, 0, green.stderr);
+  assert.match(green.stdout, /token diff = 0/);
+
+  const edited = crlf.replace('--aw-space-4: 4px;', '--aw-space-4: 5px;');
+  assert.notEqual(edited, crlf);
+  writeFileSync(stylesheet, edited);
+  const red = spawnSync(process.execPath, args, options);
+  assert.equal(red.status, 1, red.stderr);
+  assert.match(red.stderr, /Regenerate src\/styles\/tokens\.css/);
 });

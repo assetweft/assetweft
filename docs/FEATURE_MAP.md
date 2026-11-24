@@ -56,6 +56,11 @@
 - **源码位置**：[examples/godot-static/verify.gd](../examples/godot-static/verify.gd) · [examples/rigged-simple/godot_playback.gd](../examples/rigged-simple/godot_playback.gd) · [examples/rigged-simple/godot_binding_control.gd](../examples/rigged-simple/godot_binding_control.gd)
 - **正常判据**：按夹具 README 退出码 `0` 且对照失败样例按预期报错；未执行的引擎导入、渲染与真实 F0 资产验收维持 `NOT_RUN`
 
+## 12. AW-035:A 最小真实角色闭环
+
+- **入口**：`assetweft rigged-simple-components <FILE> --out-dir <DIR>` 与 [verify_character_loop.sh](../examples/rigged-simple/verify_character_loop.sh)。
+- **正常判据**：CLI 仅分解固定 Rigged Simple 原件或已验证的 idle+strike 衍生件；脚本经本地 CAS、workflow 和 candidate 接受一个 motion-only 修订。`EXT_texture_webp` 静态网格必须通过 static-mesh 而被 rigged-character 拒绝；未给 Blender/Godot 时明确为 `NOT_RUN`，本地 adapter 不代表真实或付费 GPU 执行。
+
 ## 10. AW-034:A Agent Skill 与 CLI 操作配方
 - **入口**：[Skill](../skills/assetweft-cli/SKILL.md) · [离线评估](../skills/assetweft-cli/eval_recipe.sh)
 - **正常判据**：构建后运行评估脚本，缺预算、额度不足、缺上传授权均拒绝且调用次数为零；成功路径核对单行 JSON、历史回执重放、SQLite 工作流及 CAS 字节。远端 GPU、付费 API、完整渲染与可选 MCP 适配器为 `NOT_RUN`。

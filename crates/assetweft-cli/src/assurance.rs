@@ -2,7 +2,93 @@ use crate::protocol::{envelope, error, source};
 use assetweft_core::assurance as val;
 use clap::ArgMatches;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
+
+pub(super) fn rigged_simple_components_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let path = args.get_one::<PathBuf>("file").expect("required");
+    let out_dir = args.get_one::<PathBuf>("out-dir").expect("required");
+    let bytes = match val::read_bounded(path, limits) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return (
+                2,
+                envelope(
+                    "rigged-simple-components",
+                    call_id,
+                    "INVALID_INPUT",
+                    json!([error("file", "INVALID_INPUT", format!("{e:?}"))]),
+                    Value::Null,
+                ),
+            );
+        }
+    };
+    let parts = match assetweft_core::motion::components::rigged_simple_components(&bytes) {
+        Ok(parts) => parts,
+        Err(msg) => {
+            return (
+                1,
+                envelope(
+                    "rigged-simple-components",
+                    call_id,
+                    "NOT_RUN",
+                    json!([error("rigged-simple-components", "NOT_RUN", msg)]),
+                    Value::Null,
+                ),
+            );
+        }
+    };
+    if let Err(e) = fs::create_dir(out_dir) {
+        return (
+            2,
+            envelope(
+                "rigged-simple-components",
+                call_id,
+                "INVALID_INPUT",
+                json!([error("out-dir", "INVALID_INPUT", e.to_string())]),
+                Value::Null,
+            ),
+        );
+    }
+    let mut components = Vec::new();
+    let mut written = Vec::new();
+    for (role, data) in parts {
+        let role = format!("{role:?}").to_lowercase();
+        let file = format!("{role}.json");
+        let target = out_dir.join(&file);
+        if let Err(e) = fs::write(&target, &data) {
+            for component in &written {
+                let _ = fs::remove_file(component);
+            }
+            let _ = fs::remove_file(target);
+            return (
+                2,
+                envelope(
+                    "rigged-simple-components",
+                    call_id,
+                    "INVALID_INPUT",
+                    json!([error("out-dir", "INVALID_INPUT", e.to_string())]),
+                    Value::Null,
+                ),
+            );
+        }
+        written.push(target);
+        components.push(json!({"role":role,"file":file,"byte_length":data.len()}));
+    }
+    (
+        0,
+        envelope(
+            "rigged-simple-components",
+            call_id,
+            "PASS",
+            json!([]),
+            json!({"scope":"rigged_simple_components_v1","out_dir":out_dir.display().to_string(),"components":components}),
+        ),
+    )
+}
 
 pub(super) fn inspect_response(
     call_id: Option<&String>,

@@ -47,6 +47,9 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
+        .subcommand(Command::new("rigged-simple-components").arg(file()).arg(
+            Arg::new("out-dir").long("out-dir").required(true).value_parser(value_parser!(PathBuf)),
+        ))
         .subcommand(Command::new("motion-stance")
             .about("Check a declared support foot using sampled world-space motion")
             .arg(file())
@@ -534,6 +537,9 @@ fn run() -> (i32, Value) {
     match command {
         "motion-strike" | "rig-bend" => {
             assurance::rig_profile_response(command, call_id, args, limits)
+        }
+        "rigged-simple-components" => {
+            assurance::rigged_simple_components_response(call_id, args, limits)
         }
         "motion-stance" => assurance::stance_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),

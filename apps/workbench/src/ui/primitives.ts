@@ -14,9 +14,9 @@ export function button(text: string, action: () => void) {
 
 export function createStatusBadge(status: string) {
   const badge = el('span', status, 'badge');
-  if (['PASS', 'ACCEPT', 'AVAILABLE', 'READY'].includes(status)) badge.dataset.tone = 'pass';
-  if (['FAIL', 'REJECT', 'MISSING', 'CORRUPT', 'ERROR'].includes(status)) badge.dataset.tone = 'fail';
-  if (['WARN', 'PARTIAL', 'METADATA_ONLY'].includes(status)) badge.dataset.tone = 'warn';
+  if (['PASS', 'ACCEPT', 'AVAILABLE', 'READY', 'ACCEPTED', 'SUCCEEDED'].includes(status)) badge.dataset.tone = 'pass';
+  if (['FAIL', 'REJECT', 'MISSING', 'CORRUPT', 'ERROR', 'REJECTED'].includes(status)) badge.dataset.tone = 'fail';
+  if (['WARN', 'PARTIAL', 'METADATA_ONLY', 'UNKNOWN', 'CONFLICT'].includes(status)) badge.dataset.tone = 'warn';
   return badge;
 }
 
@@ -87,4 +87,32 @@ export function makeNotice(text = '') {
   const node = el('p', text, 'muted');
   node.setAttribute('role', 'status');
   return node;
+}
+
+
+export function integerInput(min: number, max = Number.MAX_SAFE_INTEGER, initial?: number) {
+  const input = el('input');
+  input.type = 'number';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = '1';
+  input.required = true;
+  if (initial !== undefined) input.defaultValue = String(initial);
+  return input;
+}
+
+export function selectInput(options: readonly string[]) {
+  const select = el('select');
+  for (const value of options) select.append(el('option', value));
+  return select;
+}
+
+export function facts(rows: [string, string | number | HTMLElement][]) {
+  const list = el('dl', undefined, 'facts');
+  for (const [label, value] of rows) {
+    const item = el('dd');
+    item.append(value instanceof HTMLElement ? value : String(value));
+    list.append(el('dt', label), item);
+  }
+  return list;
 }

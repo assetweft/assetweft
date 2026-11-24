@@ -1,5 +1,8 @@
 import type { WorkbenchBridge } from './bridge';
-import type { FeedbackRequest, ImportRequest, LibrarySession, Preview, Role, Validation, VersionDetail, VersionList, VersionRow } from './types';
+import type {
+  BudgetAccount, BudgetIntent, BudgetOverview, ByoGpuRun, CandidateAttempt, CandidateHead,
+  CandidateItem, CandidateOverview, InitHeadRequest, ProposeCandidateRequest, RunByoGpuRequest, WorkspaceMode,
+  FeedbackRequest, ImportRequest, LibrarySession, Preview, Role, Validation, VersionDetail, VersionList, VersionRow } from './types';
 
 export interface WorkbenchView {
   session(value: LibrarySession | null): void;
@@ -8,7 +11,14 @@ export interface WorkbenchView {
   detail(value: VersionDetail): void;
   preview(value: Preview): void;
   validation(value: Validation): void;
-  error(area: 'catalog' | 'detail' | 'preview' | 'validation', message: string): void;
+  budget(value: BudgetOverview | null): void;
+  candidates(value: CandidateOverview | null): void;
+  run(value: ByoGpuRun | null): void;
+  budgetReceipt(value: BudgetAccount | BudgetIntent | null): void;
+  initializedHead(value: CandidateHead | null): void;
+  proposedCandidate(value: CandidateItem | null): void;
+  attempt(value: CandidateAttempt | null): void;
+  error(area: 'catalog' | 'detail' | 'preview' | 'validation' | 'budget' | 'candidates', message: string): void;
 }
 
 export function errorMessage(error: unknown): string {
@@ -24,6 +34,10 @@ export class WorkbenchController {
   private selectionGen = 0;
   private listGen = 0;
   private validationGen = 0;
+  private budgetGen = 0;
+  private candidateGen = 0;
+  private opening = false;
+  private mode: WorkspaceMode = 'catalog';
   private session: LibrarySession | null = null;
   private selected: VersionRow | null = null;
   private query = '';
@@ -36,10 +50,19 @@ export class WorkbenchController {
     this.query = '';
     this.selected = null;
     this.selectionGen++;
+    this.budgetGen++;
+    this.candidateGen++;
     this.view.session(session);
+    this.view.budget(null);
+    this.view.candidates(null);
+    this.view.run(null);
+    this.view.budgetReceipt(null);
+    this.view.initializedHead(null);
+    this.view.proposedCandidate(null);
+    this.view.attempt(null);
     this.view.selection(null);
     this.view.list(null, '');
-    if (session) await this.search('');
+    if (session) await Promise.all([this.search(''), this.refreshWorkspace()]);
   }
 
   async start() {
@@ -53,8 +76,83 @@ export class WorkbenchController {
   }
 
   async open(path: string, create: boolean) {
-    const session = await this.bridge.openLibrary(path, create);
+    if (this.opening) throw new Error('A library open is already in progress.');
+    this.opening = true;
+    this.sessionGen++;
+    let session: LibrarySession | undefined;
+    try {
+      session = await this.bridge.openLibrary(path, create);
+    } finally {
+      this.opening = false;
+      if (!session) void this.refreshWorkspace();
+    }
     await this.setSession(session);
+  }
+
+  async setMode(mode: WorkspaceMode) {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    this.budgetGen++;
+    this.candidateGen++;
+    if (mode === 'budget') this.view.budget(null);
+    if (mode === 'candidates') this.view.candidates(null);
+    await this.refreshWorkspace();
+  }
+
+  private async refreshWorkspace() {
+    if (!this.session || this.opening || this.mode === 'catalog') return;
+    const mode = this.mode;
+    const session = this.sessionGen;
+    const gen = mode === 'budget' ? ++this.budgetGen : ++this.candidateGen;
+    const current = () => session === this.sessionGen && mode === this.mode &&
+      gen === (mode === 'budget' ? this.budgetGen : this.candidateGen);
+    try {
+      if (mode === 'budget') {
+        const result = await this.bridge.budgetOverview(100);
+        if (current()) this.view.budget(result);
+      } else {
+        const result = await this.bridge.candidateOverview(100);
+        if (current()) this.view.candidates(result);
+      }
+    } catch (error) {
+      if (current()) this.view.error(mode, errorMessage(error));
+    }
+  }
+
+  private async workspaceAction<T>(
+    mode: 'budget' | 'candidates', run: () => Promise<T>, show: (value: T) => void,
+  ) {
+    if (!this.session || this.opening || this.mode !== mode) {
+      throw new Error('Open a local library and return to the workspace before submitting.');
+    }
+    const session = this.sessionGen;
+    const gen = mode === 'budget' ? ++this.budgetGen : ++this.candidateGen;
+    const result = await run();
+    if (session === this.sessionGen && mode === this.mode &&
+        gen === (mode === 'budget' ? this.budgetGen : this.candidateGen)) {
+      show(result);
+      await this.refreshWorkspace();
+    }
+  }
+
+  budgetAction(run: (bridge: WorkbenchBridge) => Promise<BudgetAccount | BudgetIntent>) {
+    return this.workspaceAction('budget', () => run(this.bridge), (value) => this.view.budgetReceipt(value));
+  }
+
+  runByoGpu(request: RunByoGpuRequest) {
+    return this.workspaceAction('budget', () => this.bridge.runByoGpu(request), (value) => this.view.run(value));
+  }
+
+  initializeHead(request: InitHeadRequest) {
+    return this.workspaceAction('candidates', () => this.bridge.initializeCandidateHead(request), (value) => this.view.initializedHead(value));
+  }
+
+  proposeCandidate(request: ProposeCandidateRequest) {
+    return this.workspaceAction('candidates', () => this.bridge.proposeCandidate(request), (value) => this.view.proposedCandidate(value));
+  }
+
+  attemptCandidate(id: string) {
+    return this.workspaceAction('candidates', () => this.bridge.attemptAcceptCandidate(id), (value) => this.view.attempt(value));
   }
 
   async search(query: string) {

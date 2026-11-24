@@ -42,13 +42,14 @@ function modal(title: string, id: string) {
   return {
     dialog,
     show() {
+      dialog.returnValue = '';
       if (live) dialog.append(live);
       dialog.showModal();
     },
   };
 }
 
-function textInput(required = true) {
+export function textInput(required = true) {
   const input = el('input');
   input.required = required;
   return input;
@@ -144,4 +145,21 @@ export function libraryDialogs(actions: {
       scope.show();
     },
   };
+}
+
+
+let actionDialogId = 0;
+
+export function actionDialog(title: string, build: (form: HTMLFormElement) => () => Promise<void>) {
+  const trigger = document.activeElement;
+  const modalView = modal(title, `action-title-${++actionDialogId}`);
+  const form = el('form', undefined, 'stack');
+  const run = build(form);
+  modalView.dialog.append(form);
+  submitForm(form, title, run, modalView.dialog);
+  modalView.dialog.addEventListener('close', () => {
+    modalView.dialog.remove();
+    if (!trigger?.isConnected) document.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus();
+  }, { once: true });
+  modalView.show();
 }

@@ -7,6 +7,7 @@ use assetweft_core::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::{fs, path::Path, process::Command};
 
 const GLB: &[u8] =
@@ -90,7 +91,9 @@ fn commands_follow_catalog_storage_validation_and_history() {
     assert_eq!(session["schemaVersion"], 6);
     let caps = session["capabilities"].as_array().unwrap();
     assert_eq!(caps.len(), 8);
-    assert_eq!(caps[5]["status"], "NOT_RUN");
+    assert_eq!(caps[5]["status"], "READY");
+    assert_eq!(caps[6]["status"], "NOT_RUN");
+    assert_eq!(caps[7]["status"], "DISABLED");
     assert_eq!(caps[7]["status"], "DISABLED");
     assert_eq!(
         value(service.list_versions(None, 100).unwrap()),
@@ -343,4 +346,283 @@ fn local_input_rejections_preserve_the_open_library() {
         value(service.list_versions(None, 100).unwrap()),
         json!({"matches":[],"truncated":false})
     );
+}
+
+fn task_allowance(id: &str, capacity: u64) -> super::workbench_service::ApproveBudgetRequest {
+    serde_json::from_value(json!({
+        "id": id, "capacity": capacity, "unit": "Task", "approval": "ExplicitBounded",
+        "source": "local fixture allowance",
+    }))
+    .unwrap()
+}
+
+#[test]
+fn budget_commands_preserve_uncertainty_and_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("catalog.sqlite");
+    let mut service = WorkbenchService::default();
+    assert!(service.budget_overview(100).is_err());
+    service.open_library(&db, true).unwrap();
+    assert!(service.approve_budget(task_allowance("", 2)).is_err());
+    let account = value(service.approve_budget(task_allowance("task", 2)).unwrap());
+    assert_eq!(
+        account,
+        json!({
+            "id": "task", "unit": {"label": "Task"}, "approval": "EXPLICIT_BOUNDED",
+            "source": "local fixture allowance", "capacity": 2, "reserved": 0, "spent": 0, "available": 2,
+        })
+    );
+    let overview = value(service.budget_overview(100).unwrap());
+    assert_eq!(overview["accounts"], json!([account]));
+    assert_eq!(overview["profiles"][0]["id"], "hf-zerogpu");
+    let request = serde_json::from_value(json!({
+        "id": "intent", "account": "task", "unit": "Task", "quote": null,
+        "reservation": 1, "inputFingerprint": "fixture", "source": "local fixture",
+    }))
+    .unwrap();
+    let reserved = value(service.reserve_call(request).unwrap());
+    assert_eq!(reserved["state"], "PREPARING");
+    assert!(reserved["quote"].is_null());
+    let mut core = Application::open_existing(&db).unwrap();
+    assert!(core.submit_test_fixture("intent", || {}).unwrap());
+    assert_eq!(
+        core.call_intent("intent").unwrap().unwrap().state,
+        assetweft_core::budget::State::Unknown
+    );
+    let overview = value(service.budget_overview(100).unwrap());
+    assert_eq!(overview["intents"][0]["state"], "UNKNOWN");
+    assert!(
+        overview["intents"][0]["warning"]
+            .as_str()
+            .unwrap()
+            .contains("do NOT duplicate-submit")
+    );
+    assert!(overview["intents"][0]["charge"].is_null());
+
+    let cancelled = value(service.cancel_call("intent").unwrap());
+    assert_eq!(cancelled["cancelled"], true);
+    assert_eq!(cancelled["state"], "UNKNOWN");
+    assert!(
+        cancelled["warning"]
+            .as_str()
+            .unwrap()
+            .contains("Local cancel recorded; remote stop or refund is NOT claimed.")
+    );
+    assert_eq!(
+        value(service.budget_overview(100).unwrap())["accounts"][0]["reserved"],
+        1
+    );
+
+    for (receipt_id, resolution, state) in [
+        ("unresolved", json!("Unresolved"), "UNKNOWN"),
+        (
+            "confirmed",
+            json!({"Confirmed": {"charge": 1}}),
+            "CONFIRMED",
+        ),
+    ] {
+        let request = serde_json::from_value(json!({
+            "intentId": "intent", "receiptId": receipt_id, "source": "local fixture query",
+            "resolution": resolution,
+        }))
+        .unwrap();
+        let intent = value(service.reconcile_call(request).unwrap());
+        assert_eq!(intent["state"], state);
+    }
+    let overview = value(service.budget_overview(100).unwrap());
+    assert_eq!(overview["accounts"][0]["available"], 1);
+    assert_eq!(overview["accounts"][0]["reserved"], 0);
+    assert_eq!(overview["accounts"][0]["spent"], 1);
+    assert_eq!(overview["intents"][0]["charge"], 1);
+    assert_eq!(
+        overview["intents"][0]["receipts"].as_array().unwrap().len(),
+        2
+    );
+    let zero_cost = serde_json::from_value(json!({
+        "id": "currency", "capacity": 1, "unit": {"CurrencyMinor": {"currency": "USD", "decimals": 2}},
+        "approval": "ZeroAdditionalCost", "source": "fixture",
+    })).unwrap();
+    assert!(service.approve_budget(zero_cost).is_err());
+    let large = value(
+        service
+            .approve_budget(task_allowance("large", i64::MAX as u64))
+            .unwrap(),
+    );
+    assert_eq!(large["available"], i64::MAX.to_string());
+}
+
+#[cfg(unix)]
+#[test]
+fn byo_gpu_refuses_upload_and_exhaustion_then_replays_without_invoking() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("catalog.sqlite");
+    let image = dir.path().join("image.png");
+    let adapter = dir.path().join("adapter.sh");
+    let counter = dir.path().join("calls");
+    fs::write(&image, PNG).unwrap();
+    fs::write(&adapter, "#!/bin/sh\nset -eu\nprintf x >> \"$(dirname \"$0\")/calls\"\nwhile [ \"$1\" != --out-dir ]; do shift; done\nprintf 'local fixture' > \"$2/artifact.glb\"\n").unwrap();
+    fs::set_permissions(&adapter, fs::Permissions::from_mode(0o700)).unwrap();
+    let request = |budget, intent, out_dir, upload| {
+        serde_json::from_value(json!({
+            "budgetId": budget, "intentId": intent, "profile": "hf-zerogpu", "model": "trellis2",
+            "outDir": out_dir, "image": image, "adapterBin": adapter,
+            "allowRemoteUpload": upload, "maxBytes": 1048576,
+        }))
+        .unwrap()
+    };
+    let mut service = WorkbenchService::default();
+    service.open_library(&db, true).unwrap();
+    service.approve_budget(task_allowance("task", 1)).unwrap();
+    service.approve_budget(task_allowance("spent", 0)).unwrap();
+    let before = value(service.budget_overview(100).unwrap());
+    let out = dir.path().join("out");
+    let error = service
+        .run_byo_gpu(request("task", "run", &out, false))
+        .err()
+        .unwrap();
+    assert!(error.message.contains("requires --allow-remote-upload"));
+    assert!(
+        service
+            .run_byo_gpu(request("spent", "denied", &out, true))
+            .is_err()
+    );
+    assert!(!counter.exists());
+    assert_eq!(value(service.budget_overview(100).unwrap()), before);
+
+    let run = value(
+        service
+            .run_byo_gpu(request("task", "run", &out, true))
+            .unwrap(),
+    );
+    assert_eq!(run["status"], "SUCCEEDED");
+    assert_eq!(run["invoked"], true);
+    assert!(run["cashCost"].is_null());
+    assert_eq!(
+        fs::read(out.join("artifact.glb")).unwrap(),
+        b"local fixture"
+    );
+    assert_eq!(run["artifactSha256"], sha256(b"local fixture"));
+    let replay = value(
+        service
+            .run_byo_gpu(request("task", "run", &out, true))
+            .unwrap(),
+    );
+    assert_eq!(replay["invoked"], false);
+    assert_eq!(replay["artifactSha256"], run["artifactSha256"]);
+    assert_eq!(fs::read(&counter).unwrap(), b"x");
+}
+
+#[test]
+fn candidate_commands_preserve_stale_branch_and_feedback_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("catalog.sqlite");
+    let mut service = WorkbenchService::default();
+    service.open_library(&db, true).unwrap();
+    let mut core = Application::open_existing(&db).unwrap();
+    for (asset_id, version_id) in [
+        ("asset", "base"),
+        ("asset", "next"),
+        ("asset", "stale"),
+        ("part", "base-part"),
+        ("part", "next-part"),
+        ("part", "stale-part"),
+        ("other-asset", "lock-base"),
+        ("other-asset", "lock-next"),
+    ] {
+        core.commit_object(
+            &AssetVersion {
+                asset_id: asset_id.into(),
+                version_id: version_id.into(),
+                content_hash: sha256(GLB),
+                presence: Presence::Unknown,
+                ..metadata()
+            },
+            &mut &GLB[..],
+            GLB.len() as u64,
+            1048576,
+        )
+        .unwrap();
+    }
+    for (owner, part) in [
+        ("base", "base-part"),
+        ("next", "next-part"),
+        ("stale", "stale-part"),
+    ] {
+        core.add_component_reference(&ComponentReference {
+            owner_version_id: owner.into(),
+            component_version_id: part.into(),
+            role: ComponentRole::Mesh,
+        })
+        .unwrap();
+    }
+
+    for (owner, mesh) in [("lock-base", "base-part"), ("lock-next", "next-part")] {
+        for (role, part) in [
+            (ComponentRole::Mesh, mesh),
+            (ComponentRole::Rig, "stale-part"),
+        ] {
+            core.add_component_reference(&ComponentReference {
+                owner_version_id: owner.into(),
+                component_version_id: part.into(),
+                role,
+            })
+            .unwrap();
+        }
+    }
+    let locked = serde_json::from_value(json!({
+        "id": "locked", "baseVersion": "lock-base", "candidateVersion": "lock-next",
+        "expectedRevision": 0, "editable": ["rig"], "lockMode": "BYTE",
+        "maxComponentBytes": 1048576, "requiredQuality": [],
+    }))
+    .unwrap();
+    assert!(
+        service
+            .propose_candidate(locked)
+            .err()
+            .unwrap()
+            .message
+            .contains("locked component changed")
+    );
+    assert!(core.candidate("locked").unwrap().is_none());
+    let initial = serde_json::from_value(json!({
+        "versionId": "base", "maxComponentBytes": 1048576, "requiredQuality": [],
+    }))
+    .unwrap();
+    let head = value(service.initialize_candidate_head(initial).unwrap());
+    assert_eq!(head["revision"], 0);
+    assert_eq!(head["versionId"], "base");
+    for (id, version, outcome) in [("a", "next", "ACCEPTED"), ("b", "stale", "CONFLICT")] {
+        let proposal = serde_json::from_value(json!({
+            "id": id, "baseVersion": "base", "candidateVersion": version,
+            "expectedRevision": 0, "editable": ["mesh"], "lockMode": "BYTE",
+            "maxComponentBytes": 1048576, "requiredQuality": [],
+        }))
+        .unwrap();
+        let candidate = value(service.propose_candidate(proposal).unwrap());
+        assert_eq!(candidate["editable"], json!(["mesh"]));
+        assert_eq!(candidate["lockMode"], "BYTE");
+        assert!(candidate["attempt"].is_null());
+        let attempt = value(service.attempt_accept_candidate(id).unwrap());
+        assert_eq!(attempt["decision"], outcome);
+        assert_eq!(attempt["currentRevision"], 1);
+    }
+    let overview = value(service.candidate_overview(100).unwrap());
+    assert_eq!(overview["heads"].as_array().unwrap().len(), 1);
+    assert_eq!(overview["heads"][0]["versionId"], "next");
+    assert_eq!(overview["candidates"][1]["candidateVersion"], "stale");
+    assert_eq!(overview["candidates"][1]["attempt"]["decision"], "CONFLICT");
+    assert!(core.candidate("b").unwrap().is_some());
+    assert_eq!(
+        core.candidate_current("asset").unwrap().unwrap().revision,
+        1
+    );
+    assert!(value(service.get_version_detail("next").unwrap())["latestFeedback"].is_null());
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }

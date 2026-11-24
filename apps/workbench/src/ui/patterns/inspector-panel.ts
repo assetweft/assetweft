@@ -146,7 +146,7 @@ export function inspectorPanel(host: HTMLElement, actions: {
       if (validate.disabled) progress.textContent = 'Validation requires available managed bytes.';
       validation.append(labelField('Required role', role), validate, progress, output);
 
-      const feedback = section('Feedback and decision');
+      const feedback = section('Version feedback');
       const form = el('form', undefined, 'stack compact');
       const decision = el('select');
       for (const label of ['ACCEPT', 'REJECT']) decision.append(el('option', label));

@@ -8,6 +8,8 @@ pub(crate) trait BudgetLedger {
     fn reconcile(&mut self, id: &str, r: &Receipt) -> Result<()>;
 }
 pub(crate) trait BudgetQueries {
+    fn list_budgets(&mut self, limit: u16) -> Result<Vec<Balance>>;
+    fn list_intents(&mut self, account: Option<&str>, limit: u16) -> Result<Vec<Intent>>;
     fn balance(&mut self, id: &str) -> Result<Balance>;
     fn intent(&mut self, id: &str) -> Result<Option<Intent>>;
     fn receipts(&mut self, id: &str) -> Result<Vec<Receipt>>;

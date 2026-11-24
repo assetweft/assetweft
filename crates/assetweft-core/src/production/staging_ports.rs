@@ -19,6 +19,7 @@ pub(crate) trait Staging {
     fn freeze(&mut self, proposal: FrozenProposal) -> Result<Candidate, StagingError>;
 }
 pub(crate) trait CandidateRead {
+    fn list(&mut self, limit: u16) -> Result<Vec<(String, Candidate)>, StagingError>;
     fn candidate(&mut self, id: &str) -> Result<Option<Candidate>, StagingError>;
 }
 

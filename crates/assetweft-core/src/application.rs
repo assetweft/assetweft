@@ -402,6 +402,27 @@ impl Application {
         )
         .map_err(Into::into)
     }
+    pub fn list_budgets(&self, limit: u16) -> Result<Vec<crate::budget::Balance>, LibraryError> {
+        crate::consumption::application::list_budgets(
+            &mut crate::consumption::sqlite::BudgetQuery(&self.connection),
+            limit,
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn list_budget_intents(
+        &self,
+        account: Option<&str>,
+        limit: u16,
+    ) -> Result<Vec<crate::budget::Intent>, LibraryError> {
+        crate::consumption::application::list_intents(
+            &mut crate::consumption::sqlite::BudgetQuery(&self.connection),
+            account,
+            limit,
+        )
+        .map_err(Into::into)
+    }
+
     pub fn budget_balance(&self, id: &str) -> Result<crate::budget::Balance, LibraryError> {
         crate::consumption::application::balance(
             &mut crate::consumption::sqlite::BudgetQuery(&self.connection),
@@ -546,6 +567,19 @@ impl Application {
         )
         .map_err(Into::into)
     }
+    pub fn list_candidates(
+        &self,
+        limit: u16,
+    ) -> Result<Vec<crate::candidate::Candidate>, LibraryError> {
+        crate::production::staging_application::list(
+            &mut crate::production::staging_sqlite::SqliteCandidateRead {
+                conn: &self.connection,
+            },
+            limit,
+        )
+        .map_err(Into::into)
+    }
+
     pub fn candidate(&self, id: &str) -> Result<Option<crate::candidate::Candidate>, LibraryError> {
         crate::production::staging_application::read(
             &mut crate::production::staging_sqlite::SqliteCandidateRead {

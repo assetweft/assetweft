@@ -75,6 +75,9 @@ fn safe_path(path: &Path) -> Result<(), BackupError> {
             return Err(BackupError::Invalid("parent traversal"));
         }
         part.push(component);
+        if matches!(component, Component::Prefix(_) | Component::RootDir) {
+            continue;
+        }
         match fs::symlink_metadata(&part) {
             Ok(m) if m.file_type().is_symlink() => {
                 return Err(BackupError::Invalid("symlink path"));

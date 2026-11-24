@@ -1,4 +1,7 @@
-use assetweft_core::{assurance as val, library::LibraryError, sqlite::ProtoError};
+use assetweft_core::{
+    assurance as val, backup::BackupError, library::LibraryError, sqlite::ProtoError,
+    storage::StorageError,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -77,5 +80,25 @@ pub(super) fn library_outcome(failure: &LibraryError) -> (i32, &'static str) {
         LibraryError::FutureSchema(_) => (5, "UNSUPPORTED"),
         LibraryError::Busy(_) | LibraryError::Io(_) => (6, "INTERNAL"),
         LibraryError::Database(_) | LibraryError::UnknownValue(_) => (1, "FAIL"),
+    }
+}
+
+pub(super) fn backup_outcome(failure: &BackupError) -> (i32, &'static str) {
+    match failure {
+        BackupError::Library(e) | BackupError::Storage(StorageError::Library(e)) => {
+            library_outcome(e)
+        }
+        BackupError::Invalid(_)
+        | BackupError::Json(_)
+        | BackupError::Limit
+        | BackupError::Storage(StorageError::Invalid(_)) => (2, "INVALID_INPUT"),
+        BackupError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (2, "INVALID_INPUT"),
+        BackupError::Storage(StorageError::MissingPreviewSource) => (3, "INPUT_INCOMPLETE"),
+        BackupError::Io(_)
+        | BackupError::Busy
+        | BackupError::Storage(StorageError::Busy | StorageError::Io(_)) => (6, "INTERNAL"),
+        BackupError::Sql(_)
+        | BackupError::Cancelled
+        | BackupError::Storage(StorageError::Corrupt) => (1, "FAIL"),
     }
 }

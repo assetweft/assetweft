@@ -3,10 +3,10 @@
 现行代码真源映射（基线 `origin/main@e70a4a6`，Rust Workspace：`assetweft-core` + `assetweft-cli`）。每项严格记录当前已实现入口、命令/路径、源码位置与正常判据；未实现能力一律视为 `NOT_RUN`。
 
 ## 1. 本地库初始化与一致性备份恢复（SQLite Schema v6）
-- **入口**：`assetweft library init`；核心 API `Application::{open,open_read_only,initialize_library,backup_library,restore_library}`
-- **路径或子命令**：`library init --db <PATH>`（执行 `001..006` 迁移；其余库命令仅接受既有常规文件，不隐式建库）
+- **入口**：`assetweft library {init,backup,restore}`；核心 API `Application::{open,open_read_only,initialize_library,backup_library,restore_library}`
+- **路径或子命令**：`library init --db <PATH>`（执行 `001..006` 迁移） · `library backup --db <PATH> --out <DIR>`（既有常规库文件） · `library restore --from <DIR> --dest <DIR>`（format 1/schema 6）；备份与恢复的目标目录须为新路径，使用核心备份限额
 - **源码位置**：[crates/assetweft-cli/src/main.rs](../crates/assetweft-cli/src/main.rs) · [crates/assetweft-core/src/application.rs](../crates/assetweft-core/src/application.rs) · [crates/assetweft-core/src/library.rs](../crates/assetweft-core/src/library.rs) · [crates/assetweft-core/src/sqlite.rs](../crates/assetweft-core/src/sqlite.rs) · [crates/assetweft-core/src/catalog/backup_sqlite.rs](../crates/assetweft-core/src/catalog/backup_sqlite.rs)
-- **正常判据**：stdout 单行 JSON `status:"PASS"`（`exit 0`）、stderr 0 error；重复 init 幂等保数据，未初始化库被查询返回 `INPUT_INCOMPLETE`（`exit 3`）
+- **正常判据**：stdout 单行 JSON `status:"PASS"`（`exit 0`）、`errors:[]`；重复 init 保数据；备份返回 `manifest` 和 `out_dir`，恢复返回 `manifest` 和 `dest_dir`，版本、对象可用性和反馈回读与源库一致；已有目录或损坏对象返回 `INVALID_INPUT/2`，未初始化库返回 `INPUT_INCOMPLETE/3`
 
 ## 2. Assurance：有界 GLB 结构检查与角色校验（含 `EXT_texture_webp`）
 - **入口**：`assetweft inspect` / `assetweft validate`；核心 `assurance::checks::{inspect_geometry_*,validate_*,inspect_rig_*}`

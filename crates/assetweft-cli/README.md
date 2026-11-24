@@ -20,6 +20,8 @@ assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EX
 assetweft [--call-id ID] validate FILE.glb [--role static-mesh|rigged-character|animated-character]
 assetweft [--call-id ID] plan --request request.json --trusted-context context.json
 assetweft [--call-id ID] library init --db PATH
+assetweft [--call-id ID] library backup --db EXISTING_DB --out NEW_DIRECTORY
+assetweft [--call-id ID] library restore --from BACKUP_DIRECTORY --dest NEW_DIRECTORY
 assetweft [--call-id ID] workflow create --db EXISTING_DB --run-id RUN --steps FILE
 assetweft [--call-id ID] workflow status --db EXISTING_DB --run-id RUN
 assetweft [--call-id ID] workflow cancel --db EXISTING_DB --run-id RUN
@@ -53,14 +55,15 @@ Global `--max-bytes N` bounds each file/JSON input separately (default and hard 
 and `budget reserve --request`, `candidate initialize --contract` and `candidate propose --proposal`; it never bounds database size or query result sizes and
 has no effect on library init/status/cancel/balance/intent/receipts/candidate/catalog queries or feedback-add.
 Its existing numeric parser validation still applies to every command.
+`library backup` and `library restore` use the core backup limits independently of `--max-bytes`.
 The optional [Rigged Simple motion profile](../../examples/rigged-simple/README.md) appends a reproducible, in-place strike to a new GLB. It uses the same bounded input reader.
 Paths are OS paths and support spaces/Unicode. File inputs are read without mutation;
-`motion-strike`, `rig-bend`, `library init`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
+`motion-strike`, `rig-bend`, `library init/backup/restore`, `workflow create/cancel`, `budget approve/reserve/cancel` and `candidate initialize/propose` are explicit mutating paths.
 All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `workflow create`,
+`command` is `inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -185,7 +188,7 @@ the reservation, and never launches the runner again for that intent.
 `invoked` indicates entry into the claimed runner path, and does not prove a
 remote submission. The local unit is `Task` and `cash_cost` stays null.
 
-## Explicit library initialization and workflow commands (AW-033:B bounded slice)
+## Local library and workflow commands
 
 `library init --db PATH` calls `Application::open` then `initialize_library` once.
 It may create the named database under an already existing parent and apply the existing
@@ -194,8 +197,25 @@ downgrades, and does not replace corrupt/unrecognized files on failure. Memory/U
 directories and special files are rejected. Existing files follow core initialization and
 migration semantics; this command is an explicit mutation request, so use it only on a
 library you intend to initialize/migrate. Repeating init on a current initialized library
-preserves workflows, states, outcomes and cancellation requests. No backup/migration
-framework is added.
+preserves workflows, states, outcomes and cancellation requests.
+
+`library backup --db EXISTING_DB --out NEW_DIRECTORY` opens an existing, initialized
+SQLite library and writes a consistent snapshot with `library.sqlite`, `objects/` and
+`manifest.json`. It may claim the source library's object-store ownership and lease.
+`library restore --from BACKUP_DIRECTORY --dest NEW_DIRECTORY` restores a verified
+format 1, schema 6 snapshot. Both require a fresh destination and preserve existing
+destination contents. A failed copy may leave files in the new directory with no
+`manifest.json`. The manifest is published last.
+
+Both return PASS/0 with empty `errors` and the manifest. Backup returns `scope:
+backed_up_local_library` and `out_dir`. Restore returns `scope: restored_local_library`
+and `dest_dir`. Operation failures return null `results` and an error at `library`.
+Missing or nonregular `--db` and database open errors are reported at `db`.
+INVALID_INPUT/2 covers those invalid paths, existing destinations, malformed or
+unsupported backup manifests, hash mismatches, and backup limits. INPUT_INCOMPLETE/3
+covers uninitialized libraries and missing preview sources. A future database schema
+reported by the core library returns UNSUPPORTED/5. Storage corruption, backup SQL errors
+and cancellation return FAIL/1. Busy and other I/O errors return INTERNAL/6.
 
 `workflow create --db EXISTING_DB --run-id RUN --steps FILE` requires a JSON array:
 

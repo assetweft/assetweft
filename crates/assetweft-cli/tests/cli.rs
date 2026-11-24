@@ -4903,6 +4903,203 @@ fn object_wire(id: &str) -> Value {
         json!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     wire
 }
+
+fn library_backup_test_root(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    return path.to_path_buf();
+    #[cfg(not(windows))]
+    return path.canonicalize().unwrap();
+}
+
+#[test]
+fn library_backup_restore_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = library_backup_test_root(dir.path());
+    let db = root.join("library.sqlite");
+    let fixture = root.join("version.json");
+    let file = root.join("bytes");
+    let backup = root.join("backup");
+    let restored = root.join("restored");
+    let metadata = catalog_write_wire("metadata", "MISSING", false);
+    let success = |args: &[&OsStr]| {
+        let (out, value) = invoke(args);
+        assert_eq!(out.status.code(), Some(0), "{value}");
+        assert!(out.stderr.is_empty());
+        assert_eq!(value["status"], "PASS");
+        assert_eq!(value["errors"], json!([]));
+        value
+    };
+    let feedback = |action, db: &Path, extra: &[&str]| {
+        let mut args = vec!["catalog", action, "--db"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        args.push(db.as_os_str());
+        args.extend(["--asset-id", "metadata-asset", "--version-id", "managed"].map(OsStr::new));
+        args.extend(extra.iter().map(OsStr::new));
+        success(&args)
+    };
+    success(&library_init_args(db.as_os_str()));
+    fs::write(&file, b"abc").unwrap();
+    fs::write(&fixture, object_wire("managed").to_string()).unwrap();
+    success(&object_args(&db, &fixture, &file, "3"));
+    fs::write(&fixture, metadata.to_string()).unwrap();
+    success(&catalog_write_args("register-version", &db, &fixture));
+    let appended = feedback(
+        "feedback-add",
+        &db,
+        &[
+            "--feedback-id",
+            "review-1",
+            "--decision",
+            "ACCEPT",
+            "--reason",
+            "原样",
+        ],
+    );
+
+    let saved = success(&[
+        OsStr::new("library"),
+        OsStr::new("backup"),
+        OsStr::new("--db"),
+        db.as_os_str(),
+        OsStr::new("--out"),
+        backup.as_os_str(),
+        OsStr::new("--max-bytes"),
+        OsStr::new("1"),
+    ]);
+    assert_eq!(saved["command"], "library backup");
+    assert_eq!(saved["results"]["scope"], "backed_up_local_library");
+    assert_eq!(saved["results"]["out_dir"], backup.display().to_string());
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(backup.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(saved["results"]["manifest"], manifest);
+    assert!(manifest["database"]["bytes"].as_u64().unwrap() > 1);
+    let hash = object_wire("managed")["content_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        fs::read(backup.join("objects").join(&hash)).unwrap(),
+        b"abc"
+    );
+
+    let restore = |dest: &Path| {
+        invoke(&[
+            OsStr::new("library"),
+            OsStr::new("restore"),
+            OsStr::new("--from"),
+            backup.as_os_str(),
+            OsStr::new("--dest"),
+            dest.as_os_str(),
+            OsStr::new("--max-bytes"),
+            OsStr::new("1"),
+        ])
+    };
+    let (out, result) = restore(&restored);
+    assert_eq!(out.status.code(), Some(0), "{result}");
+    assert!(out.stderr.is_empty());
+    assert_eq!(result["status"], "PASS");
+    assert_eq!(result["errors"], json!([]));
+    assert_eq!(result["command"], "library restore");
+    assert_eq!(
+        result["results"],
+        json!({"scope":"restored_local_library",
+        "dest_dir":restored.display().to_string(),"manifest":manifest})
+    );
+    assert_eq!(
+        fs::read(restored.join("objects").join(&hash)).unwrap(),
+        b"abc"
+    );
+
+    let restored_db = restored.join("library.sqlite");
+    for (action, id) in [
+        ("version", "managed"),
+        ("version", "metadata"),
+        ("file-availability", "managed"),
+    ] {
+        let original = success(&catalog_args(action, db.as_os_str(), OsStr::new(id)));
+        assert_eq!(
+            success(&catalog_args(
+                action,
+                restored_db.as_os_str(),
+                OsStr::new(id)
+            )),
+            original
+        );
+        if action == "file-availability" {
+            assert_eq!(original["results"]["availability"], "AVAILABLE");
+        }
+    }
+    let latest = feedback("feedback-latest", &restored_db, &[]);
+    assert_eq!(latest, feedback("feedback-latest", &db, &[]));
+    assert_eq!(
+        latest["results"]["feedback"],
+        appended["results"]["feedback"]
+    );
+
+    let existing = root.join("existing-restore");
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("library.sqlite"), b"original DB").unwrap();
+    let corrupt = root.join("corrupt-restore");
+    for dest in [&existing, &corrupt] {
+        if dest == &corrupt {
+            fs::write(backup.join("objects").join(&hash), b"bad").unwrap();
+        }
+        let (out, value) = restore(dest);
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert_eq!(value["status"], "INVALID_INPUT");
+        assert_eq!(value["errors"][0]["field_path"], "library");
+        assert_eq!(value["results"], Value::Null);
+        assert!(!dest.join("manifest.json").exists());
+    }
+    assert_eq!(
+        fs::read(existing.join("library.sqlite")).unwrap(),
+        b"original DB"
+    );
+    assert_eq!(fs::read_dir(existing).unwrap().count(), 1);
+}
+
+#[test]
+fn library_backup_rejects_missing_uninitialized_and_existing_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = library_backup_test_root(dir.path());
+    let db = root.join("library.sqlite");
+    let backup = root.join("backup");
+    let run = |code, status| {
+        let (out, value) = invoke(&[
+            OsStr::new("library"),
+            OsStr::new("backup"),
+            OsStr::new("--db"),
+            db.as_os_str(),
+            OsStr::new("--out"),
+            backup.as_os_str(),
+        ]);
+        assert_eq!(out.status.code(), Some(code), "{value}");
+        assert_eq!(value["command"], "library backup");
+        assert_eq!(value["status"], status);
+        assert_eq!(value["errors"][0]["code"], status);
+        assert_eq!(value["results"], Value::Null);
+    };
+    run(2, "INVALID_INPUT");
+    assert!(!db.exists());
+    fs::write(&db, b"").unwrap();
+    run(3, "INPUT_INCOMPLETE");
+    assert!(!backup.exists());
+    assert_eq!(
+        invoke(&library_init_args(db.as_os_str())).0.status.code(),
+        Some(0)
+    );
+    fs::create_dir(&backup).unwrap();
+    fs::write(backup.join("manifest.json"), b"original manifest").unwrap();
+    run(2, "INVALID_INPUT");
+    assert_eq!(
+        fs::read(backup.join("manifest.json")).unwrap(),
+        b"original manifest"
+    );
+    assert_eq!(fs::read_dir(backup).unwrap().count(), 1);
+}
+
 #[test]
 fn object_commit_roundtrip_and_duplicate_preserve_original() {
     let dir = tempfile::tempdir().unwrap();

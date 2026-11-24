@@ -791,6 +791,53 @@ fn declared_cap_rejects_attempt_base_remeasure_before_managed_hashing() {
 }
 
 #[test]
+fn restored_base_hash_must_match_catalog_before_checking_object_size() {
+    let (d, mut app, proposal) = cap_setup();
+    app.initialize_candidate_current("base", proposal.contract.as_ref().unwrap())
+        .unwrap();
+    let template = app.propose_candidate(&proposal).unwrap();
+    let current = app.candidate_current("character").unwrap();
+    let db = d.path().join("library.sqlite");
+    let old_receipts = candidate_receipts(&db);
+    let wrong_hash = "0".repeat(64);
+    assert_ne!(wrong_hash, template.base[0].measured_sha256);
+    fs::File::create(d.path().join("objects").join(&wrong_hash))
+        .unwrap()
+        .set_len(proposal.contract.as_ref().unwrap().max_component_bytes + 1)
+        .unwrap();
+    app.close().unwrap();
+
+    let mut cases = Vec::new();
+    for (id, hash) in [
+        ("restored-uppercase", "A".repeat(64)),
+        ("restored-wrong-address", wrong_hash),
+    ] {
+        let mut candidate = template.clone();
+        candidate.base[0].measured_sha256 = hash;
+        insert_restored_candidate(&db, id, id, &candidate);
+        cases.push(id);
+    }
+    let mut app = Application::open(&db).unwrap();
+    let actual: Vec<_> = cases
+        .iter()
+        .map(|id| app.attempt_accept_candidate(id))
+        .collect();
+    assert_eq!(app.candidate_current("character").unwrap(), current);
+    assert_eq!(candidate_receipts(&db), old_receipts);
+    assert_eq!(
+        actual,
+        [
+            Err(assetweft_core::library::LibraryError::InvalidInput(
+                "base byte drift"
+            )),
+            Err(assetweft_core::library::LibraryError::InvalidInput(
+                "base byte drift"
+            )),
+        ]
+    );
+}
+
+#[test]
 fn declared_cap_boundaries_and_contractless_managed_ceiling_are_retained() {
     let bytes = include_bytes!("fixtures/validation/mesh_only.glb");
     let exact = bytes.len() as u64;

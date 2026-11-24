@@ -3,11 +3,11 @@
 //! Callers: geometry application capability.
 //! Invariants: URI identities remain unresolved and unchanged.
 
-use super::{geometry_domain::*, geometry_ports::GeometryStructure};
+use super::{geometry_domain::*, geometry_ports::GeometryStructure, gltf_checks::parse_glb};
 pub(crate) struct GltfGeometry;
 impl GeometryStructure for GltfGeometry {
     fn parse(&self, bytes: &[u8]) -> Result<GeometryFacts, String> {
-        let gltf = gltf::Gltf::from_slice(bytes).map_err(|e| e.to_string())?;
+        let (gltf, extensions_required) = parse_glb(bytes)?;
         let d = &gltf.document;
         let nodes = d
             .nodes()
@@ -125,7 +125,7 @@ impl GeometryStructure for GltfGeometry {
                 .collect(),
             images,
             extensions_used: d.extensions_used().map(str::to_owned).collect(),
-            extensions_required: d.extensions_required().map(str::to_owned).collect(),
+            extensions_required,
         })
     }
 }

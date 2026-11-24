@@ -3,7 +3,12 @@
 //! Callers: Rig inspection capability.
 //! Invariants: no URI reads and no bulk numeric array clones.
 
-use super::{domain::CheckStatus, rig_domain::*, rig_ports::RigNumeric};
+use super::{
+    domain::CheckStatus,
+    gltf_checks::{WEBP_EXTENSION, parse_glb},
+    rig_domain::*,
+    rig_ports::RigNumeric,
+};
 use gltf::{
     accessor::{DataType, Dimensions},
     mesh::Semantic,
@@ -13,10 +18,10 @@ pub(crate) struct GltfRig;
 impl RigNumeric for GltfRig {
     fn inspect(&self, bytes: &[u8], r: &mut RigReport) {
         use CheckStatus::{Fail, NotRun, Pass};
-        let g = match gltf::Gltf::from_slice(bytes) {
+        let (g, extensions_required) = match parse_glb(bytes) {
             Ok(g) => g,
             Err(e) => {
-                r.add("rig.numeric", NotRun, e.to_string());
+                r.add("rig.numeric", NotRun, e);
                 return;
             }
         };
@@ -25,7 +30,11 @@ impl RigNumeric for GltfRig {
             .map(|n| n.children().map(|c| c.index()).collect())
             .collect();
         forest(&children, r);
-        let extensions: Vec<_> = g.extensions_used().chain(g.extensions_required()).collect();
+        let extensions: Vec<_> = g
+            .extensions_used()
+            .chain(extensions_required.iter().map(String::as_str))
+            .filter(|ext| *ext != WEBP_EXTENSION)
+            .collect();
         let meshes: Vec<_> = g.meshes().collect();
         let skins: Vec<_> = g.skins().collect();
         for node in g.nodes() {

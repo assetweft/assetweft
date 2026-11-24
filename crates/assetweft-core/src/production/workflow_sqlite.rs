@@ -1,7 +1,3 @@
-//! Responsibility: SQLite adapter for Production persistent workflows.
-//! Dependencies: configured SQLite/library schema and pure workflow policy.
-//! Callers: legacy composition only; IMMEDIATE transactions own atomic transitions.
-//! Invariants: original SQL/parameters retained; callback never enters this adapter.
 use super::{
     workflow_domain::{self, Outcome, PolicyError, Step, StepRecord},
     workflow_ports::{WorkflowQuery, WorkflowRuns},
@@ -88,7 +84,6 @@ pub(crate) fn claim(conn: &mut Connection, run: &str) -> Result<Option<String>, 
         let dependencies = stmt
             .query_map([run], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<Vec<(String, String)>, _>>()?;
-        // SQL projects a candidate; the core owns permission to transition it.
         if workflow_domain::ready_step(false, &records, &dependencies) != id.as_deref() {
             return Err(invalid("invalid persisted step state/result"));
         }
@@ -157,7 +152,6 @@ pub(crate) fn read(conn: &Connection, run: &str) -> Result<Vec<StepRecord>, Libr
     Ok(records)
 }
 
-/// Reads the durable cancellation request; it says nothing about remote execution or billing.
 pub(crate) fn is_cancelled(conn: &Connection, run: &str) -> Result<bool, LibraryError> {
     library::require_current(conn)?;
     let value: i64 = conn

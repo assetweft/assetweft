@@ -1,6 +1,3 @@
-//! Responsibility: purpose-owned protected snapshot, copy and fresh restore capabilities.
-//! Dependencies: pure backup values; callers: Catalog backup use cases and concrete adapter.
-//! Invariants: implementation retains protection across calls; no handles or paths cross ports.
 use super::backup_domain::{Manifest, Object, PolicyError};
 pub(crate) trait ProtectedBackup {
     type Error: From<PolicyError>;

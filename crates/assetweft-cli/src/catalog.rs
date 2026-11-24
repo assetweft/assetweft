@@ -1,8 +1,3 @@
-//! Responsibility: Catalog incoming adapter for immutable metadata, exact references, version feedback and stored queries.
-//! Dependencies: shared CLI transport, public Application and Catalog compatibility values.
-//! Callers: main catalog command dispatch; projections remain local to this consumer.
-//! Invariants: one owning facade call per action; strict wire shapes; submitted write acknowledgements and stored queries preserve values; no SQL, policy, CAS, retry or implicit init.
-
 use crate::protocol::{envelope, error, existing_database, library_outcome, read_json};
 use assetweft_core::{
     application::Application,
@@ -198,7 +193,6 @@ fn storage_outcome(failure: &StorageError) -> (i32, &'static str) {
     }
 }
 
-// Transport enums are deliberately local: no domain identity, license or contract policy.
 struct PresenceInput(Presence);
 impl<'de> serde::Deserialize<'de> for PresenceInput {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -327,7 +321,6 @@ impl<'de> serde::Deserialize<'de> for ReferenceObject {
         deserializer.deserialize_map(ReferenceVisitor)
     }
 }
-/// One owning mutation; success projects its acknowledgement without readback.
 pub(super) fn write_response(
     wire: &str,
     call_id: Option<&String>,
@@ -384,7 +377,6 @@ pub(super) fn write_response(
             Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
         };
         let source = args.get_one::<PathBuf>("file").expect("required");
-        // Admission is for private local files; path checks cannot prevent replacement races.
         let open = || -> std::io::Result<std::fs::File> {
             if !std::fs::metadata(source)?.is_file() {
                 return Err(std::io::Error::other("--file must name a regular file"));

@@ -1,7 +1,3 @@
-//! Responsibility: C2 actual-binary protocol and delegation regression gate.
-//! Dependencies: core fixtures/APIs, std process, tempfile; called by C1 and native CI.
-//! Invariants: synthetic cases and explicitly pinned licensed samples; full stdout parse, repeat stability,
-//! bounded reads, Chinese/space paths, unchanged input bytes and immutable local allowances.
 use assetweft_core::{
     application::Application,
     generation_spec as spec, validation as val,
@@ -326,8 +322,7 @@ fn semantic_identity_plan_cannot_bypass_core() {
     }
 }
 
-// Shut down the writer itself: dropping a peer alone leaves writes possible while
-// another process holds that peer. The real child must inherit an unwritable socket.
+// POSIX shutdown(SHUT_WR) disables writes even while another process holds the peer.
 #[cfg(unix)]
 fn broken_output() -> std::process::Stdio {
     use std::{
@@ -342,8 +337,7 @@ fn broken_output() -> std::process::Stdio {
     std::process::Stdio::from(OwnedFd::from(writer))
 }
 
-// An owned read-only file handle gives the real Windows child a write failure.
-// File's default delete sharing keeps the handle valid after the temp path is removed.
+// Windows FILE_SHARE_DELETE keeps the inherited read-only handle valid after the temp path is removed.
 #[cfg(windows)]
 fn broken_output() -> std::process::Stdio {
     use std::io::Write;
@@ -436,8 +430,6 @@ fn workflow_args<'a>(action: &'a str, db: &'a OsStr, run: &'a OsStr) -> Vec<&'a 
         run,
     ]
 }
-// Seeds durable state only through the existing product API: initialize, create, then a
-// real succeeded record and a real claimed/running record left unresolved.
 fn seed_workflow(dir: &Path) -> PathBuf {
     let path = dir.join("库 状态 db.sqlite");
     let mut app = Application::open(&path).unwrap();
@@ -501,7 +493,6 @@ fn workflow_status_projects_persisted_state_deterministically() {
     let (again, _) = invoke(&args);
     assert_eq!(out.stdout, again.stdout);
     assert_eq!(out.status.code(), again.status.code());
-    // A fresh process opening the same durable store sees identical values.
     let app = Application::open(&db).unwrap();
     assert_eq!(
         app.workflow_steps("运行-α").unwrap()[0].state,
@@ -509,7 +500,6 @@ fn workflow_status_projects_persisted_state_deterministically() {
     );
     assert!(!app.workflow_cancelled("运行-α").unwrap());
     drop(app);
-    // Existing product use cases advance state; status reports the new persisted facts.
     let mut app = Application::open(&db).unwrap();
     app.create_workflow("失败-运行", &[step("a", &[]), step("b", &["a"])])
         .unwrap();
@@ -567,11 +557,9 @@ fn workflow_cancel_persists_request_and_keeps_results() {
     for overclaim in ["refund", "stopped", "released", "terminated"] {
         assert!(!rendered.contains(overclaim), "{rendered}");
     }
-    // Repeating the explicit request remains a scoped success with identical output.
     let (again, v_again) = invoke(&args);
     assert_eq!(out.stdout, again.stdout);
     assert_eq!(v_again["results"]["cancellation_requested"], true);
-    // Reopen proves the durable flag and unchanged records/results.
     let mut app = Application::open(&db).unwrap();
     assert!(app.workflow_cancelled("运行-α").unwrap());
     let steps = app.workflow_steps("运行-α").unwrap();
@@ -590,7 +578,6 @@ fn workflow_cancel_persists_request_and_keeps_results() {
     let mut app = Application::open(&db).unwrap();
     assert_eq!(app.claim_workflow_step("运行-α").unwrap(), None);
     drop(app);
-    // Status of the same run reports the request, not a stopped process.
     let (out_status, v_status) = invoke(&workflow_args(
         "status",
         db.as_os_str(),
@@ -619,7 +606,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         !missing.exists(),
         "CLI must not create the supplied db path"
     );
-    // A directory (non-regular path) is rejected just as explicitly and left alone.
     let dirdb = dir.path().join("目录 db");
     fs::create_dir(&dirdb).unwrap();
     let cancel = workflow_args("cancel", dirdb.as_os_str(), run);
@@ -627,7 +613,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(v["errors"][0]["field_path"], "db");
     assert!(dirdb.is_dir());
-    // Unknown run fails truthfully with the preserved core diagnostic.
     let db = seed_workflow(dir.path());
     let (out, v) = invoke(&workflow_args(
         "status",
@@ -648,7 +633,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         OsStr::new("不存在-run"),
     ));
     assert_eq!(out.status.code(), Some(1));
-    // Empty identity is rejected verbatim, never trimmed or substituted.
     let (out, v) = invoke(&workflow_args("status", db.as_os_str(), OsStr::new("")));
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(v["status"], "INVALID_INPUT");
@@ -660,7 +644,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         State::Succeeded
     );
     drop(app);
-    // Missing required flags stay an argument error.
     for argv in [
         vec![OsStr::new("workflow"), OsStr::new("status")],
         vec![
@@ -680,7 +663,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
         assert_eq!(out.status.code(), Some(2), "{argv:?}");
         assert_eq!(v["status"], "INVALID_INPUT");
     }
-    // An existing but uninitialized file is reported, never auto-initialized or migrated.
     let empty = dir.path().join("空 库.sqlite");
     fs::write(&empty, b"").unwrap();
     let (out, v) = invoke(&workflow_args("status", empty.as_os_str(), run));
@@ -693,7 +675,6 @@ fn workflow_errors_are_truthful_and_never_create_the_db() {
             .contains("not initialized")
     );
     assert_eq!(fs::read(&empty).unwrap(), b"", "no auto-init/migration");
-    // Execution/submission and unqualified create syntax still fail truthfully.
     for argv in [
         vec![
             OsStr::new("workflow"),
@@ -749,7 +730,6 @@ fn workflow_protocol_survives_broken_streams() {
     assert_eq!(broken_err.stdout, ordinary.stdout);
     let value: Value = serde_json::from_slice(&broken_err.stdout).unwrap();
     assert_eq!(value["call_id"], "wf-id");
-    // A closed stdout must map to the existing INTERNAL exit 6 on success and error paths.
     let mut missing = vec![OsStr::new("--call-id"), OsStr::new("wf-id")];
     let missing_db = dir.path().join("缺失 库.sqlite");
     missing.extend(workflow_args(
@@ -827,7 +807,6 @@ fn failed_historical_upgrade_preserves_library_after_cli_exit() {
         [&hash],
     )
     .unwrap();
-    // A legal v2 index collides late in 006, after the intervening migrations have run.
     conn.execute_batch(
         "INSERT INTO aw_component_references VALUES('character-v1','mesh','mesh-v1');
          CREATE INDEX aw_feedback_version_order ON aw_assets(asset_id);",
@@ -851,7 +830,6 @@ fn failed_historical_upgrade_preserves_library_after_cli_exit() {
     let (conn, _) = open_and_configure(&db).unwrap();
     conn.execute("ATTACH ?1 AS original", [baseline.to_str().unwrap()])
         .unwrap();
-    // Compare schema definitions and every row of every v2 table in both directions.
     for table in [
         "sqlite_schema",
         "aw_schema_version",
@@ -937,7 +915,6 @@ fn library_init_create_status_cancel_durable_chain() {
     assert_eq!(v["results"]["cancellation_requested"], false);
     let mut app = Application::open(&db).unwrap();
     assert_eq!(app.workflow_steps(run.to_str().unwrap()).unwrap().len(), 2);
-    // Dependency order is retained, not topologically sorted or identities trimmed.
     assert_eq!(
         app.claim_workflow_step(run.to_str().unwrap()).unwrap(),
         Some(" seed ".into())
@@ -981,7 +958,6 @@ fn workflow_create_rejects_wire_and_core_graph_without_partial_runs() {
         invoke(&library_init_args(db.as_os_str())).0.status.code(),
         Some(0)
     );
-    // Shape failures belong to the CLI; graph policy retains actual core Database => FAIL.
     let cases = [
         ("{", 2),
         ("{}", 2),
@@ -1078,7 +1054,6 @@ fn workflow_create_rejects_wire_and_core_graph_without_partial_runs() {
             .workflow_steps("unreadable")
             .is_err()
     );
-    // Core's existing 64-step bound, not a second CLI policy.
     fs::write(
         &steps,
         serde_json::to_vec(
@@ -1264,7 +1239,6 @@ fn init_create_broken_streams_do_not_replay_mutations() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["call_id"], "stream-id");
     assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
-    // Duplicate creation errors survive broken stderr without becoming success.
     let out = Command::new(env!("CARGO_BIN_EXE_assetweft"))
         .args(&create)
         .stderr(broken_output())
@@ -1296,7 +1270,6 @@ fn init_create_broken_streams_do_not_replay_mutations() {
             .unwrap();
         assert_eq!(status.code(), Some(6), "{argv:?}");
     }
-    // Output failure does not roll back the committed operation or trigger a replay.
     let mut initialized = Application::open(&ambiguous_db).unwrap();
     initialized
         .create_workflow("core-schema-probe", &[step("a", &[])])
@@ -1309,7 +1282,6 @@ fn init_create_broken_streams_do_not_replay_mutations() {
     assert_eq!(records[0].outcome, None);
 }
 
-// Local declarations only: real CLI processes and SQLite through Application, no provider.
 fn budget_args<'a>(action: &'a str, db: &'a OsStr, value: &'a OsStr) -> Vec<&'a OsStr> {
     vec![
         OsStr::new("budget"),
@@ -1405,7 +1377,6 @@ fn budget_declarations_reopen_exactly_and_never_reset_reservations() {
             declaration
         );
     }
-    // Seed only a local reservation through the existing facade; no submit/callback.
     let id = " 预算 0 ";
     let mut app = Application::open(&db).unwrap();
     app.reserve_call(&assetweft_core::budget::Request {
@@ -1421,7 +1392,6 @@ fn budget_declarations_reopen_exactly_and_never_reset_reservations() {
     let original = app.budget_balance(id).unwrap();
     drop(app);
     let original_wire = serde_json::to_value(&original.allowance).unwrap();
-    // Deliberately different key order still yields the same typed descriptor.
     fs::write(&path, format!("{{\"source\":{},\"approval\":\"ExplicitBounded\",\"capacity\":100,\"unit\":\"Token\",\"id\":{}}}", original_wire["source"], json!(id))).unwrap();
     let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
     assert!(out.status.success(), "{v}");
@@ -1433,7 +1403,6 @@ fn budget_declarations_reopen_exactly_and_never_reset_reservations() {
     ] {
         let mut conflict = original_wire.clone();
         conflict[field] = value;
-        // Approval conflict must be valid core input to reach immutable identity check.
         if field == "approval" {
             conflict["capacity"] = json!(0);
         }
@@ -1648,7 +1617,7 @@ fn budget_database_admission_and_missing_identity_are_truthful() {
         let (out, v) = invoke(&budget_args("balance", db.as_os_str(), OsStr::new(id)));
         assert_eq!(out.status.code(), Some(1), "{v}");
         assert_eq!(v["status"], "FAIL");
-        assert_eq!(v["errors"][0]["message"], expected); // empty query ID stays verbatim; core does not validate it.
+        assert_eq!(v["errors"][0]["message"], expected);
     }
     let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
     assert!(out.status.success(), "{v}");
@@ -1735,7 +1704,6 @@ fn budget_protocol_broken_streams_keep_committed_local_declaration() {
             .unwrap();
         assert_eq!(status.code(), Some(6));
     }
-    // First declaration commits even when the real child cannot report it; no retry occurs.
     let mut committed = good.clone();
     committed["id"] = json!("committed-output-lost");
     fs::write(&path, committed.to_string()).unwrap();
@@ -1770,7 +1738,6 @@ fn budget_protocol_broken_streams_keep_committed_local_declaration() {
     assert_eq!(status.code(), Some(6));
 }
 
-// Local TEST_FIXTURE setup uses only public Application capabilities, never SQL.
 fn intent_fixture(dir: &Path) -> (PathBuf, PathBuf, Value) {
     let (db, path, allowance) = budget_fixture(dir);
     let (out, v) = invoke(&budget_args("approve", db.as_os_str(), path.as_os_str()));
@@ -1996,7 +1963,6 @@ fn intent_reserve_reopen_exact_identity_and_quote_semantics() {
             assert_eq!(local_intent(&db, "zero-intent"), Value::Null);
         }
     }
-    // Omitted and explicit-null quotes remain unknown on an ordinary allowance.
     let mut r = request.clone();
     r["id"] = json!("omitted-quote");
     r.as_object_mut().unwrap().remove("quote");
@@ -2425,7 +2391,6 @@ fn intent_mutating_stdout_failure_retains_commit_without_replay() {
     );
 }
 
-// Retain each real child receipt when the author run supplies an owned evidence directory.
 fn candidate_invoke(args: &[&OsStr]) -> (Output, Value) {
     let utc = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2444,7 +2409,6 @@ fn candidate_invoke(args: &[&OsStr]) -> (Output, Value) {
     }
     (out, value)
 }
-// Public Application/CAS fixture only; pinned hashes name exact static synthetic bytes.
 fn candidate_fixture(
     dir: &Path,
     bad_proposed: bool,
@@ -2610,7 +2574,6 @@ fn candidate_queries_preserve_all_terminal_receipts_and_historical_bytes() {
                 | (Acceptance::Conflict { .. }, "Conflict")
         ));
         let mut records = vec![(proposal.id.clone(), descriptor, Some(receipt.clone()))];
-        // Advance the actual head once more: an Accepted receipt must keep its older Current.
         if mode == "Accepted" {
             let mut next = proposal.clone();
             next.id = "candidate-next".into();
@@ -2631,7 +2594,6 @@ fn candidate_queries_preserve_all_terminal_receipts_and_historical_bytes() {
             candidate_query(&db, "show", id, &serde_json::to_value(descriptor).unwrap());
             candidate_query(&db, "receipt", id, &serde_json::to_value(receipt).unwrap());
         }
-        // Only our tempfile's synthetic CAS object is removed, after genuine persistence.
         let owned_object = dir.path().join("objects").join(&managed.content_hash);
         assert!(owned_object.is_file(), "{owned_object:?}");
         fs::remove_file(&owned_object).unwrap();
@@ -2789,7 +2751,6 @@ fn candidate_query_protocol_survives_broken_streams() {
     );
 }
 
-// Catalog uses public persisted metadata/head fixtures; expected wire values are explicit.
 fn catalog_args<'a>(action: &'a str, db: &'a OsStr, id: &'a OsStr) -> Vec<&'a OsStr> {
     vec![
         OsStr::new("catalog"),
@@ -3170,7 +3131,6 @@ fn catalog_query_protocol_preserves_broken_stream_exit_and_json() {
     assert_eq!(reopened.component_references("base").unwrap().len(), 1);
 }
 
-// Candidate writes are transport-only, real public Application/SQLite/CAS fixtures.
 fn candidate_write_args<'a>(action: &'a str, db: &'a Path, input: &'a Path) -> Vec<&'a OsStr> {
     let mut args = vec![
         OsStr::new("candidate"),
@@ -3675,7 +3635,6 @@ fn candidate_write_database_paths_help_grammar_and_input_precedence() {
 fn candidate_write_broken_streams_preserve_durable_commits_and_errors() {
     let dir = tempfile::tempdir().unwrap();
     let (db, _, contract, path, _) = candidate_write_fixture(dir.path());
-    // First successful writes lose stdout, yet remain visible via existing public queries.
     for (action, input) in [("initialize", &contract), ("propose", &path)] {
         let args = candidate_write_args(action, &db, input);
         let status = Command::new(env!("CARGO_BIN_EXE_assetweft"))
@@ -3737,7 +3696,6 @@ fn candidate_write_broken_streams_preserve_durable_commits_and_errors() {
     assert_eq!(app.candidate("not-written").unwrap(), None);
 }
 
-// Attempt transport uses genuine first writes; controls run in independent libraries.
 fn candidate_attempt_fixture(dir: &Path, mode: &str) -> (PathBuf, Application, String) {
     let (db, mut app, mut proposal) = candidate_fixture(dir, mode == "Rejected");
     match mode {
@@ -3853,7 +3811,6 @@ fn candidate_attempt_first_write_exact_receipts_and_historical_replay() {
         } else {
             assert_eq!(after, before, "nonaccepted attempt must not advance {mode}");
         }
-        // A genuinely later head must not refresh the tested historic receipt.
         let head = after.unwrap();
         let mut next = core.candidate(&control_id).unwrap().unwrap();
         next.id = "later-head".into();
@@ -4059,7 +4016,6 @@ fn candidate_attempt_broken_streams_retain_first_commits_and_domain_outcomes() {
     }
     assert_eq!(app.candidate_attempt(&id).unwrap(), None);
 }
-// Catalog writes exercise the real process and public facade; no raw SQL or private hooks.
 fn catalog_write_args<'a>(action: &'a str, db: &'a Path, input: &'a Path) -> Vec<&'a OsStr> {
     vec![
         OsStr::new("catalog"),
@@ -4550,7 +4506,6 @@ fn catalog_write_database_grammar_paths_and_admission_precedence() {
         let mut raw = dir.path().as_os_str().as_encoded_bytes().to_vec();
         raw.extend_from_slice(b"/wire-\xff.json");
         let unusual = PathBuf::from(std::ffi::OsString::from_vec(raw));
-        // Test only when this filesystem supports a non-UTF8 name (Darwin may reject it).
         let unusual_write = fs::write(
             &unusual,
             catalog_write_wire("os-path", "UNKNOWN", false).to_string(),
@@ -4669,7 +4624,6 @@ fn catalog_write_first_commits_survive_broken_streams_without_duplicate_success(
     }
 }
 
-// Managed commits use real files, process output and only public Application observations.
 fn object_args<'a>(
     db: &'a Path,
     version: &'a Path,
@@ -4838,7 +4792,6 @@ fn object_commit_enforces_source_cap_after_admitting_metadata() {
     let version = dir.path().join("version.json");
     let file = dir.path().join("bytes");
     let bytes = [b'a'; 1024];
-    // SHA-256 of 1024 ASCII 'a' bytes.
     let hash = "2edc986847e209b4016e141a6dc8716d3207350f416969382d431539bf292e4a";
     let id = "source-cap";
     let mut wire = object_wire(id);
@@ -4905,7 +4858,6 @@ fn object_commit_first_write_survives_broken_stream() {
     }
 }
 
-// Claim/finish use real independent CLI processes and owned SQLite, never raw SQL.
 fn progress_call(db: &Path, run: &str, action: &str, extra: &[&OsStr]) -> (Output, Value) {
     let mut args = workflow_args(action, db.as_os_str(), OsStr::new(run));
     args.extend_from_slice(extra);
@@ -5378,7 +5330,6 @@ fn catalog_feedback_roundtrip_preserves_exact_versions_and_original() {
     assert_eq!(fs::read(original).unwrap(), bytes);
 }
 
-// Each case owns a fresh database and commits an external synthetic input through the CLI.
 fn export_fixture(parent: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let root = parent.join("library");
     fs::create_dir(&root).unwrap();
@@ -5443,7 +5394,6 @@ fn catalog_export_roundtrip_preserves_library() {
         })
         .unwrap();
     app.close().unwrap();
-    // Closed SQLite image covers all persistent metadata, including any operations.
     let database_before = fs::read(&db).unwrap();
     let export = |id| {
         root.join(
@@ -5524,8 +5474,6 @@ fn catalog_export_refuses_changed_unowned_and_unrecoverable_bytes() {
     assert_eq!(fs::read(&lock).unwrap(), b"in use");
     fs::remove_file(lock).unwrap();
 
-    // Keep the original inode alive. The replacement has the same name, size, digest
-    // and link count as the export but belongs to the user.
     let moved = root.join("retained-export");
     fs::rename(&target, &moved).unwrap();
     fs::hard_link(&source, &target).unwrap();
@@ -5589,7 +5537,6 @@ fn catalog_export_partial_publication_never_adopts_or_sweeps() {
         })
         .unwrap();
 
-    // A target without its producer receipt is ambiguous, even with perfect bytes.
     let retained = root.join("retained");
     fs::rename(&witness, &retained).unwrap();
     assert!(app.evict_export("first").is_err());
@@ -5597,7 +5544,6 @@ fn catalog_export_partial_publication_never_adopts_or_sweeps() {
     assert_eq!(fs::read(&target).unwrap(), b"abc");
     fs::rename(retained, &witness).unwrap();
 
-    // Witness-only is the disk state between publish/unlink steps after lease recovery.
     fs::remove_file(&target).unwrap();
     assert!(!app.evict_export("first").unwrap());
     assert_eq!(root.join(app.materialize_export("first").unwrap()), target);
@@ -6058,7 +6004,6 @@ fn catalog_preview_decodes_exact_versions_and_preserves_library() {
     assert_eq!(fs::read(&cas).unwrap(), corrupt);
     assert!(!targets[0].exists());
 
-    // A missing library owner is still a storage failure even without the source file.
     fs::remove_file(&cas).unwrap();
     let owner = root.join(".aw-object-owner");
     let owner_bytes = fs::read(&owner).unwrap();
@@ -6121,7 +6066,6 @@ fn catalog_preview_wav_uses_complete_frames_of_the_requested_version() {
         bytes
     };
     let source = wave(1, &[-107, 17, 85]);
-    // Three seconds of stereo with a different square wave in each channel.
     let stereo = (0..24000)
         .flat_map(|i| {
             [
@@ -6133,7 +6077,6 @@ fn catalog_preview_wav_uses_complete_frames_of_the_requested_version() {
     let other = wave(2, &stereo);
     let cas = add_preview_source(&db, "one", &source, "WAV");
     add_preview_source(&db, "two", &other, "wav");
-    // Both outer and inner size fields, format, rate, byte rate, frame size and bit depth matter.
     for offset in [4, 16, 20, 22, 26, 28, 32, 34, 36, 40] {
         let mut invalid = source.clone();
         invalid[offset] ^= 0x10;
@@ -6176,7 +6119,6 @@ fn catalog_preview_glb_draws_transformed_geometry_for_each_version() {
         .unwrap();
     let original = include_bytes!("../../../examples/godot-static/triangle.glb");
     let mut changed = original.to_vec();
-    // Move the third vertex from (0,1,0) to (1,1,0), preserving both extrema.
     let json_len = u32::from_le_bytes(original[12..16].try_into().unwrap()) as usize;
     let x = 28 + json_len + 24;
     changed[x..x + 4].copy_from_slice(&1.0f32.to_le_bytes());
@@ -6190,7 +6132,7 @@ fn catalog_preview_glb_draws_transformed_geometry_for_each_version() {
         .windows(10)
         .position(|w| w == br#""scene":0,"#)
         .unwrap();
-    unsupported[scene..scene + 10].fill(b' '); // no selected default scene
+    unsupported[scene..scene + 10].fill(b' ');
     add_preview_source(&db, "no-scene", &unsupported, "GLB");
     let db_before = fs::read(&db).unwrap();
     for id in ["bad-index", "no-scene"] {
@@ -6221,7 +6163,6 @@ fn catalog_preview_glb_draws_transformed_geometry_for_each_version() {
         );
         for y in 0..128 {
             for x in 0..128 {
-                // Normalized position in the world-space 2:3 bounding rectangle, in units of 1/448.
                 let u = 224 + 3 * (2 * x + 1 - 128);
                 let v = 2 * (240 - 2 * y - 1);
                 let inside = (0..=448).contains(&u)
@@ -6336,10 +6277,9 @@ fn motion_idle_checks_chain_structure_before_source_admission() {
     assert_eq!(r["results"]["idle_clip"], "AssetWeft_Idle");
     fs::remove_file(&output).unwrap();
 
-    // Two equally unpinned derivatives. Preserve BIN, all labels and JSON chunk length.
     let bytes = fs::read(&source).unwrap();
     for (old, new, reason) in [
-        ("[3,4]", "[4,3]", "topology matched"), // joint ordering does not change parentage
+        ("[3,4]", "[4,3]", "topology matched"),
         (
             "\"skeleton\":3,\"joints\":[3,4]",
             "\"skeleton\":1,\"joints\":[1,4]",
@@ -6384,8 +6324,6 @@ fn motion_stance_uses_declared_role_and_sampled_world_contact() {
         reply["results"].clone()
     };
 
-    // Analytic translation animation. Root moves out and back during stance.
-    // The planted foot counter-translates locally; the slipping foot follows the root.
     let animation = |planted| {
         let root = [0.5, 0.0, 0.125, 0.0, 0.5];
         let foot: Vec<_> = root

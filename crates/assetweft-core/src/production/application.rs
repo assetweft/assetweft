@@ -1,13 +1,9 @@
-//! Responsibility: acceptance ordering and policy, independent of persistence.
-//! Dependencies: Production domain/ports and stable Catalog head values.
-//! Callers: compatibility Application; invariant: only this controlled path constructs a commit decision.
 use super::{
     domain::{Acceptance, AcceptanceReport, Candidate, report_passes},
     ports::{AcceptanceError, AcceptanceInputs, CommitAcceptance},
 };
 use crate::catalog::domain::Current;
 
-/// Private fields and no serde/constructor prevent public reports from authorizing acceptance.
 pub(crate) struct VerifiedAcceptance {
     candidate: Candidate,
     decision: Decision,
@@ -27,7 +23,6 @@ impl VerifiedAcceptance {
     pub(crate) fn candidate(&self) -> &Candidate {
         &self.candidate
     }
-    /// Evaluate the current head observed inside the atomic commit boundary.
     pub(crate) fn resolve(self, head: Option<Current>) -> CommitPlan {
         let report = match self.decision {
             Decision::Terminal(result) => return CommitPlan::Terminal(*result),
@@ -59,7 +54,6 @@ pub(crate) fn attempt(
     ports: &mut (impl AcceptanceInputs + CommitAcceptance),
     id: &str,
 ) -> Result<Acceptance, AcceptanceError> {
-    // A durable receipt wins even when subsequent bytes/validation would now fail.
     if let Some(old) = ports.existing_receipt(id)? {
         return Ok(old);
     }
@@ -184,7 +178,6 @@ mod tests {
             }
         }
     }
-    // This substitute proves ordering/policy only, never SQLite atomicity or CAS.
     impl CommitAcceptance for Ports {
         fn commit_acceptance(
             &mut self,

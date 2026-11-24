@@ -1,5 +1,3 @@
-//! Optional measurement on the pinned Cesium rig, using Assurance and local Blender.
-//! Called by the CLI. Only the verified asset identity reaches the fixed native worker.
 mod landmarks;
 mod process;
 

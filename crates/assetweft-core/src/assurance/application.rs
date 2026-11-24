@@ -1,8 +1,3 @@
-//! Responsibility: bounded input validation orchestration.
-//! Dependencies: domain and purpose-owned ports.
-//! Callers: legacy validation composition.
-//! Invariants: read failure prevents parsing; report policy remains pure.
-
 use super::domain::{self, RoleRequirement, SourceDeclaration, ValidationLimits, ValidationReport};
 use super::ports::{BoundedInput, StructureCheck};
 

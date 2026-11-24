@@ -1,6 +1,3 @@
-//! Rigged Simple native receipt gate. Used only by the pinned Assurance profile.
-//! References are glTF world metres, derived from the original joint matrices,
-//! inverse binds, positions and weights (source vertices 0, 10 and 80).
 use serde::Deserialize;
 use serde_json::Value;
 

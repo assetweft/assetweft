@@ -1,8 +1,3 @@
-//! Responsibility: Consumption CLI incoming adapter for local allowance and call-intent operations.
-//! Dependencies: shared transport, existing Application and public budget value types.
-//! Callers: main command dispatch; strict wire DTOs and map visitors are private here.
-//! Invariants: exact object/duplicate/type/integer admission and one facade operation; core alone owns ledger policy, with no SQL, payment or replay here.
-
 use crate::protocol::{envelope, error, existing_database, library_outcome, read_json};
 use assetweft_core::{
     application::Application,
@@ -13,7 +8,6 @@ use clap::ArgMatches;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// Wire shape only; Consumption alone owns text, currency, integer and approval policy.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AllowanceInput {
@@ -49,7 +43,6 @@ struct CurrencyInput {
     currency: String,
     decimals: u8,
 }
-/// A map-only boundary retains serde's duplicate/missing/type checks and rejects arrays.
 struct CurrencyObject(CurrencyInput);
 impl<'de> serde::Deserialize<'de> for CurrencyObject {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -155,8 +148,6 @@ fn intent_result(intent: Option<Intent>) -> Value {
     });
     json!({"scope":"local_call_intent","intent":intent})
 }
-/// One facade operation only: no retry, top-up/reset, extra read after write or provider call.
-/// Balance is a local projection, not a filesystem read-only or external fee guarantee.
 pub(super) fn budget_response(
     wire: &str,
     call_id: Option<&String>,
@@ -200,7 +191,6 @@ pub(super) fn budget_response(
             })
         }
         "balance" => {
-            // Verbatim, including empty IDs: preserve the actual query's error category.
             let id = args.get_one::<String>("budget-id").expect("required");
             app.budget_balance(id).map(|balance| {
                 json!({

@@ -1,6 +1,3 @@
-//! Responsibility: pure protected snapshot values and bounded integrity policy.
-//! Dependencies: serde and duration values; callers: backup use cases and adapters.
-//! Invariants: format 1/schema 6 only; registered identities never imply available bytes.
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 

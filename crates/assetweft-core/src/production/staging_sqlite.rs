@@ -1,7 +1,3 @@
-//! Responsibility: concrete SQLite candidate freeze/read and bounded managed-byte verification.
-//! Dependencies: Catalog concrete reads, CAS lease, rusqlite and Assurance checks; callers: Application, acceptance and initialization adapters.
-//! Invariants: encoding before lease, reference recheck under lease before IMMEDIATE, unchanged SQL/parameters, no replay;
-//! a declared contract byte bound rejects the actual managed regular file before CAS hashing or Assurance validation.
 use super::{
     domain::{AcceptanceReport, Candidate, ComponentEvidence, ComponentSnapshot},
     staging_application::FrozenProposal,
@@ -18,7 +14,6 @@ use std::path::Path;
 fn invalid(s: &'static str) -> LibraryError {
     LibraryError::InvalidInput(s)
 }
-/// Existing ceiling for managed staging when no fixture contract is declared.
 const MANAGED_BYTE_CEILING: u64 = super::rigged_simple::BYTE_LIMIT;
 pub(crate) struct SqliteStaging<'a> {
     pub conn: &'a mut Connection,
@@ -188,9 +183,7 @@ fn freeze(
     candidate: Candidate,
 ) -> Result<Candidate, LibraryError> {
     let encoded = serde_json::to_string(&candidate).map_err(|_| invalid("descriptor encoding"))?;
-    // Existing versions retain their objects. Lease before SQLite prevents reference/GC races.
     let _guard = guard(root)?;
-    // Application's reference insertion uses this same lease. Recheck after measurement.
     for (owner, measured) in [
         (&candidate.base_version, &candidate.base),
         (&candidate.candidate_version, &candidate.proposed),
@@ -237,9 +230,6 @@ pub(crate) fn read(conn: &Connection, id: &str) -> Result<Option<Candidate>, Lib
         .map(|s| serde_json::from_str(&s).map_err(|_| invalid("stored descriptor")))
         .transpose()
 }
-/// Measure an owner's components. A declared bound is checked against the actual
-/// regular file before `measured` opens the CAS identity path, so an over-limit file
-/// is never hashed or structure-validated first. `None` keeps the staging ceiling.
 pub(crate) fn snapshot(
     conn: &mut Connection,
     root: &Path,
@@ -274,10 +264,6 @@ pub(crate) fn snapshot(
     Ok(result)
 }
 
-// Retry only lease acquisition/read-only verification before any write transaction.
-// A short fixed attempt count starved a concurrent App under fsync contention.
-// A monotonic two-second deadline accommodates a brief holder and still returns Busy
-// for an abandoned lease. Never replay a conditional UPDATE or its receipt transaction.
 fn wait_storage<T>(
     mut operation: impl FnMut() -> Result<T, LibraryError>,
 ) -> Result<T, LibraryError> {
@@ -319,8 +305,6 @@ pub(crate) fn measured(
         }
     })
 }
-/// Size/type gate for the actual managed file. The global ceiling and diagnostics are
-/// unchanged; a declared contract bound adds only the earlier, cheaper rejection.
 pub(crate) fn bounded_regular(
     path: &Path,
     max_component_bytes: Option<u64>,
@@ -372,7 +356,6 @@ pub(crate) fn validate_components(
         ],
     };
     for s in snapshots {
-        // The mature checker has no standalone material/audio/VFX role contract.
         let role = match s.role.as_str() {
             "mesh" => RoleRequirement::StaticMesh,
             "rig" => RoleRequirement::RiggedCharacter,
@@ -384,7 +367,6 @@ pub(crate) fn validate_components(
                 continue;
             }
         };
-        // Reject the actual file on its declared bound before CAS hashing/validation.
         let metadata = crate::catalog::sqlite_metadata::asset_version(conn, &s.version)?
             .ok_or_else(|| invalid("component version"))?;
         bounded_regular(
@@ -404,8 +386,6 @@ pub(crate) fn validate_components(
                 .push(format!("UNSUPPORTED_SOURCE_OR_FORMAT:{}", s.role));
             continue;
         }
-        // CAS verification supplies a safe hash/path; bounded validator re-reads and hashes
-        // the actual file. No SQL transaction spans parsing, no external URI is resolved.
         let checked = checks::validate_file(
             &root.join("objects").join(&object.content_hash),
             role,

@@ -1,6 +1,3 @@
-//! Responsibility: fixture proposal values and pure descriptor/lock policy.
-//! Dependencies: stable Catalog values, LockMode and Production errors; callers: staging use case/adapter.
-//! Invariants: byte-only fixture scope, exact snapshot order and unchanged Candidate encoding.
 use super::{
     domain::{Candidate, ComponentSnapshot},
     staging_ports::StagingError,
@@ -118,7 +115,6 @@ pub(crate) fn descriptor(
     Ok(candidate)
 }
 
-/// Validate facts at their original observation point; never promote declaration to rights evidence.
 pub(crate) fn component_count(count: usize) -> Result<(), StagingError> {
     if count == 0 || count > 7 {
         return Err(invalid("component count"));

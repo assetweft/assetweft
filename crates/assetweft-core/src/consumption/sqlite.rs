@@ -1,6 +1,3 @@
-//! Responsibility: concrete Consumption SQLite ledger, SQL mapping and transaction lifecycle.
-//! Dependencies: rusqlite, library schema and core decisions; called only by concrete composition.
-//! Invariants: original IMMEDIATE, conditional updates, rollback and exact descriptor identities.
 use super::domain::*;
 use crate::library::{LibraryError, require_current};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -120,9 +117,6 @@ pub(crate) fn cancel(c: &mut Connection, id: &str) -> Result<()> {
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_current(&tx)?;
     let i = intent(&tx, id)?.ok_or_else(|| invalid("unknown call"))?;
-    // Claim takes the same write lock: PREPARING proves no callback was submitted.
-    // This is a local release, not a synthesized provider/query receipt. Terminal
-    // states cannot release twice; ATTEMPTING/UNKNOWN still require reconciliation.
     if release_on_cancel(&i) {
         settle(&tx, &i, 0, "RELEASED")?;
     }

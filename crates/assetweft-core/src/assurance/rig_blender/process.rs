@@ -1,6 +1,3 @@
-//! Shared private Blender transport for the CLI profile and the optional fixture example.
-//! Callers admit their exact profile and supply a fixed, embedded worker.
-//! Never invokes a shell. Records the subprocess exit, script hash and timeout.
 use super::assurance::{self, CheckStatus, ValidationLimits};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

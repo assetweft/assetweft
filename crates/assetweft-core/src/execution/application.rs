@@ -1,10 +1,6 @@
-//! Responsibility: declared synchronous checked Execution use cases.
-//! Dependencies: domain and Backend port; old executor path re-exports these SAME types.
-//! Invariants: unsupported operations precede backend calls; precision remains 0..18.
 use super::{domain::*, ports::Backend};
 use crate::consumption::domain::Unit;
 
-/// One thin checked consumer interface. Snapshots the declaration, not admission.
 pub struct Executor<B> {
     backend: B,
     declaration: Declaration,

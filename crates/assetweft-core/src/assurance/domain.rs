@@ -1,21 +1,13 @@
-//! Responsibility: validation values, declarations and role/report policy.
-//! Dependencies: std only.
-//! Callers: Assurance use cases and legacy type reexports.
-//! Invariants: format failure leaves role NOT_RUN; source is declaration only.
-
 use std::fmt;
 
-/// 本检查器版本（与 crate 版本一致）。
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 本卡声明的支持范围：只做 GLB 2.0 容器与结构解析，不解析外部 URI/图片。
 pub const SUPPORTED_FORMAT: &str =
     "GLB 2.0 container via gltf 1.4.1; external URIs/images not resolved";
 
-/// 调用者可配置的读取上限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationLimits {
-    /// 允许读取的最大字节数。
     pub max_bytes: u64,
 }
 
@@ -30,20 +22,14 @@ impl Default for ValidationLimits {
 /// 来源分类（与 docs/CONTRACTS.md §6 的词表一致）。调用者声明，本模块不验证。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceClass {
-    /// 合成测试样本。
     TestFixture,
-    /// 程序化生成。
     Procedural,
-    /// AI 生成（调用者声明）。
     AiGenerated,
-    /// 人工编辑。
     ManuallyEdited,
-    /// 未声明或未知。
     Unknown,
 }
 
 impl SourceClass {
-    /// 合同词表文本。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -71,7 +57,6 @@ impl SourceClass {
     }
 }
 
-/// 来源分类不是合同词表值时返回。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownSourceClass;
 
@@ -86,7 +71,6 @@ impl std::error::Error for UnknownSourceClass {}
 /// 调用者声明的来源；`verified` 永远为 false —— 本模块不验证许可或生成方式。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDeclaration {
-    /// 声明的分类。
     pub class: SourceClass,
     /// 调用者声明的许可文本（仅记录，不验证）。
     pub declared_license: Option<String>,
@@ -109,19 +93,15 @@ impl SourceDeclaration {
     }
 }
 
-/// 所选角色合同：决定缺哪些组件时算「角色不满足」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleRequirement {
-    /// 只要求一个静态 mesh。
     StaticMesh,
-    /// 要求 mesh + skin(rig)。
     RiggedCharacter,
     /// 要求 mesh + skin + animation。
     AnimatedCharacter,
 }
 
 impl RoleRequirement {
-    /// 该角色合同要求的组件名。
     #[must_use]
     pub const fn required(self) -> &'static [&'static str] {
         match self {
@@ -131,7 +111,6 @@ impl RoleRequirement {
         }
     }
 
-    /// 合同词表文本。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -145,16 +124,13 @@ impl RoleRequirement {
 /// 单项检查状态。`NOT_RUN` 不是 `FAIL`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckStatus {
-    /// 在声明范围内通过。
     Pass,
-    /// 在声明范围内失败。
     Fail,
     /// 未执行/未实现；不得当作 PASS。
     NotRun,
 }
 
 impl CheckStatus {
-    /// 合同词表文本。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -165,58 +141,39 @@ impl CheckStatus {
     }
 }
 
-/// 一条逐项检查结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckItem {
-    /// 稳定的检查 ID。
     pub id: &'static str,
-    /// 状态。
     pub status: CheckStatus,
-    /// 人类可读细节（不含推断值）。
     pub detail: String,
 }
 
 /// 角色合同结果：与格式结果分开报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleResult {
-    /// 所选角色合同。
     pub requirement: RoleRequirement,
-    /// 是否满足；格式不可解析时为 None。
     pub satisfied: Option<bool>,
-    /// 实际存在的组件。
     pub present: Vec<&'static str>,
-    /// 缺失的必需组件。
     pub missing: Vec<&'static str>,
-    /// 该结果自身的状态。
     pub status: CheckStatus,
 }
 
 /// 最小 ValidationReport（docs/CONTRACTS.md §8）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationReport {
-    /// 检查器版本。
     pub checker_version: &'static str,
-    /// 实际读取字节的 SHA-256。
     pub file_sha256: String,
-    /// 实际读取的字节数。
     pub bytes_read: usize,
-    /// 支持范围声明。
     pub format: &'static str,
-    /// 格式/结构解析状态。
     pub format_status: CheckStatus,
-    /// 角色合同结果（与格式分开）。
     pub role: RoleResult,
-    /// 全部逐项结果。
     pub checks: Vec<CheckItem>,
-    /// 未执行项（显式）。
     pub not_run: Vec<&'static str>,
-    /// 来源声明（未验证）。
     pub source: SourceDeclaration,
     /// 单位/坐标声明：输入未声明时记 UNKNOWN，不从字节推断。
     pub units: &'static str,
 }
 
-/// 本卡明确未执行、也不得被当作 PASS 的检查项。
 pub const NOT_RUN_ITEMS: &[&str] = &[
     "skin.weights_numeric",
     "rig.bind_matrices_numeric",
@@ -226,7 +183,6 @@ pub const NOT_RUN_ITEMS: &[&str] = &[
     "engine.import",
 ];
 
-/// Parsed facts contain no parser SDK values and confer no quality or rights claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComponentFacts {
     pub mesh_count: usize,
@@ -236,7 +192,6 @@ pub(crate) struct ComponentFacts {
     pub has_joint_animation: bool,
 }
 
-/// Evidence about the exact input bytes, with parsing failure kept distinct.
 pub(crate) struct CheckedBytes {
     pub file_sha256: String,
     pub bytes_read: usize,

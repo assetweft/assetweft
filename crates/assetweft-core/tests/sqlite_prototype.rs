@@ -1,10 +1,3 @@
-//! 职责: AW-004:A 外部集成测试——真实磁盘文件、中文+空格路径、关闭重开、每连接外键、
-//!        约束拒错、两独立连接有限写竞争，以及 runtime/构建选项的机器可读实测行。
-//! 依赖: assetweft-core::sqlite、rusqlite 0.42.0、Rust std；无服务进程/管理员/网络调用。
-//! 调用方: `cargo test --workspace --locked`（C1 的 test 步骤）与本卡红绿对照实验。
-//! 不变量: 每个测试自建并回收自己的临时目录；不用 `:memory:` 冒充文件证据；
-//!        断言均为合同/缺陷型，不更新 golden、不弱化断言、不吞真实错误。
-
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -16,7 +9,6 @@ use assetweft_core::sqlite::{
 };
 use rusqlite::TransactionBehavior;
 
-/// 自建临时目录并在 Drop 时只回收自己的目录（不碰历史日志/真实数据）。
 struct TempDirGuard(PathBuf);
 
 impl Drop for TempDirGuard {
@@ -36,8 +28,6 @@ fn temp_dir() -> TempDirGuard {
         .expect("create own temp dir")
 }
 
-// Only successful atomic creation grants cleanup ownership; a clock value is merely a hint.
-// Retry collisions at most 16 times; propagate other filesystem failures immediately.
 fn temp_dir_from_candidates(
     candidates: impl IntoIterator<Item = PathBuf>,
 ) -> std::io::Result<TempDirGuard> {
@@ -96,7 +86,6 @@ fn json_escape(input: &str) -> String {
     out
 }
 
-/// 机器可读的 runtime 实测行；由跑测脚本抽取为 work/aw004-sqlite/runtime-info.json。
 #[test]
 fn runtime_facts_machine_line() {
     let guard = temp_dir();
@@ -120,7 +109,6 @@ fn runtime_facts_machine_line() {
     println!("AW004_RUNTIME_INFO={line}");
 }
 
-/// 真实磁盘文件（中文+空格路径）创建/写/关/重开/读；每连接 foreign_keys=1；未启用 WAL。
 #[test]
 fn chinese_space_path_real_file_roundtrip_and_reopen() {
     let guard = temp_dir();
@@ -145,7 +133,7 @@ fn chinese_space_path_real_file_roundtrip_and_reopen() {
         assert!(path.exists(), "real disk file must exist");
         init_fixture_schema(&conn).expect("fixture schema");
         insert_pair(&mut conn, 1, 1, "父 记录", "子 记录").expect("short transaction insert");
-    } // 第一连接在此关闭
+    }
     {
         let (conn2, cfg2) = open_and_configure(&path).expect("reopen same real file");
         assert_eq!(
@@ -165,7 +153,6 @@ fn chinese_space_path_real_file_roundtrip_and_reopen() {
     }
 }
 
-/// 缺陷型回归：外键必须真实拒错，且约束错误只能尝试一次、绝不被当作 busy 重试。
 #[test]
 fn foreign_key_really_rejects_orphan_and_is_not_retried_as_busy() {
     let guard = temp_dir();
@@ -198,8 +185,6 @@ fn foreign_key_really_rejects_orphan_and_is_not_retried_as_busy() {
     );
 }
 
-/// 两独立连接对同一真实文件的写竞争：第二连接有限忙等待/退避后以真实 BUSY 错误结束；
-/// 锁释放后可写；不吞 IO/约束错误、不无限循环、事务内不等待网络。
 #[test]
 fn two_connections_finite_busy_then_released_write() {
     let guard = temp_dir();
@@ -280,7 +265,6 @@ fn controlled_duplicate_guard_sqlite_commit_after_drop() {
 #[test]
 fn temp_directory_parallel_claims_and_drop_are_isolated() {
     let parent = temp_dir();
-    // All threads receive exactly the same candidate list and retain ownership until joined.
     let barrier = std::sync::Barrier::new(8);
     let guards = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..8)

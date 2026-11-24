@@ -1,8 +1,3 @@
-//! Responsibility: geometry public values and structure report policy.
-//! Dependencies: serde and plain facts.
-//! Callers: geometry application and SDK adapter.
-//! Invariants: no numeric geometry or resource resolution.
-
 /// 节点局部变换；矩阵保留原始值，避免不可靠的分解。
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub enum LocalTransform {

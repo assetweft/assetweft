@@ -1,5 +1,3 @@
-//! Catalog PNG thumbnail codec. The managed-file adapter supplies verified, bounded bytes.
-//! Decode the whole static image before producing a deterministic nearest-neighbour preview.
 use crate::storage::StorageError;
 use png::{BitDepth, ColorType, DecodeOptions, Decoder, Encoder, Limits};
 use std::io::Cursor;
@@ -7,7 +5,7 @@ use std::io::Cursor;
 pub(super) fn thumbnail(source: &[u8]) -> Result<Vec<u8>, StorageError> {
     let invalid = |_| StorageError::Invalid("malformed PNG");
     let mut options = DecodeOptions::default();
-    options.set_ignore_iccp_chunk(true); // Rejected by chunk presence, without inflating the profile.
+    options.set_ignore_iccp_chunk(true);
     options.set_ignore_checksums(false);
     options.set_skip_ancillary_crc_failures(false);
     let mut cursor = Cursor::new(source);
@@ -74,7 +72,7 @@ pub(super) fn thumbnail(source: &[u8]) -> Result<Vec<u8>, StorageError> {
 // Check actual declarations against what the encoder can faithfully reproduce.
 fn check_color_chunks(source: &[u8], info: &png::Info<'_>) -> Result<(), StorageError> {
     let malformed = || StorageError::Invalid("malformed PNG chunk");
-    let mut chunks = &source[8..]; // read_info already verified the signature.
+    let mut chunks = &source[8..];
     let mut gamma = info.gama_chunk;
     let mut chromaticities = info.chrm_chunk;
     let mut srgb = info.srgb;

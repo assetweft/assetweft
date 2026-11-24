@@ -1,5 +1,3 @@
-//! Exercises both public budget writers against a fresh library. SQLite hooks on
-//! the two test connections synchronize the first commit and a real lock conflict.
 use super::Application;
 use crate::{budget::*, library::LibraryError};
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
@@ -62,7 +60,6 @@ fn check_overlap(cancel_first: bool, veto: bool, native_wait: bool) {
     let (held, start) = channel();
     let (collision, observed) = channel();
     let (finished, retry) = channel();
-    // Only gate the first commit. A successful claim also records UNKNOWN.
     let mut held = Some(held);
     first
         .connection
@@ -70,8 +67,6 @@ fn check_overlap(cancel_first: bool, veto: bool, native_wait: bool) {
             let Some(signal) = held.take() else {
                 return false;
             };
-            // On disconnect/timeout abort. The controller verifies the observation
-            // independently because SQLite callbacks cannot propagate a Rust panic.
             signal.send(()).is_err() || observed.recv_timeout(WAIT).is_err() || veto
         }))
         .unwrap();
@@ -90,7 +85,6 @@ fn check_overlap(cancel_first: bool, veto: bool, native_wait: bool) {
                 cfg.journal_mode, cfg.busy_timeout_ms
             );
         }
-        // Only the isolated SQLite build emits this event, after its first native sleep.
         second
             .connection
             .trace_v2(

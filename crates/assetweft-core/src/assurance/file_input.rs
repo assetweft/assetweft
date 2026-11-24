@@ -1,23 +1,13 @@
-//! Responsibility: concrete bounded filesystem reading and original errors.
-//! Dependencies: std fs/io and Assurance BoundedInput.
-//! Callers: legacy validation composition and read_bounded consumers.
-//! Invariants: metadata bound before open; bounded read with saturating limit+1.
-
 use super::{domain::ValidationLimits, ports::BoundedInput};
 use std::{fmt, fs, io::Read, path::Path};
 
 /// 读取/打开阶段的错误；解析失败不是这里的错误，而是报告中的 FAIL。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    /// 无法打开/读取文件。
     Io(String),
-    /// 文件超过配置上限，未完整读取。
     InputTooLarge {
-        /// 配置的上限。
         limit: u64,
-        /// 元数据或已读字节给出的实际大小。
         actual: u64,
-        /// 实际读取的字节数（超限时最多 limit+1）。
         bytes_read: usize,
     },
 }
@@ -55,7 +45,6 @@ pub fn read_bounded(path: &Path, limits: ValidationLimits) -> Result<Vec<u8>, Va
     }
     let file = fs::File::open(path).map_err(|e| ValidationError::Io(e.to_string()))?;
     let mut buf = Vec::new();
-    // u64::MAX 上限时饱和，避免 +1 溢出 panic（debug）或回绕（release）。
     file.take(limits.max_bytes.saturating_add(1))
         .read_to_end(&mut buf)
         .map_err(|e| ValidationError::Io(e.to_string()))?;

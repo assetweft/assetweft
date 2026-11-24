@@ -1,6 +1,3 @@
-//! Responsibility: concrete bounded CAS streaming and SQLite managed-object persistence.
-//! Dependencies: Catalog semantic capability/policy, existing storage lease/binding, library schema guard.
-//! Callers: storage compatibility composition; invariants: lease before IMMEDIATE, publish before registration.
 use super::{
     domain::AssetVersion,
     objects_domain::{
@@ -88,7 +85,6 @@ pub(super) fn verify(path: &Path, hash: &str, size: u64) -> Result<(), StorageEr
     Ok(())
 }
 
-// Resolves the immutable version binding without inspecting or modifying the filesystem.
 pub(super) fn managed_record(
     conn: &Connection,
     id: &str,
@@ -133,7 +129,6 @@ pub(crate) fn file_availability(
     let Some(object) = managed_record(conn, id)? else {
         return Ok(FileAvailability::MetadataOnly);
     };
-    // The immutable version already retains the object against cooperative GC.
     check_binding(conn, root)?;
     let directory = root.join("objects");
     let verify_managed = || {
@@ -171,7 +166,6 @@ impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
         let mut h = Sha256::new();
         let mut written = 0u64;
         let mut buf = [0; 65536];
-        // Read at most expected length + 1: catches both incomplete and excess input.
         let mut bounded = (&mut self.reader).take(expected_len + 1);
         loop {
             let n = bounded.read(&mut buf)?;
@@ -287,14 +281,13 @@ impl<R: Read> ManagedObjects for SqliteObjects<'_, R> {
             return Ok(outcome);
         }
         let path = objects(root)?.join(hash);
-        // Validate before deleting a candidate; no symlink or wrong-content cleanup.
         match fs::symlink_metadata(&path) {
             Ok(meta) => verify(&path, hash, meta.len())?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
         tx.execute("DELETE FROM aw_objects WHERE content_hash=?1", [hash])?;
-        tx.commit()?; // Failure after this point leaves only an explainable file orphan.
+        tx.commit()?;
         match fs::remove_file(path) {
             Ok(()) => Ok(Collection::Removed),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Collection::Absent),

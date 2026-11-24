@@ -1,8 +1,3 @@
-//! Responsibility: AW018:A synchronous declared executor contract, not runtime admission.
-//! Dependencies: Consumption Unit/Usage; callers: future runtime and protocol contract tests.
-//! Invariants: no IO, credentials resolution, retry, billing math or authorization here.
-//! Correlation is opaque and never a provider idempotency guarantee. Artifact references
-//! are declarations, not downloaded/verified bytes. Debug redaction is only a local property.
 use crate::consumption::domain::Usage;
 use std::fmt;
 

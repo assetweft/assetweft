@@ -1,7 +1,3 @@
-//! Responsibility: borrowed head writes and compatibility exact-query composition.
-//! Dependencies: Catalog query use case/adapter, library errors and rusqlite.
-//! Callers: candidate fixture initialization and acceptance orchestration.
-//! Invariants: writes borrow caller transaction; no lease acquisition or commit here.
 use super::domain::{Current, FixtureContract};
 use crate::library::LibraryError;
 use rusqlite::{Connection, Transaction, params};
@@ -12,7 +8,6 @@ pub(crate) fn current(conn: &Connection, asset: &str) -> Result<Option<Current>,
     super::head_application::current(&mut super::head_sqlite::SqliteHead(conn), asset)
         .map_err(Into::into)
 }
-/// Register a checked fixture head without resetting an existing head.
 pub(crate) fn initialize(
     tx: &Transaction<'_>,
     asset: &str,
@@ -33,7 +28,6 @@ pub(crate) fn initialize(
     let result = current(tx, asset)?.ok_or_else(|| invalid("current missing"))?;
     Ok(result)
 }
-/// Compare-and-swap within the caller's Immediate receipt transaction.
 pub(crate) fn advance(
     tx: &Transaction<'_>,
     asset: &str,

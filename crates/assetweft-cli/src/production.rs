@@ -1,8 +1,3 @@
-//! Responsibility: Production CLI incoming adapter for plan, workflow claim/explicit outcome recording, explicit fixture initialization/staging/attempts and stored candidate queries.
-//! Dependencies: shared transport, Production specification and existing Application/candidate/workflow values.
-//! Callers: main command dispatch; DTOs and persisted-record projection remain private here.
-//! Invariants: core owns graph/state/lock/acceptance policy and atomic receipts; no execution, SQL, retry or implicit init.
-
 use crate::protocol::{envelope, error, existing_database, library_outcome, read_json, source};
 use assetweft_core::{
     LockMode,
@@ -17,7 +12,6 @@ use clap::ArgMatches;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// Wire shape only; Catalog/Production retain all fixture and limit policy.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContractInput {
@@ -135,7 +129,6 @@ impl<'de> serde::Deserialize<'de> for ProposalObject {
         deserializer.deserialize_map(ProposalVisitor)
     }
 }
-/// One explicit facade mutation; returned values are projected directly without readback/retry.
 pub(super) fn candidate_write_response(
     wire: &str,
     call_id: Option<&String>,
@@ -210,7 +203,6 @@ pub(super) fn candidate_write_response(
     }
 }
 
-/// Delegate one candidate operation; only core decides and durably records acceptance.
 pub(super) fn candidate_response(
     wire: &str,
     call_id: Option<&String>,
@@ -253,7 +245,6 @@ pub(super) fn candidate_response(
             )
         }),
         "attempt" => app.attempt_accept_candidate(id).map(|receipt| {
-            // Exhaustive transport projection only: receipt/report/reason stay core-owned.
             let candidate = match &receipt {
                 Acceptance::Accepted { candidate, .. }
                 | Acceptance::Conflict { candidate, .. }
@@ -327,14 +318,12 @@ pub(super) fn candidate_response(
     }
 }
 
-/// Input shape only; Production owns graph, identity and count policies.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StepInput {
     id: String,
     dependencies: Vec<String>,
 }
-/// Serde structs also accept positional arrays; this wire requires JSON objects only.
 struct StepObject(StepInput);
 impl<'de> serde::Deserialize<'de> for StepObject {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -357,7 +346,6 @@ impl<'de> serde::Deserialize<'de> for StepObject {
         deserializer.deserialize_map(ObjectVisitor)
     }
 }
-/// String-first transport input; the core owns outcome byte bounds and transition policy.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OutcomeInput {
@@ -396,7 +384,6 @@ fn issue_exit(code: spec::IssueCode) -> i32 {
         spec::IssueCode::Fail => 1,
     }
 }
-/// Local wire projection of a non-Serialize persisted record; exhaustive, meaning-preserving.
 fn step_value(record: &StepRecord) -> Result<Value, String> {
     let (state, raw, evidence) = match (&record.state, record.outcome.as_ref()) {
         (State::Pending, None) => ("pending", None, None),
@@ -415,8 +402,6 @@ fn step_value(record: &StepRecord) -> Result<Value, String> {
     };
     Ok(json!({"id":record.id,"state":state,"raw":raw,"evidence":evidence}))
 }
-/// Status reads steps then cancellation sequentially (not an atomic snapshot); cancel only
-/// persists the request and never asserts process, billing or budget effects.
 pub(super) fn workflow_response(
     wire: &str,
     call_id: Option<&String>,
@@ -662,7 +647,6 @@ pub(super) fn plan_response(
         Err(e) => return finish(2, "INVALID_INPUT", json!([e]), Value::Null),
     };
     let outcome = spec::validate(&request, &context);
-    // Deterministic priority when the core returns multiple issue categories.
     let code = [4, 2, 3, 5, 1]
         .into_iter()
         .find(|c| outcome.issues.iter().any(|i| issue_exit(i.code) == *c))

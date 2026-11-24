@@ -1,4 +1,3 @@
-//! AW012 real App/SQLite/CAS gates. All data is synthetic in exclusively owned tempdirs.
 use assetweft_core::{
     application::Application,
     backup::{BackupError, Limits, Progress},
@@ -115,7 +114,6 @@ fn lease_blocks_actual_collector_and_reference_then_releases() {
                 Err(StorageError::Busy)
             ));
             assert!(other.add_asset_version(&sample("late", b"bytes")).is_err());
-            // Independent SQL metadata writes can proceed; object IO holds no source write tx.
             other
                 .append_feedback(&Feedback {
                     feedback_id: "later".into(),
@@ -135,7 +133,6 @@ fn lease_blocks_actual_collector_and_reference_then_releases() {
         Collection::Protected
     );
     other.add_asset_version(&sample("late", b"bytes")).unwrap();
-    // Owned fixture-only removal simulates later loss of source references; real collection API follows.
     let conn = rusqlite::Connection::open(db).unwrap();
     conn.execute_batch("PRAGMA foreign_keys=OFF; DROP TRIGGER aw_feedback_delete; DELETE FROM aw_feedback; DELETE FROM aw_managed_versions; DELETE FROM aw_asset_versions;").unwrap();
     other.protect_object(&hash(b"bytes"), false, false).unwrap();
@@ -332,7 +329,6 @@ fn snapshot_schema_disagrees_with_manifest_rejected_without_upgrade_or_source_wr
     );
 }
 
-// Real SQLite files exercise the public adapter, including the bytes left on limit failure.
 #[test]
 fn snapshot_write_budget_page_sizes_and_boundaries() {
     for page_size in [512_u64, 4096, 65536] {

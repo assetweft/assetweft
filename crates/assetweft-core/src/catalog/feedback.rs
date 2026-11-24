@@ -1,6 +1,3 @@
-//! Responsibility: append and query exact-version user opinions, including latest selection.
-//! Dependencies: Catalog pure validation and purpose-owned Feedback capability only.
-//! Callers: Application composition; invariant: malformed inputs never reach persistence.
 use super::{
     domain::{self, Feedback, FeedbackRecord, HistoryQuery, MetadataError},
     ports::Feedback as FeedbackPort,

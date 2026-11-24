@@ -1,6 +1,3 @@
-//! Responsibility: exact current-head query and identity policy.
-//! Dependencies: Catalog values and HeadQuery only; callers: composition and borrowed adapters.
-//! Invariants: identity rejection precedes schema/query errors; current value is unchanged.
 use super::{
     domain::{Current, MetadataError},
     head_ports::HeadQuery,

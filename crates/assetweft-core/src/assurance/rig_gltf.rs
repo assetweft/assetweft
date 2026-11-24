@@ -1,8 +1,3 @@
-//! Responsibility: Rig SDK traversal and streaming numeric decoding.
-//! Dependencies: gltf and pure Rig policies.
-//! Callers: Rig inspection capability.
-//! Invariants: no URI reads and no bulk numeric array clones.
-
 use super::{
     domain::CheckStatus,
     gltf_checks::{WEBP_EXTENSION, parse_glb},
@@ -183,7 +178,6 @@ impl RigNumeric for GltfRig {
                     continue;
                 };
                 use gltf::mesh::util::ReadWeights;
-                // Keep integer sums exact; do not round-trip through normalized f32.
                 let (weights, target): (Box<dyn Iterator<Item = [f64; 4]> + '_>, f64) = match wi {
                     ReadWeights::U8(it) => (Box::new(it.map(|v| v.map(f64::from))), 255.),
                     ReadWeights::U16(it) => (Box::new(it.map(|v| v.map(f64::from))), 65535.),
@@ -216,7 +210,7 @@ fn bin<'a>(b: gltf::Buffer<'_>, blob: Option<&'a [u8]>) -> Option<&'a [u8]> {
         _ => None,
     }
 }
-/// Validate arithmetic before invoking reader (which uses unchecked offset math).
+// gltf 1.4.1's accessor reader uses unchecked offset arithmetic.
 fn ready(
     a: &gltf::Accessor<'_>,
     blob: Option<&[u8]>,

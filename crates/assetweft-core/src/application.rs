@@ -1,10 +1,3 @@
-//! Responsibility: shared application entry and SQLite connection lifecycle.
-//! Dependencies: the SQLite configuration, Assurance checks and owning context composition.
-//! Callers: future CLI and desktop adapters; integration tests exercise the public API.
-//! Invariants: no SQL or transaction escapes this module or the library repository;
-//! validation is bounded, and no transaction is held while validation runs.
-//! Hash-reference insertion takes the storage lease before SQLite, like object collection.
-
 use crate::assurance::{
     RoleRequirement, SourceDeclaration, ValidationError, ValidationLimits, ValidationReport,
 };
@@ -22,8 +15,6 @@ pub struct Application {
 
 impl Application {
     /// Creates an exclusive new SQLite/CAS backup, retaining objects until completion.
-    /// # Errors
-    /// Reports lease, schema, integrity, cancellation, limits and filesystem failures.
     pub fn backup_library(
         &self,
         destination: &Path,
@@ -41,8 +32,6 @@ impl Application {
         )
     }
     /// Restores a supported snapshot into an exclusively new directory.
-    /// # Errors
-    /// Reports unsupported or corrupt packages, existing destinations and IO failures.
     pub fn restore_library(
         source: &Path,
         destination: &Path,
@@ -59,16 +48,10 @@ impl Application {
     }
 
     /// Opens a local file database, creating it if necessary. Parent directories must exist.
-    ///
-    /// # Errors
-    /// Rejects SQLite memory/URI paths and returns configuration or filesystem errors.
     pub fn open(path: &Path) -> Result<Self, ProtoError> {
         Self::open_with(path, sqlite::open_and_configure)
     }
 
-    /// Opens an existing local library with a read-only SQLite connection.
-    /// # Errors
-    /// Rejects absent databases, nonlocal paths, or invalid connection configuration.
     pub fn open_read_only(path: &Path) -> Result<Self, ProtoError> {
         Self::open_with(path, sqlite::open_read_only)
     }
@@ -118,8 +101,6 @@ impl Application {
         crate::catalog::objects_application::commit(&mut adapter, version, expected_len, max_bytes)
     }
     /// Resolves and rechecks managed bytes; metadata-only versions return None.
-    /// # Errors
-    /// Reports a missing/corrupt object, lock or database error.
     pub fn managed_object(
         &mut self,
         id: &str,
@@ -131,9 +112,6 @@ impl Application {
         );
         crate::catalog::objects_application::managed(&mut adapter, id)
     }
-    /// Observes the managed bytes for one exact version in the private local library.
-    /// # Errors
-    /// Reports invalid identities, corrupt bindings or bytes, and database or filesystem failures.
     pub fn file_availability(
         &mut self,
         version_id: &str,
@@ -145,8 +123,6 @@ impl Application {
         )
     }
     /// Builds a PNG thumbnail or PCM WAVE audition clip from this immutable version's managed bytes.
-    /// # Errors
-    /// Rejects unavailable, damaged or unsupported sources and conflicting destinations.
     pub fn preview(&mut self, id: &str) -> Result<PathBuf, crate::storage::StorageError> {
         use crate::catalog::exports::PreviewFormat;
         use crate::storage::StorageError;
@@ -203,8 +179,6 @@ impl Application {
     }
 
     /// Sets real object retention constraints; clearing them requires caller evidence.
-    /// # Errors
-    /// Rejects invalid/unknown hash, lock or database failure.
     pub fn protect_object(
         &mut self,
         hash: &str,
@@ -224,8 +198,6 @@ impl Application {
         )
     }
     /// Explicitly collects one unreferenced, unpinned, non-unique object; no sweep.
-    /// # Errors
-    /// Rejects unsafe paths/content, lock or database failure.
     pub fn collect_object(
         &mut self,
         hash: &str,
@@ -238,7 +210,6 @@ impl Application {
         crate::catalog::objects_application::collect(&mut adapter, hash)
     }
 
-    /// Configuration read back when this connection was opened.
     #[must_use]
     pub const fn connection_config(&self) -> &ConnectionConfig {
         &self.config
@@ -252,9 +223,6 @@ impl Application {
         library::initialize(&mut self.connection)
     }
 
-    /// Validates and persists a bounded local workflow before any step runs.
-    /// # Errors
-    /// Returns invalid dependencies, schema, or database errors.
     pub fn create_workflow(
         &mut self,
         run: &str,
@@ -267,17 +235,12 @@ impl Application {
         )
     }
     /// Atomically claims a ready step. A running step blocks further claims until reconciled.
-    /// # Errors
-    /// Returns schema, unknown run, or database errors.
     pub fn claim_workflow_step(&mut self, run: &str) -> Result<Option<String>, LibraryError> {
         crate::production::workflow_application::claim(
             &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
             run,
         )
     }
-    /// Explicitly records the actual outcome of a claimed step, including after restart.
-    /// # Errors
-    /// Returns invalid state, oversized result, schema, or database errors.
     pub fn finish_workflow_step(
         &mut self,
         run: &str,
@@ -306,8 +269,6 @@ impl Application {
         )
     }
     /// Prevents future claims; does not stop a running callback or assert remote billing stopped.
-    /// # Errors
-    /// Returns unknown run, schema, or database errors.
     pub fn cancel_workflow(&mut self, run: &str) -> Result<(), LibraryError> {
         crate::production::workflow_application::cancel(
             &mut crate::production::workflow_sqlite::SqliteWorkflowRuns(&mut self.connection),
@@ -315,17 +276,12 @@ impl Application {
         )
     }
     /// Reads whether cancellation was requested, without asserting remote work stopped.
-    /// # Errors
-    /// Returns unknown run, invalid state, schema, or database errors.
     pub fn workflow_cancelled(&self, run: &str) -> Result<bool, LibraryError> {
         crate::production::workflow_application::is_cancelled(
             &crate::production::workflow_sqlite::SqliteWorkflowRuns(&self.connection),
             run,
         )
     }
-    /// Reads persisted step states and exact outcomes.
-    /// # Errors
-    /// Returns invalid persisted state, unknown run, schema, or database errors.
     pub fn workflow_steps(
         &self,
         run: &str,
@@ -336,10 +292,6 @@ impl Application {
         )
     }
 
-    /// Records an asset identity and one metadata-only version in a short transaction.
-    ///
-    /// # Errors
-    /// Rejects invalid fields, unsupported schema, duplicates, storage-lease Busy/IO and database errors.
     pub fn add_asset_version(&mut self, version: &AssetVersion) -> Result<(), LibraryError> {
         let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::new(
             &mut self.connection,
@@ -348,10 +300,6 @@ impl Application {
         crate::catalog::application::register_version(&mut metadata, version).map_err(Into::into)
     }
 
-    /// Reads a version by stable identity.
-    ///
-    /// # Errors
-    /// Returns schema, unknown state, or database errors.
     pub fn asset_version(&mut self, id: &str) -> Result<Option<AssetVersion>, LibraryError> {
         let mut metadata = crate::catalog::sqlite_metadata::SqliteMetadata::new(
             &mut self.connection,
@@ -372,10 +320,6 @@ impl Application {
         crate::catalog::sqlite_metadata::search_versions(&mut self.connection, query)
     }
 
-    /// Associates a component role with an existing version.
-    ///
-    /// # Errors
-    /// Returns invalid input, foreign key, duplicate, schema or database errors.
     pub fn add_component_reference(
         &mut self,
         reference: &ComponentReference,
@@ -388,10 +332,6 @@ impl Application {
             .map_err(Into::into)
     }
 
-    /// Reads explicitly versioned component references for an asset version.
-    ///
-    /// # Errors
-    /// Returns schema, unknown role, or database errors.
     pub fn component_references(
         &mut self,
         version_id: &str,
@@ -414,9 +354,6 @@ impl Application {
     }
 
     /// Runs existing bounded file validation without starting a database transaction.
-    ///
-    /// # Errors
-    /// Propagates file access and size-limit errors from the validation module.
     pub fn validate_file(
         &self,
         path: &Path,
@@ -439,7 +376,6 @@ impl Application {
     }
 }
 
-// M2 typed policy entry; callbacks below are explicitly local TEST_FIXTURE only.
 impl Application {
     /// Records immutable caller-declared capacity; not authenticated consent.
     pub fn approve_budget(&mut self, a: &crate::budget::Allowance) -> Result<(), LibraryError> {
@@ -565,8 +501,6 @@ impl Application {
                 "base revision or contract mismatch",
             ));
         }
-        // Current references are frozen. A later advance also freezes the old
-        // base in the winning descriptor; acceptance still owns the final CAS.
         let base = crate::production::staging_sqlite::SqliteStaging {
             conn: &mut self.connection,
             root: &self.library_root,
@@ -595,9 +529,6 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Reads the immutable staged descriptor and its explicit validation scope.
-    /// # Errors
-    /// Returns schema, database or malformed identity errors.
     pub fn candidate(&self, id: &str) -> Result<Option<crate::candidate::Candidate>, LibraryError> {
         crate::production::staging_application::read(
             &mut crate::production::staging_sqlite::SqliteCandidateRead {
@@ -624,9 +555,6 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Reads the durable terminal receipt, including conflicts and its candidate-bound report.
-    /// # Errors
-    /// Returns schema, identity or stored encoding errors.
     pub fn candidate_attempt(
         &self,
         id: &str,
@@ -657,9 +585,6 @@ impl Application {
         )
         .map_err(Into::into)
     }
-    /// Reads the local fixture current version, revision, and immutable declared contract.
-    /// # Errors
-    /// Returns schema, identity or database errors.
     pub fn candidate_current(
         &self,
         asset: &str,
@@ -672,11 +597,8 @@ impl Application {
     }
 }
 
-// M1 opinions remain separate from M2 candidate acceptance.
 impl Application {
     /// Appends an exact-version opinion; duplicate feedback IDs fail without overwriting.
-    /// # Errors
-    /// Rejects invalid bounds, missing/mismatched versions, duplicates and database failures.
     pub fn append_feedback(
         &mut self,
         feedback: &crate::history::Feedback,
@@ -688,8 +610,6 @@ impl Application {
         .map_err(Into::into)
     }
     /// Returns bounded newest-first history; absent assets/versions yield an empty list.
-    /// # Errors
-    /// Rejects invalid bounds, schema errors and unknown stored decisions.
     pub fn feedback_history(
         &mut self,
         query: crate::history::HistoryQuery<'_>,
@@ -701,8 +621,6 @@ impl Application {
         .map_err(Into::into)
     }
     /// Latest opinion for an asset or exact version, independent of candidate/current status.
-    /// # Errors
-    /// Returns invalid identity, schema or database errors.
     pub fn latest_feedback(
         &mut self,
         asset_id: &str,
@@ -809,7 +727,6 @@ impl Application {
             budget,
             request,
         )
-        // Assembling the legacy boundary: generic core results become its concrete enums.
         .map(Into::into)
         .map_err(Into::into)
     }

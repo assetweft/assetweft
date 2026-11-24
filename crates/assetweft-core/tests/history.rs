@@ -1,4 +1,3 @@
-//! M1 real-file feedback gates; fixtures are owned tempfile directories, not user assets.
 use assetweft_core::{
     application::Application,
     history::{Decision, Feedback, HistoryQuery},
@@ -197,7 +196,6 @@ fn feedback_preserves_originals_metadata_and_existing_current_pointer() {
     missing.presence = Presence::Missing;
     app.add_asset_version(&missing).unwrap();
     let raw = Connection::open(&db).unwrap();
-    // Sentinel existing head, inspected directly: this does not claim candidate acceptance.
     raw.execute(
         "INSERT INTO aw_candidate_current VALUES ('a','v1',9,'sentinel')",
         [],

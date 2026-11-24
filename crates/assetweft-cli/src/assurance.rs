@@ -1,8 +1,3 @@
-//! Responsibility: Assurance CLI incoming adapter for bounded inspect/validate reports and pinned rig commands.
-//! Dependencies: shared transport and public Assurance checks and the M3 motion preset.
-//! Callers: main command dispatch.
-//! Invariants: unchanged bounds, role/source/check diagnostics and NOT_RUN scope; projection adds no validation policy or production acceptance claim.
-
 use crate::protocol::{envelope, error, source};
 use assetweft_core::assurance as val;
 use clap::ArgMatches;

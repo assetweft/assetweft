@@ -1,6 +1,3 @@
-//! Catalog's flat, front-view GLB rendition. Called with hash-verified managed bytes.
-//! The glTF SDK reads one indexed primitive from its embedded BIN. PNG publication
-//! stays with the existing export adapter; all pixels have one material or zero alpha.
 use crate::storage::StorageError;
 use gltf::{
     Semantic,
@@ -72,7 +69,7 @@ pub(super) fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>, StorageError> {
     {
         return Err(PROFILE);
     }
-    // The SDK's POSITION bounds validation indexes this reference directly.
+    // gltf 1.4.1's POSITION bounds validation indexes this accessor directly.
     if root.meshes[0].primitives[0]
         .attributes
         .values()
@@ -169,8 +166,7 @@ pub(super) fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>, StorageError> {
             min[i] = min[i].min(p[i]);
             max[i] = max[i].max(p[i]);
         }
-        // Centered auto-framing cancels the sole root translation exactly.
-        // Leave it out here so large translations cannot swallow small triangles.
+        // glTF 2.0.1 node translation cancels in centered framing; omitting it preserves small triangles at large f32 offsets.
         let axis = |i: usize| {
             (0..3)
                 .map(|j| f64::from(matrix[j][i]) * f64::from(p[j]))

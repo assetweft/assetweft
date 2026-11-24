@@ -1,13 +1,8 @@
-//! 职责: 测试 AW-022:A 静态几何公开合同与缺陷边界。
-//! 依赖: assetweft-core 与 std；每个内存生成 GLB 均为 TEST_FIXTURE，非真实素材。
-//! 调用方: cargo test 与 C1。
-//! 不变量: 不要求 Rig；解析、外部资源、用户尺度与视觉结论分开。
 use assetweft_core::geometry::{
     GeometryError, LocalTransform, Resource, inspect_bytes, inspect_file,
 };
 use assetweft_core::validation::{ValidationError, ValidationLimits};
 
-// TEST_FIXTURE: programmatically creates a JSON-only GLB; external buffer is never opened.
 fn glb(json: &str) -> Vec<u8> {
     let mut json = json.as_bytes().to_vec();
     while !json.len().is_multiple_of(4) {

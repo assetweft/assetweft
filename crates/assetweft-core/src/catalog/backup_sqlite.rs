@@ -1,6 +1,3 @@
-//! Responsibility: concrete SQLite snapshot/CAS copy, protected lifetime and filesystem publication.
-//! Dependencies: SQLite Backup API, existing storage lease, filesystem, clock and hashing.
-//! Callers: backup composition; invariants: original IO/error order, lease before DB through publish.
 use super::backup_domain::{Limits, Manifest, Object, Progress};
 use super::backup_domain::{account_bytes, hash_ok, object_identity};
 use super::backup_ports::{FreshRestore, ProtectedBackup};
@@ -195,10 +192,8 @@ impl ProtectedBackup for BackupSession<'_> {
         snapshot.busy_timeout(Duration::ZERO)?;
         {
             self.run.check(Progress::Snapshot)?;
-            // Pin a read snapshot before measuring it. Without this transaction an
-            // external writer can restart Backup::step with a larger source, and
-            // progress().pagecount is only updated AFTER that step has written.
-            // WAL writers may continue; rollback-journal writers wait for this read.
+            // SQLite sqlite3_backup_step can restart after a concurrent source write.
+            // Pin the snapshot before checking the ceiling: pagecount updates after that step writes.
             let source = conn.unchecked_transaction()?;
             source.query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
                 r.get::<_, i64>(0)
@@ -218,7 +213,6 @@ impl ProtectedBackup for BackupSession<'_> {
             }
         }
         let objects = inspect(&snapshot, limits.max_objects)?;
-        // Close/checkpoint before hashing: the snapshot package never depends on a sidecar.
         snapshot.close().map_err(|(_, e)| BackupError::Sql(e))?;
         let database = self.run.stream(&db, None)?;
         Ok((database, objects))
@@ -288,7 +282,6 @@ impl FreshRestore for RestoreSession<'_> {
         if self.run.stream(&source_db, None)? != manifest.database {
             return Err(BackupError::Invalid("database hash/length"));
         }
-        // Refuse sidecars: only a closed single-file snapshot is a valid package.
         for suffix in ["-wal", "-journal", "-shm"] {
             if fs::symlink_metadata(source.join(format!("library.sqlite{suffix}"))).is_ok() {
                 return Err(BackupError::Invalid("snapshot sidecar"));
@@ -321,7 +314,6 @@ impl FreshRestore for RestoreSession<'_> {
     }
     fn publish_restored(&mut self) -> Result<(), BackupError> {
         let dest = self.dest;
-        // Bind the existing relative database filename contract without inheriting a lease.
         let mut owner = new_file(&dest.join(".aw-object-owner"))?;
         owner.write_all(b"library.sqlite")?;
         owner.sync_all()?;
@@ -329,7 +321,6 @@ impl FreshRestore for RestoreSession<'_> {
         Ok(())
     }
 }
-// Atomic no-clobber completion marker: partial writes never look like a completed package.
 fn publish_manifest(dest: &Path, bytes: &[u8]) -> Result<(), BackupError> {
     let mut temp = tempfile::NamedTempFile::new_in(dest)?;
     temp.write_all(bytes)?;

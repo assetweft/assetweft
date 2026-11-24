@@ -1,5 +1,3 @@
-//! M2 local TEST_FIXTURE behavior; real file DBs, independent connections, no network.
-//! Calls Application only except migration fault setup/inspection. Retain logs externally.
 use assetweft_core::{application::Application, budget::*};
 use std::sync::{
     Arc, Barrier,
@@ -423,7 +421,6 @@ fn preparing_cancel_releases_once_across_reopen() {
 fn ordered_connections_cancel_and_claim_conserve_capacity() {
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
-    // Channels order both winners without timing assumptions; callbacks run after claim commits.
     for cancel_first in [true, false] {
         let d = tempdir().unwrap();
         let p = d.path().join("db");

@@ -14,6 +14,12 @@
 - **源码位置**：[crates/assetweft-cli/src/assurance.rs](../crates/assetweft-cli/src/assurance.rs) · [crates/assetweft-core/src/assurance/gltf_checks.rs](../crates/assetweft-core/src/assurance/gltf_checks.rs) · [crates/assetweft-core/src/assurance/checks.rs](../crates/assetweft-core/src/assurance/checks.rs) · [crates/assetweft-core/src/assurance/CONTRACT.md](../crates/assetweft-core/src/assurance/CONTRACT.md)
 - **正常判据**：stdout 单行 JSON `status:"PASS"`（`exit 0`）；支持校验 `EXT_texture_webp` 声明与 WebP/PNG/JPEG 图像引用（不解码图像像素、不解析外部 URI），未执行检查保留于 `not_run`
 
+## 13. AW-028:A 静态建筑和植被套件检查
+- **入口**：`assetweft static-kit-inspect` · `assurance::checks::inspect_static_kit_file`
+- **路径或子命令**：`static-kit-inspect <FILE.glb> --spec <SPEC.json>`，全局 `--max-bytes` 分别限制两个文件
+- **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [静态套件领域](../crates/assetweft-core/src/assurance/static_kit_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-028a-static-kit-inspection)
+- **正常判据**：单行 JSON `PASS/0`，闭合建筑满足比例与接缝合同，允许开放薄片的植被保留边界计数。报告记录优化前后计数及差值，视觉质量为 `NOT_RUN`
+
 ## 3. Assurance & Motion：Rigged Simple 骨骼弯曲、出招叠加与足部滑步检测
 - **入口**：`assetweft motion-stance` / `motion-strike` / `rig-bend`；核心 `motion::*` / `assurance::rig_blender`
 - **路径或子命令**：`motion-stance <JSON> --role grounded-humanoid|hovering` · `motion-strike <GLB> [--with-idle] --out <GLB>` · `rig-bend <GLB> --blender <BIN> --out <DIR>`

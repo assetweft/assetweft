@@ -35,3 +35,6 @@ pub use rig_domain::RigReport;
 
 mod sprite_domain;
 pub use sprite_domain::{Looping, SpriteFrame, SpriteReport};
+
+mod static_kit_domain;
+pub use static_kit_domain::{KitKind, OptimizationRecord, Resources, StaticKitReport, Violation};

@@ -126,3 +126,27 @@ dialog::backdrop { background: var(--aw-backdrop); overflow: hidden; overscroll-
 }
 .workspace-table .quantity { text-align: end; }
 .workspace-panel .facts { grid-template-columns: minmax(8rem, 14rem) minmax(0, 1fr); }
+.capability-list, .capability-detail {
+  min-inline-size: 0;
+  padding: var(--aw-space-16);
+  background: var(--aw-surface-panel);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-8);
+}
+.capability-choice, .capability-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--aw-space-8);
+}
+.capability-choice {
+  inline-size: 100%;
+  text-align: start;
+  background: transparent;
+  border-color: transparent;
+  padding: var(--aw-space-4) var(--aw-space-8);
+}
+.capability-fields { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+.capability-fields button, .capability-detail > button { justify-self: start; }
+.capability-boundaries { padding-inline-start: var(--aw-space-20); }
+.capability-report { overflow: auto; max-block-size: 22rem; }

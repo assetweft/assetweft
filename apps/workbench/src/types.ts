@@ -68,7 +68,45 @@ export interface ImportRequest {
 }
 export interface ImportResult { versionId: string; contentHash: string; byteLength: number }
 
-export type WorkspaceMode = 'catalog' | 'budget' | 'candidates';
+export type WorkspaceMode = 'catalog' | 'budget' | 'candidates' | 'capabilities';
+
+export const CAPABILITY_MAX_BYTES = 16_777_216;
+
+export interface CapabilitySpec {
+  id: string;
+  label: string;
+  taskCode: string | null;
+  implemented: boolean;
+  status: 'READY' | 'NOT_RUN';
+  allowedParams: ('primaryPath' | 'secondaryPath' | 'maxBytes')[];
+  primaryLabel: string | null;
+  secondaryLabel: string | null;
+  secondaryRequired: boolean;
+  notRun: string[];
+  reason: string | null;
+}
+
+export interface CapabilityOverview {
+  implemented: CapabilitySpec[];
+  unimplemented: CapabilitySpec[];
+}
+
+export interface RunCapabilityRequest {
+  capabilityId: string;
+  primaryPath: string;
+  secondaryPath?: string;
+  maxBytes: number;
+}
+
+export interface CapabilityRunResult {
+  capabilityId: string;
+  taskCode: string;
+  status: 'PASS' | 'FAIL' | 'INAPPLICABLE';
+  violations: string[];
+  notRun: string[];
+  digest: string | null;
+  report: unknown;
+}
 export type Unit = 'Token' | 'Task' | 'Second' | { CurrencyMinor: { currency: string; decimals: number } };
 export type Approval = 'ZeroAdditionalCost' | 'ExplicitBounded';
 export type ExactCount = number | string;

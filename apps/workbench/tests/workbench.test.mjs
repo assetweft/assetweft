@@ -16,7 +16,7 @@ const { outputFiles } = await build({
   format: 'esm',
   platform: 'node',
 });
-const { WorkbenchController } = await import(
+const { WorkbenchController, errorMessage } = await import(
   `data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`
 );
 
@@ -45,6 +45,7 @@ function harness(overrides = {}) {
     validation(value) { state.validation = value; },
     budget(value) { state.budget = value; },
     candidates(value) { state.candidates = value; },
+    capabilities(value) { state.capabilities = value; },
     run(value) { state.run = value; },
     attempt(value) { state.attempt = value; },
     budgetReceipt() {},
@@ -277,4 +278,42 @@ test('old workspace results cannot paint after a tab change or library switch', 
   await Promise.all([oldBudget, oldCandidate]);
   assert.equal(state.budget, null);
   assert.deepEqual(state.candidates, { heads: [], candidates: [] });
+});
+
+test('capabilities load without a library and run only registered inputs', async () => {
+  const overview = {
+    implemented: [
+      { id: 'motion-retarget', implemented: true, allowedParams: ['primaryPath', 'maxBytes'] },
+      { id: 'sprite-inspect', implemented: true, secondaryRequired: true, allowedParams: ['primaryPath', 'secondaryPath', 'maxBytes'] },
+    ],
+    unimplemented: [{ id: 'unity_live_import', implemented: false, status: 'NOT_RUN', allowedParams: [] }],
+  };
+  const calls = [];
+  const { controller, state } = harness({
+    capabilityOverview: async () => overview,
+    runCapabilityCheck: async (request) => {
+      calls.push(request);
+      if (request.capabilityId === 'sprite-inspect') {
+        throw { code: 'UNSUPPORTED', message: 'Runtime NOT_RUN' };
+      }
+      return { status: 'PASS', notRun: ['visual_engine_status: NOT_RUN'] };
+    },
+  });
+  await controller.start();
+  await controller.setMode('capabilities');
+  assert.equal(state.session, null);
+  assert.deepEqual(state.capabilities, overview);
+  const request = { capabilityId: 'motion-retarget', primaryPath: ' /tmp/retarget.json ', maxBytes: 1024 };
+  await assert.rejects(controller.runCapabilityCheck({ ...request, secondaryPath: '/tmp/injected.json' }), /does not accept/);
+  await assert.rejects(controller.runCapabilityCheck({ ...request, maxBytes: 0 }), /whole number/);
+  await assert.rejects(controller.runCapabilityCheck({ ...request, capabilityId: 'sprite-inspect' }), /secondary file path/);
+  await assert.rejects(controller.runCapabilityCheck({ ...request, capabilityId: 'unity_live_import' }),
+    (error) => errorMessage(error).startsWith('UNSUPPORTED — Capability is NOT_RUN'));
+  assert.deepEqual(calls, []);
+
+  assert.deepEqual(await controller.runCapabilityCheck(request), { status: 'PASS', notRun: ['visual_engine_status: NOT_RUN'] });
+  assert.deepEqual(calls, [{ ...request, primaryPath: '/tmp/retarget.json' }]);
+  await assert.rejects(controller.runCapabilityCheck({
+    ...request, capabilityId: 'sprite-inspect', primaryPath: '/tmp/sheet.png', secondaryPath: '/tmp/sprite.json',
+  }), (error) => errorMessage(error) === 'UNSUPPORTED — Runtime NOT_RUN');
 });

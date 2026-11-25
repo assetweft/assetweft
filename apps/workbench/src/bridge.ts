@@ -1,11 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  CapabilityOverview, CapabilityRunResult, RunCapabilityRequest,
   ApproveBudgetRequest, BudgetAccount, BudgetIntent, BudgetOverview, ByoGpuRun, CandidateAttempt,
   CandidateHead, CandidateItem, CandidateOverview, InitHeadRequest, ProposeCandidateRequest,
   ReconcileCallRequest, ReserveCallRequest, RunByoGpuRequest,
   FeedbackRecord, FeedbackRequest, ImportRequest, ImportResult, LibrarySession, Preview, Role, Validation, VersionDetail, VersionList } from './types';
 
 export interface WorkbenchBridge {
+  capabilityOverview(): Promise<CapabilityOverview>;
+  runCapabilityCheck(req: RunCapabilityRequest): Promise<CapabilityRunResult>;
   budgetOverview(limit: number): Promise<BudgetOverview>;
   approveBudget(req: ApproveBudgetRequest): Promise<BudgetAccount>;
   reserveCall(req: ReserveCallRequest): Promise<BudgetIntent>;
@@ -27,6 +30,8 @@ export interface WorkbenchBridge {
 }
 
 export const bridge: WorkbenchBridge = {
+  capabilityOverview: () => invoke('capability_overview'),
+  runCapabilityCheck: (req) => invoke('run_capability_check', { req }),
   budgetOverview: (limit) => invoke('budget_overview', { limit }),
   approveBudget: (req) => invoke('approve_budget', { req }),
   reserveCall: (req) => invoke('reserve_call', { req }),

@@ -1,5 +1,7 @@
 import type { WorkbenchBridge } from './bridge';
+import { CAPABILITY_MAX_BYTES } from './types';
 import type {
+  CapabilityOverview, RunCapabilityRequest,
   BudgetAccount, BudgetIntent, BudgetOverview, ByoGpuRun, CandidateAttempt, CandidateHead,
   CandidateItem, CandidateOverview, InitHeadRequest, ProposeCandidateRequest, RunByoGpuRequest, WorkspaceMode,
   FeedbackRequest, ImportRequest, LibrarySession, Preview, Role, Validation, VersionDetail, VersionList, VersionRow } from './types';
@@ -13,12 +15,13 @@ export interface WorkbenchView {
   validation(value: Validation): void;
   budget(value: BudgetOverview | null): void;
   candidates(value: CandidateOverview | null): void;
+  capabilities(value: CapabilityOverview | null): void;
   run(value: ByoGpuRun | null): void;
   budgetReceipt(value: BudgetAccount | BudgetIntent | null): void;
   initializedHead(value: CandidateHead | null): void;
   proposedCandidate(value: CandidateItem | null): void;
   attempt(value: CandidateAttempt | null): void;
-  error(area: 'catalog' | 'detail' | 'preview' | 'validation' | 'budget' | 'candidates', message: string): void;
+  error(area: 'catalog' | 'detail' | 'preview' | 'validation' | 'budget' | 'candidates' | 'capabilities', message: string): void;
 }
 
 export function errorMessage(error: unknown): string {
@@ -36,6 +39,8 @@ export class WorkbenchController {
   private validationGen = 0;
   private budgetGen = 0;
   private candidateGen = 0;
+  private capabilityGen = 0;
+  private capabilityOverview: CapabilityOverview | null = null;
   private opening = false;
   private mode: WorkspaceMode = 'catalog';
   private session: LibrarySession | null = null;
@@ -96,11 +101,47 @@ export class WorkbenchController {
     this.candidateGen++;
     if (mode === 'budget') this.view.budget(null);
     if (mode === 'candidates') this.view.candidates(null);
+    const capabilityGen = ++this.capabilityGen;
+    if (mode === 'capabilities') {
+      this.capabilityOverview = null;
+      this.view.capabilities(null);
+      try {
+        const result = await this.bridge.capabilityOverview();
+        if (this.capabilityGen === capabilityGen) {
+          this.capabilityOverview = result;
+          this.view.capabilities(result);
+        }
+      } catch (error) {
+        if (this.capabilityGen === capabilityGen) this.view.error(mode, errorMessage(error));
+      }
+      return;
+    }
     await this.refreshWorkspace();
   }
 
+  async runCapabilityCheck(request: RunCapabilityRequest) {
+    const spec = this.capabilityOverview?.implemented.find((entry) => entry.id === request.capabilityId);
+    if (this.mode !== 'capabilities' || !spec?.implemented) {
+      throw { code: 'UNSUPPORTED', message: 'Capability is NOT_RUN or unavailable in this workspace.' };
+    }
+    const primaryPath = request.primaryPath.trim();
+    const secondaryPath = request.secondaryPath?.trim();
+    const { maxBytes } = request;
+    if (!primaryPath) throw new Error('Enter the primary file path.');
+    if (request.secondaryPath !== undefined && !spec.allowedParams.includes('secondaryPath')) {
+      throw new Error('This check does not accept a secondary file.');
+    }
+    if (spec.secondaryRequired && !secondaryPath) throw new Error('Enter the secondary file path.');
+    if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > CAPABILITY_MAX_BYTES) {
+      throw new Error(`Maximum bytes must be a whole number from 1 to ${CAPABILITY_MAX_BYTES}.`);
+    }
+    return this.bridge.runCapabilityCheck({
+      capabilityId: spec.id, primaryPath, maxBytes, ...(secondaryPath ? { secondaryPath } : {}),
+    });
+  }
+
   private async refreshWorkspace() {
-    if (!this.session || this.opening || this.mode === 'catalog') return;
+    if (!this.session || this.opening || (this.mode !== 'budget' && this.mode !== 'candidates')) return;
     const mode = this.mode;
     const session = this.sessionGen;
     const gen = mode === 'budget' ? ++this.budgetGen : ++this.candidateGen;

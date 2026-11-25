@@ -213,6 +213,38 @@ pub(super) fn rig_profile_response(
     }
 }
 
+pub(super) fn retarget_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let command = "motion-retarget";
+    let path = args.get_one::<PathBuf>("file").expect("required");
+    match assetweft_core::motion::retarget::assess(path, limits) {
+        Ok(report) => {
+            let (code, status) = if report.failed_stage.is_some() {
+                (1, "FAIL")
+            } else {
+                (0, "PASS")
+            };
+            (
+                code,
+                envelope(command, call_id, status, json!([]), json!(report)),
+            )
+        }
+        Err(e) => (
+            2,
+            envelope(
+                command,
+                call_id,
+                "INVALID_INPUT",
+                json!([error("file", "INVALID_INPUT", e)]),
+                Value::Null,
+            ),
+        ),
+    }
+}
+
 pub(super) fn stance_response(
     call_id: Option<&String>,
     args: &ArgMatches,

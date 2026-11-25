@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, error::Error, io::Write, path::Path};
 
 pub mod components;
+pub mod retarget;
 pub mod stance;
 
 const IDLE: &str = "AssetWeft_Idle";

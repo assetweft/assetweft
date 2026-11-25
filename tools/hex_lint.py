@@ -28,6 +28,7 @@ CORE_ROOT = {
     "motion": ("motion", "adapter"),
     "motion/components": ("motion", "adapter"),
     "motion/stance": ("motion", "adapter"),
+    "motion/retarget": ("motion", "adapter"),
     "backup": ("catalog", "facade"),
     "history": ("catalog", "facade"),
     "budget": ("consumption", "facade"),

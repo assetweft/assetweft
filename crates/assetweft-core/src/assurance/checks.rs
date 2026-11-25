@@ -651,3 +651,427 @@ fn check_sprite_chunks(mut chunks: &[u8]) -> Result<(), &'static str> {
     }
     Err("missing PNG IEND")
 }
+
+#[derive(Debug)]
+pub struct FaceAttachmentInputError {
+    pub field: &'static str,
+    pub detail: String,
+}
+
+pub fn inspect_face_attachment_file(
+    file: &Path,
+    spec: &Path,
+    limits: ValidationLimits,
+) -> Result<super::FaceAttachmentReport, FaceAttachmentInputError> {
+    let invalid = |field, detail| FaceAttachmentInputError { field, detail };
+    let bytes =
+        super::read_bounded(file, limits).map_err(|err| invalid("file", err.to_string()))?;
+    let spec = super::read_bounded(spec, limits).map_err(|err| invalid("spec", err.to_string()))?;
+    let spec: super::face_attachment_domain::Spec =
+        serde_json::from_slice(&spec).map_err(|err| invalid("spec", err.to_string()))?;
+    spec.validate().map_err(|err| invalid("spec", err))?;
+    face_attachment_report(&bytes, spec).map_err(|err| invalid("file", err))
+}
+
+fn face_attachment_report(
+    bytes: &[u8],
+    spec: super::face_attachment_domain::Spec,
+) -> Result<super::FaceAttachmentReport, String> {
+    use super::face_attachment_domain::{AttachmentPlacement, FaceFacts, FaceMode, distance};
+    use super::static_kit_domain::multiply;
+    use gltf::{Semantic, animation::Property};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let (gltf, _) = super::gltf_checks::parse_glb(bytes)?;
+    let document = &gltf.document;
+    let bin = gltf.blob.as_deref().unwrap_or_default();
+    let raw = gltf::binary::Glb::from_slice(bytes).map_err(|err| err.to_string())?;
+    let names: serde_json::Value =
+        serde_json::from_slice(&raw.json).map_err(|err| err.to_string())?;
+    let worlds = static_kit_world_transforms(document)?;
+    if worlds.iter().flatten().flatten().any(|v| !v.is_finite()) {
+        return Err("world transforms must be finite".into());
+    }
+
+    let name_at = |kind: &str, index: usize| names[kind][index]["name"].as_str();
+    let mut node_names = BTreeMap::new();
+    let mut parents = vec![None; worlds.len()];
+    let mut deformed = vec![false; worlds.len()];
+    let mut subtree_invalid = vec![false; worlds.len()];
+    let mut mesh_targets = Vec::new();
+    let mut mesh_deforms = Vec::new();
+    let mut targets_by_name = Vec::new();
+    let mut checked_morph_accessors = BTreeSet::new();
+    let mut remaining_samples = 2_000_000_usize;
+    for mesh in document.meshes() {
+        let mut target_count = None;
+        for primitive in mesh.primitives() {
+            let count = primitive.morph_targets().len();
+            if target_count
+                .replace(count)
+                .is_some_and(|previous| previous != count)
+            {
+                return Err("mesh primitives disagree on morph target count".into());
+            }
+            let vertices = primitive
+                .get(&Semantic::Positions)
+                .map(|accessor| accessor.count());
+            for target in primitive.morph_targets() {
+                let mut accessors = [target.positions(), target.normals(), target.tangents()]
+                    .into_iter()
+                    .flatten()
+                    .peekable();
+                if accessors.peek().is_none() {
+                    return Err("morph target has no deformation accessor".into());
+                }
+                for accessor in accessors {
+                    if accessor.dimensions() != gltf::accessor::Dimensions::Vec3
+                        || Some(accessor.count()) != vertices
+                    {
+                        return Err("morph target accessor must be VEC3 and match its primitive vertex count".into());
+                    }
+                    if checked_morph_accessors.insert(accessor.index()) {
+                        check_face_accessor(&accessor, bin, &mut remaining_samples)?;
+                    }
+                }
+            }
+        }
+        let count = target_count.unwrap_or_default();
+        mesh_targets.push(count);
+        mesh_deforms.push(
+            mesh.weights().is_some()
+                || count != 0
+                || mesh.primitives().any(|primitive| {
+                    primitive.attributes().any(|(semantic, _)| {
+                        matches!(semantic, Semantic::Joints(_) | Semantic::Weights(_))
+                    })
+                }),
+        );
+        let target_names = names["meshes"][mesh.index()]["extras"]["targetNames"].as_array();
+        targets_by_name.push(
+            target_names
+                .into_iter()
+                .flatten()
+                .take(count)
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    let mut bound_meshes = BTreeSet::new();
+    for node in document.nodes() {
+        if let Some(name) = name_at("nodes", node.index()) {
+            node_names
+                .entry(name)
+                .and_modify(|index| *index = None)
+                .or_insert(Some(node.index()));
+        }
+        for child in node.children() {
+            parents[child.index()] = Some(node.index());
+        }
+        deformed[node.index()] = node.skin().is_some() || node.weights().is_some();
+        if let Some(mesh) = node.mesh() {
+            bound_meshes.insert(mesh.index());
+            deformed[node.index()] |= mesh_deforms[mesh.index()];
+        }
+    }
+
+    let find_node = |name: &str| node_names.get(name).copied().flatten();
+    let face_enabled = spec.face_mode != FaceMode::NotApplicable;
+    let mut eye_jaw = BTreeSet::new();
+    let mut valid_eye_jaw_nodes = true;
+    if face_enabled {
+        for name in spec.eye_jaw_names() {
+            valid_eye_jaw_nodes &= find_node(name).is_some_and(|index| eye_jaw.insert(index));
+        }
+    }
+    let expected: BTreeSet<_> = spec
+        .expected_expressions
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut facts = FaceFacts {
+        morph_target_count: bound_meshes.iter().map(|&index| mesh_targets[index]).sum(),
+        expressions: bound_meshes
+            .iter()
+            .flat_map(|&index| &targets_by_name[index])
+            .copied()
+            .filter(|name| expected.contains(name))
+            .map(str::to_owned)
+            .collect(),
+        playable_expressions: BTreeSet::new(),
+        valid_eye_jaw_nodes,
+        playable: false,
+    };
+    for animation in document.animations() {
+        for channel in animation.channels() {
+            let target = channel.target();
+            let node = target.node();
+            deformed[node.index()] = true;
+            if !face_enabled {
+                continue;
+            }
+            let weights = target.property() == Property::MorphTargetWeights;
+            if !weights && !eye_jaw.contains(&node.index()) {
+                continue;
+            }
+            let mesh = node.mesh();
+            let width = if weights {
+                mesh.as_ref().map_or(0, |mesh| mesh_targets[mesh.index()])
+            } else {
+                1
+            };
+            let playable = face_track_playable(&channel, width, bin, &mut remaining_samples)?;
+            facts.playable |= playable;
+            let clip = &names["animations"][animation.index()];
+            let raw_channel = &clip["channels"][channel.index()];
+            let names = [
+                name_at("animations", animation.index()),
+                raw_channel["extras"]["name"].as_str(),
+                raw_channel["name"].as_str(),
+                name_at("nodes", node.index()),
+            ];
+            let morph_names = mesh
+                .as_ref()
+                .filter(|_| weights)
+                .into_iter()
+                .flat_map(|mesh| &targets_by_name[mesh.index()]);
+            for name in names
+                .into_iter()
+                .flatten()
+                .chain(morph_names.copied())
+                .filter(|name| expected.contains(name))
+            {
+                if !facts.expressions.contains(name) {
+                    facts.expressions.insert(name.to_owned());
+                }
+                if playable && !facts.playable_expressions.contains(name) {
+                    facts.playable_expressions.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    for (index, &animated_or_deformed) in deformed.iter().enumerate() {
+        if animated_or_deformed {
+            let mut current = Some(index);
+            while let Some(node) = current {
+                if std::mem::replace(&mut subtree_invalid[node], true) {
+                    break;
+                }
+                current = parents[node];
+            }
+        }
+    }
+
+    let local = |index| {
+        document
+            .nodes()
+            .nth(index)
+            .expect("validated node index")
+            .transform()
+            .matrix()
+            .map(|column| column.map(f64::from))
+    };
+    let mut remaining_ancestors = 2_000_000_usize;
+    let mut results = Vec::new();
+    for attachment in &spec.rigid_attachments {
+        let placement = match (
+            find_node(&attachment.socket_node),
+            find_node(&attachment.attachment_node),
+        ) {
+            (Some(socket), Some(part)) if socket != part => {
+                let mut transform = local(part);
+                let mut current = part;
+                let mut rigid = !subtree_invalid[part];
+                while let Some(parent) = parents[current].filter(|&parent| parent != socket) {
+                    remaining_ancestors = remaining_ancestors
+                        .checked_sub(1)
+                        .ok_or("attachment hierarchy budget exceeded")?;
+                    transform = multiply(local(parent), transform);
+                    rigid &= !deformed[parent];
+                    current = parent;
+                }
+                (parents[current] == Some(socket)).then(|| {
+                    let mut expected = local(part);
+                    expected[3] = [0.0, 0.0, 0.0, 1.0];
+                    expected[3][..3].copy_from_slice(&attachment.expected_offset());
+                    let translation =
+                        |m: super::static_kit_domain::Matrix| [m[3][0], m[3][1], m[3][2]];
+                    AttachmentPlacement {
+                        socket_offset_m: translation(transform),
+                        world_drift_m: distance(
+                            translation(worlds[part]),
+                            translation(multiply(worlds[socket], expected)),
+                        ),
+                        rigid,
+                    }
+                })
+            }
+            _ => None,
+        };
+        results.push(attachment.inspect(placement)?);
+    }
+    spec.inspect(facts, results)
+}
+
+fn face_track_playable(
+    channel: &gltf::animation::Channel<'_>,
+    width: usize,
+    bin: &[u8],
+    budget: &mut usize,
+) -> Result<bool, String> {
+    use gltf::{
+        accessor::{DataType, Dimensions},
+        animation::{Interpolation, Property, util::ReadOutputs},
+    };
+    let sampler = channel.sampler();
+    let input = sampler.input();
+    let output = sampler.output();
+    for accessor in [&input, &output] {
+        check_face_accessor(accessor, bin, budget)?;
+    }
+    let property = channel.target().property();
+    let dimensions = match property {
+        Property::MorphTargetWeights => Dimensions::Scalar,
+        Property::Rotation => Dimensions::Vec4,
+        Property::Translation | Property::Scale => Dimensions::Vec3,
+    };
+    let normalized_output = matches!(property, Property::Rotation | Property::MorphTargetWeights)
+        && output.normalized()
+        && matches!(
+            output.data_type(),
+            DataType::I8 | DataType::U8 | DataType::I16 | DataType::U16
+        );
+    let multiplier = if sampler.interpolation() == Interpolation::CubicSpline {
+        3
+    } else {
+        1
+    };
+    if width == 0
+        || input.dimensions() != Dimensions::Scalar
+        || input.data_type() != DataType::F32
+        || output.dimensions() != dimensions
+        || (output.data_type() != DataType::F32 && !normalized_output)
+        || input
+            .count()
+            .checked_mul(width)
+            .and_then(|count| count.checked_mul(multiplier))
+            != Some(output.count())
+    {
+        return Err(
+            "facial animation accessor type or sample count does not match its channel".into(),
+        );
+    }
+    let reader = channel.reader(|_| Some(bin));
+    let mut previous = -1.0_f32;
+    for time in reader
+        .read_inputs()
+        .ok_or("missing facial animation times")?
+    {
+        if !time.is_finite() || time < 0.0 || time <= previous {
+            return Err(
+                "facial animation times must be finite, nonnegative and strictly increasing".into(),
+            );
+        }
+        previous = time;
+    }
+    let finite = match reader
+        .read_outputs()
+        .ok_or("missing facial animation values")?
+    {
+        ReadOutputs::MorphTargetWeights(values) => values.into_f32().all(f32::is_finite),
+        ReadOutputs::Rotations(values) => values.into_f32().flatten().all(f32::is_finite),
+        ReadOutputs::Translations(values) | ReadOutputs::Scales(values) => {
+            values.flatten().all(f32::is_finite)
+        }
+    };
+    if !finite {
+        return Err("facial animation values must be finite".into());
+    }
+    Ok(input.count() >= 2)
+}
+
+fn check_face_accessor(
+    accessor: &gltf::Accessor<'_>,
+    bin: &[u8],
+    budget: &mut usize,
+) -> Result<(), String> {
+    *budget = budget
+        .checked_sub(accessor.count())
+        .ok_or("facial accessor budget exceeded")?;
+    if let Some(view) = accessor.view() {
+        face_accessor_data(
+            view,
+            accessor.offset(),
+            accessor.count(),
+            accessor.size(),
+            bin,
+        )?;
+    } else if accessor.sparse().is_none() {
+        return Err("facial accessor needs a buffer view or sparse data".into());
+    }
+    if let Some(sparse) = accessor.sparse() {
+        if sparse.count() > accessor.count() {
+            return Err("sparse facial accessor count exceeds its accessor".into());
+        }
+        let indices = sparse.indices();
+        let values = sparse.values();
+        let width = indices.index_type().size();
+        let index_view = indices.view();
+        let value_view = values.view();
+        if index_view.stride().is_some() || value_view.stride().is_some() {
+            return Err("sparse facial accessor views must be tightly packed".into());
+        }
+        let index_data =
+            face_accessor_data(index_view, indices.offset(), sparse.count(), width, bin)?;
+        face_accessor_data(
+            value_view,
+            values.offset(),
+            sparse.count(),
+            accessor.size(),
+            bin,
+        )?;
+        let mut previous = None;
+        for chunk in index_data.chunks_exact(width) {
+            let mut bytes = [0; 4];
+            bytes[..width].copy_from_slice(chunk);
+            let index = u32::from_le_bytes(bytes) as usize;
+            if index >= accessor.count() || previous.is_some_and(|last| last >= index) {
+                return Err(
+                    "sparse facial accessor indices must ascend and fit the accessor".into(),
+                );
+            }
+            previous = Some(index);
+        }
+    }
+    Ok(())
+}
+
+fn face_accessor_data<'a>(
+    view: gltf::buffer::View<'_>,
+    offset: usize,
+    count: usize,
+    size: usize,
+    bin: &'a [u8],
+) -> Result<&'a [u8], String> {
+    let buffer = view.buffer();
+    let stride = view.stride().unwrap_or(size);
+    let view_end = view.offset().checked_add(view.length());
+    let end = count
+        .checked_sub(1)
+        .and_then(|count| count.checked_mul(stride))
+        .and_then(|end| end.checked_add(offset))
+        .and_then(|end| end.checked_add(size));
+    if buffer.index() != 0
+        || !matches!(buffer.source(), gltf::buffer::Source::Bin)
+        || buffer.length() > bin.len()
+        || view_end.is_none_or(|end| end > buffer.length())
+        || stride < size
+        || end.is_none_or(|end| end > view.length())
+    {
+        return Err(
+            "facial accessor exceeds its embedded buffer or has an invalid stride or count".into(),
+        );
+    }
+    Ok(&bin[view.offset() + offset..view.offset() + end.expect("validated accessor end")])
+}

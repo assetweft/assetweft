@@ -431,3 +431,49 @@ pub(super) fn card_template_check_response(
         ),
     )
 }
+
+pub(super) fn face_attachment_inspect_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let command = "face-attachment-inspect";
+    let path = |name| args.get_one::<PathBuf>(name).expect("required");
+    match val::checks::inspect_face_attachment_file(path("file"), path("spec"), limits) {
+        Ok(report) => {
+            let mut errors = Vec::new();
+            if report.facial_status == "FAIL" {
+                errors.push(error(
+                    "facial_status",
+                    "FAIL",
+                    "facial requirements are not playable",
+                ));
+            }
+            errors.extend(report.attachment_results.iter().enumerate().filter_map(
+                |(index, part)| {
+                    part.violation
+                        .map(|detail| error(&format!("rigid_attachments[{index}]"), "FAIL", detail))
+                },
+            ));
+            let (code, status) = if errors.is_empty() {
+                (0, "PASS")
+            } else {
+                (1, "FAIL")
+            };
+            (
+                code,
+                envelope(command, call_id, status, json!(errors), json!(report)),
+            )
+        }
+        Err(err) => (
+            2,
+            envelope(
+                command,
+                call_id,
+                "INVALID_INPUT",
+                json!([error(err.field, "INVALID_INPUT", err.detail)]),
+                Value::Null,
+            ),
+        ),
+    }
+}

@@ -20,6 +20,12 @@
 - **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [静态套件领域](../crates/assetweft-core/src/assurance/static_kit_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-028a-static-kit-inspection)
 - **正常判据**：单行 JSON `PASS/0`，闭合建筑满足比例与接缝合同，允许开放薄片的植被保留边界计数。报告记录优化前后计数及差值，视觉质量为 `NOT_RUN`
 
+## AW-025:A 面部表情与刚性配件
+- **入口**：`assetweft face-attachment-inspect` · `assurance::checks::inspect_face_attachment_file`
+- **路径或子命令**：`face-attachment-inspect <FILE.glb> --spec <SPEC.json>`，全局 `--max-bytes` 分别限制两个文件
+- **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [核心契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-025a-face-and-attachment-inspection)
+- **正常判据**：单行 JSON `PASS/0`。不需脸的角色回报 `INAPPLICABLE`，且仍检验刚性配件；有脸角色检查真实权重和眼颌轨道。视觉引擎为 `NOT_RUN`。
+
 ## AW-027:A 本地 WAV 与循环边界检查
 - **入口**：`assetweft audio-inspect` · `assurance::checks::inspect_audio_file`
 - **路径或子命令**：`audio-inspect <FILE.wav> [--spec <SPEC.json>]`，全局 `--max-bytes` 分别限制两个文件

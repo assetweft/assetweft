@@ -58,6 +58,7 @@ fn grammar() -> Command {
         .subcommand(Command::new("card-template-check").arg(file()).arg(
             Arg::new("illustration").long("illustration").value_parser(value_parser!(PathBuf)),
         ))
+        .subcommand(Command::new("face-attachment-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("static-kit-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("rigged-simple-components").arg(file()).arg(
             Arg::new("out-dir").long("out-dir").required(true).value_parser(value_parser!(PathBuf)),
@@ -510,6 +511,7 @@ fn run() -> (i32, Value) {
                                 | "card-template-check"
                                 | "motion-retarget"
                                 | "audio-inspect"
+                                | "face-attachment-inspect"
                         )
                 })
                 .unwrap_or(command);
@@ -645,6 +647,9 @@ fn run() -> (i32, Value) {
         "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
         "audio-inspect" => assurance::audio_inspect_response(call_id, args, limits),
         "card-template-check" => assurance::card_template_check_response(call_id, args, limits),
+        "face-attachment-inspect" => {
+            assurance::face_attachment_inspect_response(call_id, args, limits)
+        }
         "static-kit-inspect" => assurance::static_kit_inspect_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),

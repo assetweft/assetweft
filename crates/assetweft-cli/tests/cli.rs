@@ -37,6 +37,135 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn face_attachment_inspect_wire_and_input_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("face.glb");
+    let spec = dir.path().join("face.json");
+    let write_glb = |document: &Value, bin: &[f32]| {
+        let mut document = serde_json::to_vec(document).unwrap();
+        document.resize(document.len().next_multiple_of(4), b' ');
+        let mut glb = b"glTF".to_vec();
+        glb.extend(2_u32.to_le_bytes());
+        let bin_length = bin.len() as u32 * 4;
+        glb.extend(
+            (20 + document.len() as u32 + if bin.is_empty() { 0 } else { 8 + bin_length })
+                .to_le_bytes(),
+        );
+        glb.extend((document.len() as u32).to_le_bytes());
+        glb.extend(b"JSON");
+        glb.extend(document);
+        if !bin.is_empty() {
+            glb.extend(bin_length.to_le_bytes());
+            glb.extend(b"BIN\0");
+            glb.extend(bin.iter().flat_map(|sample| sample.to_le_bytes()));
+        }
+        fs::write(&file, glb).unwrap();
+    };
+    let mut document = json!({"asset":{"version":"2.0"},
+        "nodes":[{"name":"socket","children":[1]},{"name":"part"}]});
+    write_glb(&document, &[]);
+    let mut contract = json!({
+        "face_mode":"not-applicable", "expected_expressions":[],
+        "rigid_attachments":[{"socket_node":"socket","attachment_node":"part",
+            "expected_offset_m":[0,0,0],"max_drift_m":0.0005,"lock_mode":"BYTE"}]
+    });
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("face-1"),
+        OsStr::new("face-attachment-inspect"),
+        file.as_os_str(),
+        OsStr::new("--spec"),
+        spec.as_os_str(),
+    ];
+    fs::write(&spec, contract.to_string()).unwrap();
+    let (out, pass) = invoke(&args);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(pass["command"], "face-attachment-inspect");
+    assert_eq!(pass["call_id"], "face-1");
+    assert_eq!(pass["status"], "PASS");
+    assert_eq!(pass["results"]["facial_status"], "INAPPLICABLE");
+    assert_eq!(pass["results"]["visual_engine_status"], "NOT_RUN");
+    assert_eq!(out.stdout, invoke(&args).0.stdout);
+
+    contract["rigid_attachments"][0]["expected_offset_m"] = json!([0.001, 0, 0]);
+    fs::write(&spec, contract.to_string()).unwrap();
+    let (out, drift) = invoke(&args);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(drift["results"]["facial_status"], "INAPPLICABLE");
+    assert_eq!(drift["results"]["attachment_results"][0]["status"], "FAIL");
+    contract["rigid_attachments"][0]["expected_offset_m"] = json!([0, 0, 0]);
+
+    contract["face_mode"] = json!("required");
+    fs::write(&spec, contract.to_string()).unwrap();
+    let (out, fail) = invoke(&args);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(fail["results"]["facial_status"], "FAIL");
+
+    for (limit, field) in [("1", "file"), ("150", "spec"), ("0", "arguments")] {
+        let (out, invalid) = invoke(
+            &[
+                args.as_slice(),
+                &[OsStr::new("--max-bytes"), OsStr::new(limit)],
+            ]
+            .concat(),
+        );
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(invalid["command"], "face-attachment-inspect");
+        assert_eq!(invalid["errors"][0]["field_path"], field);
+    }
+    fs::write(&spec, contract.to_string().replace("0.0005", "NaN")).unwrap();
+    assert_eq!(invoke(&args).0.status.code(), Some(2));
+    fs::write(&spec, contract.to_string()).unwrap();
+    fs::write(&file, b"glTF").unwrap();
+    assert_eq!(invoke(&args).0.status.code(), Some(2));
+
+    document["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([json!({"mesh":0}), json!({"name":"jaw"})]);
+    document["meshes"] = json!([{"extras":{"targetNames":["blink","jaw_open"]},
+        "primitives":[{"attributes":{"POSITION":0},"targets":[{"POSITION":1},{"POSITION":1}]}]}]);
+    document["buffers"] = json!([{"byteLength":120}]);
+    document["bufferViews"] = json!([
+        {"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},
+        {"buffer":0,"byteOffset":72,"byteLength":8},{"buffer":0,"byteOffset":80,"byteLength":16},
+        {"buffer":0,"byteOffset":96,"byteLength":24}
+    ]);
+    document["accessors"] = json!([
+        {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+        {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[0,0,0.1]},
+        {"bufferView":2,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
+        {"bufferView":3,"componentType":5126,"count":4,"type":"SCALAR"},
+        {"bufferView":4,"componentType":5126,"count":2,"type":"VEC3"}
+    ]);
+    document["animations"] = json!([{"channels":[
+        {"sampler":0,"target":{"node":2,"path":"weights"}},
+        {"sampler":1,"target":{"node":3,"path":"translation"}}],
+        "samplers":[{"input":2,"output":3},{"input":2,"output":4}]}]);
+    let bin = [
+        0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0., 0.1, 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.,
+        1., 1., 0., 0., 0., 0., 0.1, 0.,
+    ];
+    write_glb(&document, &bin);
+    contract["expected_expressions"] = json!(["blink", "jaw_open"]);
+    contract["eye_jaw_nodes"] = json!({"jaw":"jaw"});
+    fs::write(&spec, contract.to_string()).unwrap();
+    let (out, face) = invoke(&args);
+    assert_eq!(out.status.code(), Some(0), "{face}");
+    assert_eq!(face["results"]["facial_status"], "PASS");
+    assert_eq!(face["results"]["eye_jaw_playable"], true);
+    assert_eq!(
+        face["results"]["matched_expressions"],
+        json!(["blink", "jaw_open"])
+    );
+    document["animations"] = json!([]);
+    write_glb(&document, &bin);
+    let (out, static_face) = invoke(&args);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(static_face["results"]["eye_jaw_playable"], false);
+}
+
+#[test]
 fn audio_inspect_reports_deterministic_measurements_and_contract_failures() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("loop.wav");

@@ -236,3 +236,39 @@ under the same per-file byte limit. The strict JSON contract accepts `kind`
 
 The checker measures declared constraints. Font rendering and visual quality
 remain `NOT_RUN`.
+
+## AW-025:A face and attachment inspection
+
+The adapter reads each GLB/spec file with the same byte limit. The spec accepts
+`face_mode`, `expected_expressions`, optional `eye_jaw_nodes` (each role is
+optional), and `rigid_attachments`. Unknown spec fields are invalid. The GLB
+parser resolves structure and indices. The adapter reads raw JSON name and
+mesh `extras.targetNames` metadata because the shared SDK omits those features.
+
+Morph target count sums slots across distinct node-bound meshes. Morph names
+only count when they index actual primitive target slots. A relevant weight
+channel or named eye/jaw TRS channel can match its clip name, channel
+`extras.name`, or target node name. Each expected expression needs a matching
+playable track. Tracks use embedded accessors with valid dense or sparse layouts, strictly ascending
+finite times, correct output cardinality for their property and interpolation,
+and two or more keys for playback evidence. The aggregate morph and track accessor budget is two
+million entries. Specified eye/jaw roles resolve to distinct
+nodes with finite rest transforms. `optional` allows an absent face when
+no morph slots, names, or eye/jaw requirements exist. `not-applicable`
+skips face acceptance and always evaluates attachments.
+
+The socket and attachment names resolve uniquely. The part must descend
+from the socket through rigid intermediaries. The part subtree cannot have
+independent animation, skin binding, joint/weight attributes or morph
+deformation. `expected_offset_m` is expressed in socket-local metres. Both
+the local Euclidean drift and the world-space difference from the transformed
+expected point must fit `max_drift_m`. G-DET-1 canonicalizes the coordinates
+and drift to millionths of a metre via ties-to-even. The hierarchy walk is
+bounded to two million intermediate links. `BYTE` and `SEMANTIC` are declared
+lock modes. Both use this placement check and the input has no prior lock
+content for comparison.
+
+The version-1 semantic report digest hashes canonical report JSON with the
+digest field empty, then feeds its 32 SHA-256 bytes as numeric values to
+G-DET-1's semantic digest. This fingerprints the measured report. Visual
+quality and engine playback remain `NOT_RUN`.

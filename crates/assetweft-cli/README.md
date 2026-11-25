@@ -15,6 +15,7 @@ query stored exact metadata and the local fixture head through Catalog.
 assetweft [--call-id ID] inspect FILE.glb
 assetweft [--call-id ID] sprite-inspect FILE.png --spec MANIFEST.json
 assetweft [--call-id ID] card-template-check TEMPLATE.json [--illustration FILE.png]
+assetweft [--call-id ID] face-attachment-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] static-kit-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] audio-inspect FILE.wav [--spec SPEC.json]
 assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
@@ -68,7 +69,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `card-template-check`, `static-kit-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -153,6 +154,22 @@ edge counts, and the optimization record. Scale, seam, or closed-shell
 violations return `FAIL/1`. Malformed or unsupported inputs return
 `INVALID_INPUT/2`. Visual quality remains `NOT_RUN`.
 [Static kit contract](../assetweft-core/src/assurance/CONTRACT.md#aw-028a-static-kit-inspection)
+
+### Facial expressions and rigid attachments
+
+`face-attachment-inspect` applies global `--max-bytes` to each input file.
+For a mechanical character with a rigid shoulder plate, use:
+
+```json
+{"face_mode":"not-applicable","expected_expressions":[],"rigid_attachments":[{"socket_node":"shoulder_socket","attachment_node":"plate","expected_offset_m":[0.1,0,0],"max_drift_m":0.0005,"lock_mode":"SEMANTIC"}]}
+```
+
+`required` checks playable facial tracks and requested names. `optional`
+allows a character with no declared or detected face. `not-applicable`
+returns facial `INAPPLICABLE` and still measures attachments. The single
+JSON response exits `0` for PASS, `1` for an unmet spec, or `2` for invalid
+input. Visual and engine playback status is `NOT_RUN`.
+[Facial and attachment contract](../assetweft-core/src/assurance/CONTRACT.md#aw-025a-face-and-attachment-inspection).
 
 ### Sampled IK and retargeting
 

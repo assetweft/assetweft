@@ -129,3 +129,6 @@
 - **路径或子命令**：`card-template-check <TEMPLATE.json> [--illustration <FILE.png>]`，全局 `--max-bytes` 分别限制两个文件
 - **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [模板排版领域](../crates/assetweft-core/src/assurance/card_layout_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-024b-card-template-layout-check)
 - **正常判据**：单行 JSON `PASS/0`，互换插画时布局摘要不变，PNG 摘要独立，视觉质量为 `NOT_RUN`。布局违规返回 `FAIL/1`，输入错误返回 `INVALID_INPUT/2`
+
+## 15. AW-035:B/C 离线表现与非角色矩阵
+- [表现包与 Q6](../examples/presentation-bundle/README.md) · [非角色与 BM-01..BM-06](../examples/non-character-suite/README.md)。两套脚本输出单行 JSON，外部验收保留 `NOT_RUN`。

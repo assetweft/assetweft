@@ -552,3 +552,48 @@ pub(super) fn face_attachment_inspect_response(
         ),
     }
 }
+
+pub(super) fn cloth_inspect_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let command = "cloth-inspect";
+    let path = |name| args.get_one::<PathBuf>(name).expect("required");
+    match val::checks::inspect_cloth_file(path("file"), path("spec"), limits) {
+        Ok(report) => {
+            let errors: Vec<_> = report
+                .garments
+                .iter()
+                .enumerate()
+                .flat_map(|(index, garment)| {
+                    garment.violations.iter().map(move |violation| {
+                        let field = format!("garments[{index}]");
+                        error(&field, "FAIL", format!("{violation:?}"))
+                    })
+                })
+                .collect();
+            let code = i32::from(report.status == "FAIL");
+            (
+                code,
+                envelope(
+                    command,
+                    call_id,
+                    report.status,
+                    json!(errors),
+                    json!(report),
+                ),
+            )
+        }
+        Err(err) => (
+            2,
+            envelope(
+                command,
+                call_id,
+                "INVALID_INPUT",
+                json!([error(err.field, "INVALID_INPUT", err.detail)]),
+                Value::Null,
+            ),
+        ),
+    }
+}

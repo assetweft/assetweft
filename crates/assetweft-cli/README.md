@@ -18,6 +18,7 @@ assetweft [--call-id ID] vfx-inspect SPEC.json [--flipbook FILE.png]
 assetweft [--call-id ID] action-presentation-inspect SPEC.json
 assetweft [--call-id ID] card-template-check TEMPLATE.json [--illustration FILE.png]
 assetweft [--call-id ID] face-attachment-inspect FILE.glb --spec SPEC.json
+assetweft [--call-id ID] cloth-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] static-kit-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] audio-inspect FILE.wav [--spec SPEC.json]
 assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
@@ -71,7 +72,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `cloth-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -187,6 +188,33 @@ returns facial `INAPPLICABLE` and still measures attachments. The single
 JSON response exits `0` for PASS, `1` for an unmet spec, or `2` for invalid
 input. Visual and engine playback status is `NOT_RUN`.
 [Facial and attachment contract](../assetweft-core/src/assurance/CONTRACT.md#aw-025a-face-and-attachment-inspection).
+
+### Clothing and rigid accessories
+
+`cloth-inspect` applies global `--max-bytes` to each input. A skinned
+garment must resolve to a mesh with one joint/weight set and normalized
+weights. A rigid accessory must resolve to a mesh without skin data.
+For each garment the receipt includes its classification, unsupported
+structures, maximum weight-sum error and worst-frame motion measurements.
+
+```json
+{
+  "garments":[{"node_name":"tunic","binding_kind":"skinned","body_mesh_node":"body",
+    "max_weight_sum_error":0.0001,"max_stretch_ratio":0.1,"max_penetration_m":0.005,
+    "require_supported_structure":true}],
+  "sampled_motion_poses":[
+    {"frame":0,"body_vertices":[[0,0,0],[1,1,1]],"garment_vertices":[[0,0,1.1],[1,0,1.1]],
+      "reference_edge_lengths_m":[1],"rest_garment_edges":[[0,1]]},
+    {"frame":1,"body_vertices":[[0,0,0],[1,1,1]],"garment_vertices":[[0,0,1.2],[1,0,1.2]],
+      "reference_edge_lengths_m":[1],"rest_garment_edges":[[0,1]]}
+  ]
+}
+```
+
+The single-line JSON response exits `0` for PASS, `1` for a binding,
+structure, weight or motion failure, and `2` for invalid or oversized input.
+Motion metrics use caller-supplied samples and an axis-aligned body proxy.
+Visual engine status is `NOT_RUN`. [Clothing inspection contract](../assetweft-core/src/assurance/CONTRACT.md#aw-025b-clothing-binding-and-sampled-deformation).
 
 ### Sampled IK and retargeting
 

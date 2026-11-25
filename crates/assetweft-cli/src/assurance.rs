@@ -5,20 +5,23 @@ use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 
 pub(super) fn audio_inspect_response(
+    command: &str,
     call_id: Option<&String>,
     args: &ArgMatches,
     limits: val::ValidationLimits,
 ) -> (i32, Value) {
-    let command = "audio-inspect";
     let file = args.get_one::<PathBuf>("file").expect("required");
-    let spec = args.get_one::<PathBuf>("spec").map(PathBuf::as_path);
-    match val::checks::inspect_audio_file(file, spec, limits) {
-        Ok(report) => {
-            let errors: Vec<_> = report
-                .violations
-                .iter()
-                .map(|&id| error(id, "FAIL", id))
-                .collect();
+    let inspected = if command == "audio-connector-inspect" {
+        val::checks::inspect_audio_connector_file(file, limits)
+            .map(|report| (json!(report), report.violations))
+    } else {
+        let spec = args.get_one::<PathBuf>("spec").map(PathBuf::as_path);
+        val::checks::inspect_audio_file(file, spec, limits)
+            .map(|report| (json!(report), report.violations))
+    };
+    match inspected {
+        Ok((results, violations)) => {
+            let errors: Vec<_> = violations.iter().map(|&id| error(id, "FAIL", id)).collect();
             let (code, status) = if errors.is_empty() {
                 (0, "PASS")
             } else {
@@ -26,7 +29,7 @@ pub(super) fn audio_inspect_response(
             };
             (
                 code,
-                envelope(command, call_id, status, json!(errors), json!(report)),
+                envelope(command, call_id, status, json!(errors), results),
             )
         }
         Err(e) => (

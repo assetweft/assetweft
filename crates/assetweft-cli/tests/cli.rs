@@ -166,6 +166,96 @@ fn face_attachment_inspect_wire_and_input_limits() {
 }
 
 #[test]
+fn audio_connector_inspect_wire_status_and_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("connector.json");
+    let wav = dir.path().join("track.wav");
+    fs::write(&wav, b"RIFF\x2c\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x04\0\0\0\x08\0\0\0\x02\0\x10\0data\x08\0\0\0\0\0\0\x40\0\xc0\0\0").unwrap();
+    let common = json!({
+        "track_id": "voice", "model_id": "tts-v1", "wav_path": "track.wav",
+        "expected_channels": 1, "expected_sample_rate_hz": 4,
+        "min_duration_ms": 1000, "max_duration_ms": 1000,
+        "licensing": {"code_license":"GPL-3.0", "weights_license":"MIT", "dataset_license":"CC0-1.0",
+            "service_tos_ref":"offline", "linkage":"external_subprocess", "dependency_name":"piper1-gpl"}
+    });
+    let mut spec = json!({"voice": common, "sfx": [common]});
+    spec["sfx"][0]["track_id"] = json!("effect");
+    spec["sfx"][0]["category"] = json!("impact");
+    spec["sfx"][0]["model_id"] = json!("sfx-v1");
+    spec["sfx"][0]["loop_region"] = json!({
+        "start_sample": 0, "end_sample": 4, "max_step_delta": 0.125, "max_zero_crossing_offset": 0
+    });
+    spec["voice"]["text_version"] = json!("v1");
+    spec["voice"]["script_text"] = json!("Jump!");
+    spec["voice"]["voice_id"] = json!("voice-v1");
+    spec["voice"]["external_runtime_status"] = json!("NOT_RUN");
+
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("connector-1"),
+        OsStr::new("audio-connector-inspect"),
+        path.as_os_str(),
+    ];
+    let run = |input: &Value, status: &str, code: i32| {
+        fs::write(&path, input.to_string()).unwrap();
+        let (out, report) = invoke(&args);
+        assert_eq!(out.status.code(), Some(code), "{report}");
+        assert_eq!(report["status"], status);
+        assert_eq!(report["command"], "audio-connector-inspect");
+        assert_eq!(report["call_id"], "connector-1");
+        (out, report)
+    };
+    let (out, good) = run(&spec, "PASS", 0);
+    assert_eq!(out.stdout, invoke(&args).0.stdout);
+    assert_eq!(good["results"]["bgm_status"], "NOT_RUN");
+    assert_eq!(good["results"]["bgm_generated"], false);
+    let entries = good["results"]["provenance_entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["pcm_sha256"], entries[1]["pcm_sha256"]);
+
+    let mut bad = spec.clone();
+    bad["voice"]["licensing"]["linkage"] = json!("in_process");
+    assert_eq!(
+        run(&bad, "FAIL", 1).1["results"]["violations"],
+        json!(["CopyleftInProcessViolation"])
+    );
+    bad = spec.clone();
+    bad["sfx"][0]["extra"] = json!(0);
+    run(&bad, "INVALID_INPUT", 2);
+    for value in ["NaN", "1e999", "1e20"] {
+        fs::write(&path, spec.to_string().replace("0.125", value)).unwrap();
+        assert_eq!(invoke(&args).0.status.code(), Some(2), "{value}");
+    }
+    run(&spec, "PASS", 0);
+    for limit in ["1", "0"] {
+        let (out, invalid) = invoke(
+            &[
+                args.as_slice(),
+                &[OsStr::new("--max-bytes"), OsStr::new(limit)],
+            ]
+            .concat(),
+        );
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(invalid["command"], "audio-connector-inspect");
+        assert_eq!(invalid["status"], "INVALID_INPUT");
+    }
+    let mut oversized_wav = fs::read(&wav).unwrap();
+    oversized_wav.resize(2048, 0);
+    fs::write(&wav, oversized_wav).unwrap();
+    let (out, invalid) = invoke(
+        &[
+            args.as_slice(),
+            &[OsStr::new("--max-bytes"), OsStr::new("1500")],
+        ]
+        .concat(),
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(invalid["errors"][0]["field_path"], "wav_path");
+    fs::remove_file(&wav).unwrap();
+    run(&spec, "INVALID_INPUT", 2);
+}
+
+#[test]
 fn audio_inspect_reports_deterministic_measurements_and_contract_failures() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("loop.wav");

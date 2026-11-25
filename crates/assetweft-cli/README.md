@@ -21,6 +21,7 @@ assetweft [--call-id ID] face-attachment-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] cloth-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] static-kit-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] audio-inspect FILE.wav [--spec SPEC.json]
+assetweft [--call-id ID] [--max-bytes N] audio-connector-inspect SPEC.json
 assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
 assetweft [--call-id ID] [--max-bytes N] motion-retarget SPEC.json
 assetweft [--call-id ID] [--max-bytes N] motion-interaction SPEC.json
@@ -73,7 +74,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `cloth-inspect`, `motion-retarget`, `motion-interaction`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `audio-inspect`, `audio-connector-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `cloth-inspect`, `motion-retarget`, `motion-interaction`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -1129,3 +1130,29 @@ The numeric rig check runs before import. The measurement checks all 160 no-op p
 against rest and three reference landmarks against the expected bend, with a
 maximum error of 0.00001 m per coordinate. These measurements describe the preset
 pose on this sample. The source file and its animation are preserved.
+
+
+### Audio connector inspection
+
+`audio-connector-inspect` validates a manifest and the supplied WAV files. Relative
+`wav_path` values resolve beside the manifest. Each read uses the configured
+`--max-bytes` limit. The manifest requires one `voice` object and a nonempty
+`sfx` array. Omit `bgm` or set it to `null` to report `NOT_RUN`.
+
+Each track declares `track_id`, `model_id`, `wav_path`, `expected_channels`,
+`expected_sample_rate_hz`, `min_duration_ms`, `max_duration_ms`, and `licensing`.
+Voice adds `text_version`, `script_text`, `voice_id`, and
+`external_runtime_status` (use `NOT_RUN` when synthesis did not run). SFX adds
+`category`. SFX and BGM can declare a `loop_region` with `start_sample`,
+`end_sample` (exclusive), `max_step_delta`, and `max_zero_crossing_offset`.
+Use distinct voice and SFX/BGM model IDs.
+
+Each `licensing` object records `code_license`, `weights_license`,
+`dataset_license`, `service_tos_ref`, `dependency_name`, and `linkage` as
+`in_process`, `external_subprocess`, or `remote_api`. GPL/AGPL code requires
+external subprocess linkage. Autodesk FBX SDK declarations fail inspection.
+
+The report retains per-track license records even when PCM digests match, and
+includes a connector digest covering the typed manifest, PCM digests and BGM
+status. The command reports declared synthesis status and measures WAV files
+without invoking the models. ASR and playback are reported as `NOT_RUN`.

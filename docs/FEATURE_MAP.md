@@ -49,6 +49,9 @@
 - **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [音频领域](../crates/assetweft-core/src/assurance/audio_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-027a-local-wav-inspection)
 - **正常判据**：单行 JSON `PASS/0`，可解码文件满足所给声道、采样率、时长和循环约束。报告保留采样量测与原始文本，试听和 ASR 为 `NOT_RUN`
 
+## AW-021:A/B 音频连接器与 #142 第 4 项授权隔离
+- **入口**：`assetweft audio-connector-inspect <SPEC.json>` 检查语音、SFX、可选 BGM 的 WAV 与独立授权记录。
+
 ## 3. Assurance & Motion：Rigged Simple 骨骼弯曲、出招叠加与足部滑步检测
 - **入口**：`assetweft motion-stance` / `motion-strike` / `rig-bend`；核心 `motion::*` / `assurance::rig_blender`
 - **路径或子命令**：`motion-stance <JSON> --role grounded-humanoid|hovering` · `motion-strike <GLB> [--with-idle] --out <GLB>` · `rig-bend <GLB> --blender <BIN> --out <DIR>`

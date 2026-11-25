@@ -53,6 +53,7 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
+        .subcommand(Command::new("audio-connector-inspect").arg(file()))
         .subcommand(Command::new("audio-inspect").arg(file()).arg(spec_file().required(false)))
         .subcommand(Command::new("sprite-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("action-presentation-inspect").arg(file().value_name("SPEC.json")))
@@ -520,6 +521,7 @@ fn run() -> (i32, Value) {
                                 | "motion-retarget"
                                 | "motion-interaction"
                                 | "audio-inspect"
+                                | "audio-connector-inspect"
                                 | "face-attachment-inspect"
                                 | "cloth-inspect"
                                 | "vfx-inspect"
@@ -662,7 +664,9 @@ fn run() -> (i32, Value) {
             assurance::action_presentation_inspect_response(call_id, args, limits)
         }
         "vfx-inspect" => assurance::vfx_inspect_response(call_id, args, limits),
-        "audio-inspect" => assurance::audio_inspect_response(call_id, args, limits),
+        "audio-inspect" | "audio-connector-inspect" => {
+            assurance::audio_inspect_response(command, call_id, args, limits)
+        }
         "card-template-check" => assurance::card_template_check_response(call_id, args, limits),
         "face-attachment-inspect" => {
             assurance::face_attachment_inspect_response(call_id, args, limits)

@@ -132,3 +132,5 @@
 
 ## 15. AW-035:B/C 离线表现与非角色矩阵
 - [表现包与 Q6](../examples/presentation-bundle/README.md) · [非角色与 BM-01..BM-06](../examples/non-character-suite/README.md)。两套脚本输出单行 JSON，外部验收保留 `NOT_RUN`。
+
+- [AW-036:B V1 验收矩阵](RELEASE_V1_MATRIX.md) 汇总卡片、#142、#99 与 #28 的验证入口和发布边界。

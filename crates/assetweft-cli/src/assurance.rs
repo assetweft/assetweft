@@ -433,6 +433,43 @@ pub(super) fn action_presentation_inspect_response(
     }
 }
 
+pub(super) fn engine_contract_check_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let command = "engine-contract-check";
+    let spec = args.get_one::<PathBuf>("file").expect("required");
+    match val::checks::inspect_engine_contract_file(spec, limits) {
+        Ok(report) => {
+            let errors: Vec<_> = report
+                .violations
+                .iter()
+                .map(|violation| error(&violation.field, violation.code, violation.detail))
+                .collect();
+            let (code, status) = if errors.is_empty() {
+                (0, "PASS")
+            } else {
+                (1, "FAIL")
+            };
+            (
+                code,
+                envelope(command, call_id, status, json!(errors), json!(report)),
+            )
+        }
+        Err(detail) => (
+            2,
+            envelope(
+                command,
+                call_id,
+                "INVALID_INPUT",
+                json!([error("spec", "INVALID_INPUT", detail)]),
+                Value::Null,
+            ),
+        ),
+    }
+}
+
 pub(super) fn vfx_inspect_response(
     call_id: Option<&String>,
     args: &ArgMatches,

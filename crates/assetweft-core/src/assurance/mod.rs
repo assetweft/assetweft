@@ -9,6 +9,7 @@ mod card_layout_domain;
 mod cloth_domain;
 mod determinism_domain;
 mod domain;
+mod engine_contract_domain;
 mod face_attachment_domain;
 pub(crate) mod file_input;
 pub(crate) mod gltf_checks;
@@ -19,6 +20,9 @@ pub use audio_connector_domain::{AudioConnectorReport, AudioProvenance, Linkage,
 pub use audio_domain::{AudioLoopReport, AudioReport};
 pub use card_layout_domain::{CardLayoutReport, FittedBox, LayoutViolation, TemplateKind};
 pub use cloth_domain::{ClothGarmentReport, ClothReport, ClothViolation, GarmentBinding};
+pub use engine_contract_domain::{
+    AssetCategory, EngineContractReport, EngineContractViolation, TargetEngine,
+};
 pub use face_attachment_domain::{AttachmentResult, FaceAttachmentReport};
 pub use file_input::{ValidationError, read_bounded};
 

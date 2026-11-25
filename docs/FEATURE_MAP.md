@@ -43,6 +43,9 @@
 - **源码位置**：[动作表现领域](../crates/assetweft-core/src/assurance/action_presentation_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-026b-action-presentation-binding)
 - **正常判据**：`PASS/0`，蓄力、释放和恢复连续，粒子与声音按阶段绑定并声明取消清理，固定时间 cue 不声明真实命中。报告包含 `presentation_sha256`，引擎播放为 `NOT_RUN`。
 
+## AW-029/030/031 引擎离线契约
+- `assetweft engine-contract-check <SPEC.json>` 校验三引擎清单、基变换和 PBR 通道。通过为 `PASS/0`，编辑器运行状态为 `NOT_RUN`。[领域](../crates/assetweft-core/src/assurance/engine_contract_domain.rs)
+
 ## AW-027:A 本地 WAV 与循环边界检查
 - **入口**：`assetweft audio-inspect` · `assurance::checks::inspect_audio_file`
 - **路径或子命令**：`audio-inspect <FILE.wav> [--spec <SPEC.json>]`，全局 `--max-bytes` 分别限制两个文件

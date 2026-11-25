@@ -306,6 +306,16 @@ pub fn inspect_action_presentation_file(
     spec.inspect()
 }
 
+pub fn inspect_engine_contract_file(
+    spec: &Path,
+    limits: ValidationLimits,
+) -> Result<super::EngineContractReport, String> {
+    let bytes = super::read_bounded(spec, limits).map_err(|e| e.to_string())?;
+    let spec: super::engine_contract_domain::Spec =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    spec.inspect()
+}
+
 #[derive(Debug)]
 pub struct VfxInputError {
     pub field: &'static str,

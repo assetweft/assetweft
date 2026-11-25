@@ -57,6 +57,7 @@ fn grammar() -> Command {
         .subcommand(Command::new("audio-inspect").arg(file()).arg(spec_file().required(false)))
         .subcommand(Command::new("sprite-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("action-presentation-inspect").arg(file().value_name("SPEC.json")))
+        .subcommand(Command::new("engine-contract-check").arg(file().value_name("SPEC.json")))
         .subcommand(Command::new("vfx-inspect")
             .arg(Arg::new("spec").required(true).value_parser(value_parser!(PathBuf)))
             .arg(Arg::new("flipbook").long("flipbook").value_parser(value_parser!(PathBuf))))
@@ -526,6 +527,7 @@ fn run() -> (i32, Value) {
                                 | "cloth-inspect"
                                 | "vfx-inspect"
                                 | "action-presentation-inspect"
+                                | "engine-contract-check"
                         )
                 })
                 .unwrap_or(command);
@@ -663,6 +665,7 @@ fn run() -> (i32, Value) {
         "action-presentation-inspect" => {
             assurance::action_presentation_inspect_response(call_id, args, limits)
         }
+        "engine-contract-check" => assurance::engine_contract_check_response(call_id, args, limits),
         "vfx-inspect" => assurance::vfx_inspect_response(call_id, args, limits),
         "audio-inspect" | "audio-connector-inspect" => {
             assurance::audio_inspect_response(command, call_id, args, limits)

@@ -16,6 +16,7 @@ assetweft [--call-id ID] inspect FILE.glb
 assetweft [--call-id ID] sprite-inspect FILE.png --spec MANIFEST.json
 assetweft [--call-id ID] vfx-inspect SPEC.json [--flipbook FILE.png]
 assetweft [--call-id ID] action-presentation-inspect SPEC.json
+assetweft [--call-id ID] [--max-bytes N] engine-contract-check SPEC.json
 assetweft [--call-id ID] card-template-check TEMPLATE.json [--illustration FILE.png]
 assetweft [--call-id ID] face-attachment-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] cloth-inspect FILE.glb --spec SPEC.json
@@ -74,7 +75,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `audio-inspect`, `audio-connector-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `cloth-inspect`, `motion-retarget`, `motion-interaction`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `audio-inspect`, `audio-connector-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `engine-contract-check`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `cloth-inspect`, `motion-retarget`, `motion-interaction`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -110,6 +111,48 @@ cancel cleanup, and separation of timeline cues from gameplay hits. It returns
 `PASS/0`, `FAIL/1` for contract violations, or `INVALID_INPUT/2` for input errors.
 The report includes `presentation_sha256` and `engine_playback_status: "NOT_RUN"`.
 [Action presentation contract](../assetweft-core/src/assurance/CONTRACT.md#aw-026b-action-presentation-binding).
+
+`engine-contract-check` validates one bounded offline manifest for `static`,
+`rigged_action`, `2d_sprite` or `presentation_bundle`. Set `target_engine`,
+`asset_category`, `engine_version`, `plugin_version`, `adapter_kind`,
+`adapter_entrypoint`, `scale_units` and a `dependencies` array. Adapter kinds
+are `unity_csharp`, `unreal_cpp`, `unreal_python` and `godot_gdscript`.
+The sample pairs glTF positions in meters, triangle indices, tangent signs and
+column-major inverse bind matrices with their target values and an absolute
+`max_tolerance`. Unity flips X and uses `m`, Unreal swaps Y/Z and uses `cm`
+with ×100 position scaling, and Godot preserves the source basis in `m`.
+Each `pbr_textures` entry declares `map_role` and `srgb`. Data textures
+require `srgb: false`. For Unreal or Godot, packed ORM uses
+`["ao", "roughness", "metallic"]` or `"RGB=ORM"`. Unity packed maps declare
+`smoothness_inverted_from_roughness: true` and RGBA
+`["metallic", "unused", "unused", "smoothness"]` for `metallic_smoothness` or
+`["metallic", "ao", "detail_mask", "smoothness"]` for `mask_map`. The
+equivalent labels are `"R=metallic,A=smoothness"` and
+`"RGBA=metallic,ao,detail_mask,smoothness"`.
+
+The command returns `PASS/0`, `FAIL/1` for contract violations or
+`INVALID_INPUT/2` for invalid input. Reports include `engine_contract_sha256`
+(G-DET-1 micro-unit quantization), `engine_editor_runtime_status: "NOT_RUN"`
+and `headless_import_is_render_pass: false`. Live editor import and rendering
+require separate verification.
+
+```json
+{
+  "target_engine": "godot", "asset_category": "static",
+  "engine_version": "4.7.2", "plugin_version": "0.1.0",
+  "adapter_kind": "godot_gdscript", "adapter_entrypoint": "import_asset",
+  "scale_units": "m", "dependencies": [],
+  "transform_sample": {
+    "source_position_m": [1, 2, 3], "target_position": [1, 2, 3],
+    "source_triangle": [0, 1, 2], "target_triangle": [0, 1, 2],
+    "source_tangent_w": 1, "target_tangent_w": 1,
+    "source_ibm_col_major": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    "target_ibm_col_major": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    "max_tolerance": 0
+  },
+  "pbr_textures": [{"map_role": "orm", "srgb": false, "channel_order": "RGB=ORM"}]
+}
+```
 
 `sprite-inspect` reads a local PNG and JSON manifest. Global `--max-bytes` applies
 separately to each file. The [Assurance sprite contract](../assetweft-core/src/assurance/CONTRACT.md#aw-024a-sprite-sheet-inspection)

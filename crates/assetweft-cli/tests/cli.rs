@@ -7432,6 +7432,176 @@ fn catalog_list_reports_bounded_versions() {
 }
 
 #[test]
+fn engine_contract_check_wire_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("engine contract.json");
+    let args = [
+        "--call-id".as_ref(),
+        "engine-1".as_ref(),
+        "engine-contract-check".as_ref(),
+        path.as_os_str(),
+    ];
+    let run = |args: &[&OsStr], code, status| {
+        let (out, response) = invoke(args);
+        assert_eq!(response["command"], "engine-contract-check");
+        assert_eq!(response["call_id"], "engine-1");
+        assert_eq!(response["status"], status, "{response}");
+        assert_eq!(out.status.code(), Some(code));
+        (out, response)
+    };
+    run(&args, 2, "INVALID_INPUT");
+
+    let source = [0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 4, 5, 6, 1];
+    let mut specs = Vec::new();
+    for (engine, adapter, units, position, ibm, lhs) in [
+        (
+            "unity",
+            "unity_csharp",
+            "m",
+            [-1, 2, 3],
+            [0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, -4, 5, 6, 1],
+            true,
+        ),
+        (
+            "unreal",
+            "unreal_python",
+            "cm",
+            [100, 300, 200],
+            [0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 400, 600, 500, 1],
+            true,
+        ),
+        ("godot", "godot_gdscript", "m", [1, 2, 3], source, false),
+    ] {
+        let packed = if engine == "unity" {
+            json!({"map_role": "metallic_smoothness", "srgb": false,
+                   "channel_order": "R=metallic,A=smoothness",
+                   "smoothness_inverted_from_roughness": true})
+        } else {
+            json!({"map_role": "orm", "srgb": false, "channel_order": "RGB=ORM"})
+        };
+        let spec = json!({
+            "target_engine": engine, "asset_category": "rigged_action", "engine_version": "1.2.3",
+            "plugin_version": "0.1.0", "adapter_kind": adapter, "adapter_entrypoint": "Import",
+            "scale_units": units, "dependencies": [],
+            "transform_sample": {
+                "source_position_m": [1, 2, 3], "target_position": position,
+                "source_triangle": [2, 3, 4], "target_triangle": if lhs { [2, 4, 3] } else { [2, 3, 4] },
+                "source_tangent_w": 1, "target_tangent_w": if lhs { -1 } else { 1 },
+                "source_ibm_col_major": source, "target_ibm_col_major": ibm, "max_tolerance": 0
+            },
+            "pbr_textures": [packed, {"map_role": "normal", "srgb": false}]
+        });
+        fs::write(&path, spec.to_string()).unwrap();
+        let (out, pass) = run(&args, 0, "PASS");
+        assert_eq!(out.stdout, run(&args, 0, "PASS").0.stdout);
+        assert_eq!(pass["results"]["engine_editor_runtime_status"], "NOT_RUN");
+        assert_eq!(pass["results"]["headless_import_is_render_pass"], false);
+        assert_eq!(
+            pass["results"]["engine_contract_sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        specs.push(spec);
+    }
+
+    let [unity, unreal, godot] = specs.as_slice() else {
+        unreachable!()
+    };
+    for (spec, pointer, value, reason) in [
+        (
+            unity,
+            "/transform_sample/target_triangle",
+            json!([2, 3, 4]),
+            "WindingOrderViolation",
+        ),
+        (
+            unreal,
+            "/transform_sample/target_triangle",
+            json!([2, 3, 4]),
+            "WindingOrderViolation",
+        ),
+        (
+            unity,
+            "/transform_sample/target_tangent_w",
+            json!(1),
+            "TangentHandednessViolation",
+        ),
+        (
+            unreal,
+            "/transform_sample/target_tangent_w",
+            json!(1),
+            "TangentHandednessViolation",
+        ),
+        (
+            unreal,
+            "/transform_sample/target_ibm_col_major/12",
+            json!(4),
+            "InverseBindMatrixMismatch",
+        ),
+        (
+            unity,
+            "/pbr_textures/1/srgb",
+            json!(true),
+            "DataTextureSrgbViolation",
+        ),
+        (
+            unreal,
+            "/pbr_textures/0/srgb",
+            json!(true),
+            "DataTextureSrgbViolation",
+        ),
+        (
+            unity,
+            "/pbr_textures/0/smoothness_inverted_from_roughness",
+            json!(false),
+            "PbrChannelPackingViolation",
+        ),
+        (
+            unreal,
+            "/pbr_textures/0/channel_order",
+            json!(["ao", "metallic", "roughness"]),
+            "PbrChannelPackingViolation",
+        ),
+        (
+            unreal,
+            "/adapter_kind",
+            json!("unity_csharp"),
+            "EngineAdapterMismatch",
+        ),
+    ] {
+        let mut invalid = spec.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        fs::write(&path, invalid.to_string()).unwrap();
+        let (_, fail) = run(&args, 1, "FAIL");
+        assert_eq!(fail["errors"][0]["code"], reason);
+        assert_eq!(fail["results"]["engine_editor_runtime_status"], "NOT_RUN");
+    }
+    let mut invalid = godot.clone();
+    invalid["transform_sample"]["unknown"] = json!(true);
+    fs::write(&path, invalid.to_string()).unwrap();
+    run(&args, 2, "INVALID_INPUT");
+    for value in ["0", "NaN", "1e999"] {
+        let valid = godot.to_string();
+        let invalid = valid.replace(
+            "\"source_tangent_w\":1",
+            &format!("\"source_tangent_w\":{value}"),
+        );
+        assert_ne!(valid, invalid);
+        fs::write(&path, invalid).unwrap();
+        run(&args, 2, "INVALID_INPUT");
+    }
+    fs::write(&path, godot.to_string()).unwrap();
+    let bounded = ["--max-bytes".as_ref(), "16".as_ref()]
+        .into_iter()
+        .chain(args)
+        .collect::<Vec<_>>();
+    run(&bounded, 2, "INVALID_INPUT");
+    run(&args[..3], 2, "INVALID_INPUT");
+}
+
+#[test]
 fn action_presentation_inspect_wire_contract() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("action.json");

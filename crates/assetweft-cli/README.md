@@ -15,6 +15,7 @@ query stored exact metadata and the local fixture head through Catalog.
 assetweft [--call-id ID] inspect FILE.glb
 assetweft [--call-id ID] sprite-inspect FILE.png --spec MANIFEST.json
 assetweft [--call-id ID] vfx-inspect SPEC.json [--flipbook FILE.png]
+assetweft [--call-id ID] action-presentation-inspect SPEC.json
 assetweft [--call-id ID] card-template-check TEMPLATE.json [--illustration FILE.png]
 assetweft [--call-id ID] face-attachment-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] static-kit-inspect FILE.glb --spec SPEC.json
@@ -70,7 +71,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `vfx-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -99,6 +100,13 @@ transparency, and the SHA-256 of each supplied file. Contract violations
 return `FAIL/1`. Invalid or oversized input returns `INVALID_INPUT/2`.
 Engine rendering remains `NOT_RUN`. See the
 [Assurance VFX contract](../assetweft-core/src/assurance/CONTRACT.md#aw-026a-independent-vfx-inspection).
+
+`action-presentation-inspect` checks bounded JSON (`--max-bytes`) for contiguous
+charge, release, and recovery phases, synchronized VFX and SFX cues, explicit
+cancel cleanup, and separation of timeline cues from gameplay hits. It returns
+`PASS/0`, `FAIL/1` for contract violations, or `INVALID_INPUT/2` for input errors.
+The report includes `presentation_sha256` and `engine_playback_status: "NOT_RUN"`.
+[Action presentation contract](../assetweft-core/src/assurance/CONTRACT.md#aw-026b-action-presentation-binding).
 
 `sprite-inspect` reads a local PNG and JSON manifest. Global `--max-bytes` applies
 separately to each file. The [Assurance sprite contract](../assetweft-core/src/assurance/CONTRACT.md#aw-024a-sprite-sheet-inspection)

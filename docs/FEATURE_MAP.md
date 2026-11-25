@@ -32,6 +32,11 @@
 - **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [VFX 领域](../crates/assetweft-core/src/assurance/vfx_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-026a-independent-vfx-inspection)
 - **正常判据**：`PASS/0`，报告时序、参数、编辑状态、可选图集和各自 SHA-256，`visual_engine_status=NOT_RUN`
 
+## AW-026:B 动作表现绑定
+- **入口**：`assetweft action-presentation-inspect <SPEC.json>` · `assurance::checks::inspect_action_presentation_file`
+- **源码位置**：[动作表现领域](../crates/assetweft-core/src/assurance/action_presentation_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-026b-action-presentation-binding)
+- **正常判据**：`PASS/0`，蓄力、释放和恢复连续，粒子与声音按阶段绑定并声明取消清理，固定时间 cue 不声明真实命中。报告包含 `presentation_sha256`，引擎播放为 `NOT_RUN`。
+
 ## AW-027:A 本地 WAV 与循环边界检查
 - **入口**：`assetweft audio-inspect` · `assurance::checks::inspect_audio_file`
 - **路径或子命令**：`audio-inspect <FILE.wav> [--spec <SPEC.json>]`，全局 `--max-bytes` 分别限制两个文件

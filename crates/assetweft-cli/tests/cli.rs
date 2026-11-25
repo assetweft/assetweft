@@ -7342,6 +7342,81 @@ fn catalog_list_reports_bounded_versions() {
 }
 
 #[test]
+fn action_presentation_inspect_wire_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("action.json");
+    let args = [
+        "--call-id".as_ref(),
+        "action-1".as_ref(),
+        "action-presentation-inspect".as_ref(),
+        path.as_os_str(),
+    ];
+    let run = |args: &[&OsStr], code, status| {
+        let (out, response) = invoke(args);
+        assert_eq!(response["command"], "action-presentation-inspect");
+        assert_eq!(response["call_id"], "action-1");
+        assert_eq!(response["status"], status, "{response}");
+        assert_eq!(out.status.code(), Some(code));
+        (out, response)
+    };
+    let spec = json!({
+        "clip_duration_ms": 300,
+        "phases": {"charge_ms": [0, 100], "release_ms": [100, 200], "recovery_ms": [200, 300]},
+        "bindings": [
+            {"id": "glow", "kind": "vfx", "phase": "charge", "trigger_ms": 0, "duration_ms": 100,
+             "cancel_cleanup_policy": "stop_and_clear", "event_source": "fixed_timeline", "claims_gameplay_hit": false},
+            {"id": "impact", "kind": "sfx", "phase": "release", "trigger_ms": 150, "duration_ms": 30,
+             "cancel_cleanup_policy": "stop_and_clear", "event_source": "authoritative_hit", "claims_gameplay_hit": true},
+            {"id": "tail", "kind": "sfx", "phase": "recovery", "trigger_ms": 200, "duration_ms": 100,
+             "cancel_cleanup_policy": "fade_out", "event_source": "fixed_timeline", "claims_gameplay_hit": false}
+        ]
+    });
+    run(&args, 2, "INVALID_INPUT");
+    fs::write(&path, spec.to_string()).unwrap();
+    let (out, pass) = run(&args, 0, "PASS");
+    assert_eq!(out.stdout, run(&args, 0, "PASS").0.stdout);
+    assert_eq!(pass["results"]["engine_playback_status"], "NOT_RUN");
+    assert_eq!(
+        pass["results"]["presentation_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    for (pointer, value, reason) in [
+        ("/phases/release_ms/0", json!(99), "InvalidPhaseBounds"),
+        ("/phases/release_ms/0", json!(101), "InvalidPhaseBounds"),
+        ("/bindings/0/trigger_ms", json!(100), "TriggerOutsidePhase"),
+        (
+            "/bindings/0/cancel_cleanup_policy",
+            json!("persist_leak"),
+            "UncleanCancelCleanup",
+        ),
+        (
+            "/bindings/1/event_source",
+            json!("fixed_timeline"),
+            "HitEventConflation",
+        ),
+    ] {
+        let mut invalid = spec.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        fs::write(&path, invalid.to_string()).unwrap();
+        let (_, fail) = run(&args, 1, "FAIL");
+        assert_eq!(fail["errors"][0]["code"], reason);
+    }
+    fs::write(&path, b"{").unwrap();
+    run(&args, 2, "INVALID_INPUT");
+    fs::write(&path, spec.to_string()).unwrap();
+    for limit in ["8", "0", "bad"] {
+        run(
+            &[&args[..], &["--max-bytes".as_ref(), limit.as_ref()]].concat(),
+            2,
+            "INVALID_INPUT",
+        );
+    }
+}
+
+#[test]
 fn vfx_inspect_wire_contract() {
     let dir = tempfile::tempdir().unwrap();
     let spec_path = dir.path().join("vfx.json");

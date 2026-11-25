@@ -301,3 +301,30 @@ The version-1 semantic report digest hashes canonical report JSON with the
 digest field empty, then feeds its 32 SHA-256 bytes as numeric values to
 G-DET-1's semantic digest. This fingerprints the measured report. Visual
 quality and engine playback remain `NOT_RUN`.
+
+## AW-026:B Action presentation binding
+
+`checks::inspect_action_presentation_file` reads one bounded JSON spec. The
+spec connects AW-023:A motion phases to declared AW-026:A VFX and AW-027:A
+sound cues on the same action clock. All fields are required and unknown fields
+are rejected at every object level.
+
+- `clip_duration_ms` is positive. `phases` contains `charge_ms`, `release_ms`,
+  and `recovery_ms` as ordered, nonempty half-open intervals. Adjacent phases
+  share an endpoint, and the intervals lie within the clip.
+- `bindings` is nonempty. Each binding supplies a string `id`, `kind` (`vfx`
+  or `sfx`), `phase` (`charge`, `release`, or `recovery`), `trigger_ms`,
+  and `duration_ms`. Times and durations use exact unsigned integer
+  milliseconds. Each trigger lies inside its declared phase.
+- `cancel_cleanup_policy` accepts `stop_and_clear` and `fade_out`.
+  `persist_leak` reports `UncleanCancelCleanup`.
+- `event_source` is either `fixed_timeline` or `authoritative_hit`. The
+  required boolean `claims_gameplay_hit` must be false for fixed cues.
+  Violations report `HitEventConflation`.
+
+`presentation_sha256` hashes the canonical typed spec JSON, preserving binding
+array order and exact integer milliseconds. Its 32 SHA-256 bytes are passed as
+numeric values to G-DET-1's semantic digest. Contract failures report their
+violations and the same digest scheme. The inspector evaluates declared bindings
+and leaves engine playback, cancellation behavior, and hit detection unexecuted
+(`engine_playback_status: "NOT_RUN"`).

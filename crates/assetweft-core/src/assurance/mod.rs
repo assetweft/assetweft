@@ -1,6 +1,7 @@
 pub mod checks;
 pub mod rig_blender;
 
+mod action_presentation_domain;
 pub(crate) mod application;
 mod audio_domain;
 mod card_layout_domain;
@@ -11,6 +12,7 @@ pub(crate) mod file_input;
 pub(crate) mod gltf_checks;
 mod ports;
 
+pub use action_presentation_domain::{ActionPresentationReport, ActionPresentationViolation};
 pub use audio_domain::{AudioLoopReport, AudioReport};
 pub use card_layout_domain::{CardLayoutReport, FittedBox, LayoutViolation, TemplateKind};
 pub use face_attachment_domain::{AttachmentResult, FaceAttachmentReport};

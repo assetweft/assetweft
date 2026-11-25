@@ -7791,3 +7791,142 @@ fn motion_retarget_cli_reports_each_stage_and_invalid_input() {
         invalid(&[&["--max-bytes".as_ref(), limit.as_ref()][..], &args].concat());
     }
 }
+
+#[test]
+fn cloth_inspect_wire_statuses_and_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("clothing.glb");
+    let spec_path = dir.path().join("cloth.json");
+    let rig = include_bytes!("../../../examples/rigged-simple/RiggedSimple.glb");
+    let json_end = 20 + u32::from_le_bytes(rig[12..16].try_into().unwrap()) as usize;
+    let mut document: Value = serde_json::from_slice(&rig[20..json_end]).unwrap();
+    let position = document["meshes"][0]["primitives"][0]["attributes"]["POSITION"].clone();
+    document["nodes"][2]["name"] = json!("tunic");
+    let nodes = document["nodes"].as_array_mut().unwrap();
+    let body_index = nodes.len();
+    nodes.extend([
+        json!({"name":"body","mesh":1}),
+        json!({"name":"buckle","mesh":1}),
+    ]);
+    document["scenes"][0]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([json!(body_index), json!(body_index + 1)]);
+    document["meshes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"primitives":[{"attributes":{"POSITION":position}}]}));
+    let mut serialized = serde_json::to_vec(&document).unwrap();
+    serialized.resize(serialized.len().next_multiple_of(4), b' ');
+    let mut bytes = rig[..8].to_vec();
+    bytes.extend(((20 + serialized.len() + rig.len() - json_end) as u32).to_le_bytes());
+    bytes.extend((serialized.len() as u32).to_le_bytes());
+    bytes.extend(b"JSON");
+    bytes.extend(serialized);
+    bytes.extend(&rig[json_end..]);
+    fs::write(&file, bytes).unwrap();
+
+    let garment = |node, binding| {
+        json!({
+            "node_name":node,"binding_kind":binding,"body_mesh_node":"body",
+            "max_weight_sum_error":0.0001,"max_stretch_ratio":0.1,
+            "max_penetration_m":0.05,"require_supported_structure":true
+        })
+    };
+    let pose = |frame| {
+        json!({
+            "frame":frame,"body_vertices":[[0,0,0],[1,1,1]],"garment_vertices":[[0,0,1.5],[1,0,1.5]],
+            "rest_garment_edges":[[0,1]],"reference_edge_lengths_m":[1]
+        })
+    };
+    let mut spec = json!({"garments":[garment("tunic","skinned"),garment("buckle","rigid")],
+        "sampled_motion_poses":[pose(1),pose(2)]});
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("cloth-1"),
+        OsStr::new("cloth-inspect"),
+        file.as_os_str(),
+        OsStr::new("--spec"),
+        spec_path.as_os_str(),
+    ];
+    let run = |spec: &Value| {
+        fs::write(&spec_path, spec.to_string()).unwrap();
+        invoke(&args)
+    };
+    let (output, pass) = run(&spec);
+    assert_eq!(output.status.code(), Some(0), "{pass}");
+    assert_eq!(pass["status"], "PASS");
+    assert_eq!(pass["command"], "cloth-inspect");
+    assert_eq!(pass["call_id"], "cloth-1");
+    assert_eq!(
+        pass["results"]["garments"][0]["garment_classification"],
+        "skinned"
+    );
+    assert_eq!(
+        pass["results"]["garments"][1]["garment_classification"],
+        "rigid"
+    );
+    assert_eq!(pass["results"]["visual_engine_status"], "NOT_RUN");
+    assert_eq!(output.stdout, invoke(&args).0.stdout);
+
+    spec["garments"][1]["binding_kind"] = json!("skinned");
+    spec["garments"][0]["body_mesh_node"] = json!("missing");
+    spec["sampled_motion_poses"][1]["garment_vertices"] = json!([[0.5, 0.5, 0.5], [2.5, 0.5, 0.5]]);
+    let (output, fail) = run(&spec);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(fail["status"], "FAIL");
+    assert_eq!(fail["results"]["garments"][0]["status"], "UNSUPPORTED");
+    assert_eq!(
+        fail["results"]["unsupported_structures"],
+        json!(["MissingOrAmbiguousBodyMesh"])
+    );
+    for violation in [
+        "BindingMismatch",
+        "UnsupportedStructure",
+        "ClothPenetration",
+        "ExcessiveDeformation",
+    ] {
+        assert!(
+            fail["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| error["message"] == violation),
+            "{fail}"
+        );
+    }
+
+    for limit in ["0", "1"] {
+        let (output, invalid) = invoke(
+            &[
+                args.as_slice(),
+                &[OsStr::new("--max-bytes"), OsStr::new(limit)],
+            ]
+            .concat(),
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(invalid["command"], "cloth-inspect");
+    }
+    fs::write(&spec_path, spec.to_string().replace("0.05", "NaN")).unwrap();
+    let (output, invalid) = invoke(&args);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(invalid["errors"][0]["field_path"], "spec");
+    fs::write(&file, b"glTF").unwrap();
+    let (output, invalid) = run(&spec);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(invalid["status"], "INVALID_INPUT");
+    assert_eq!(invalid["errors"][0]["field_path"], "file");
+
+    // A small valid GLB lets this limit clear the file read and reject only the spec.
+    fs::copy(fixture("mesh_only.glb"), &file).unwrap();
+    let limit = fs::metadata(&file).unwrap().len().to_string();
+    let (output, invalid) = invoke(
+        &[
+            args.as_slice(),
+            &[OsStr::new("--max-bytes"), OsStr::new(&limit)],
+        ]
+        .concat(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(invalid["errors"][0]["field_path"], "spec");
+}

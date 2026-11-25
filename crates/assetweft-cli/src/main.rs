@@ -63,6 +63,7 @@ fn grammar() -> Command {
             Arg::new("illustration").long("illustration").value_parser(value_parser!(PathBuf)),
         ))
         .subcommand(Command::new("face-attachment-inspect").arg(file()).arg(spec_file()))
+        .subcommand(Command::new("cloth-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("static-kit-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("rigged-simple-components").arg(file()).arg(
             Arg::new("out-dir").long("out-dir").required(true).value_parser(value_parser!(PathBuf)),
@@ -516,6 +517,7 @@ fn run() -> (i32, Value) {
                                 | "motion-retarget"
                                 | "audio-inspect"
                                 | "face-attachment-inspect"
+                                | "cloth-inspect"
                                 | "vfx-inspect"
                                 | "action-presentation-inspect"
                         )
@@ -660,6 +662,7 @@ fn run() -> (i32, Value) {
         "face-attachment-inspect" => {
             assurance::face_attachment_inspect_response(call_id, args, limits)
         }
+        "cloth-inspect" => assurance::cloth_inspect_response(call_id, args, limits),
         "static-kit-inspect" => assurance::static_kit_inspect_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),
         "validate" => assurance::validate_response(call_id, args, limits),

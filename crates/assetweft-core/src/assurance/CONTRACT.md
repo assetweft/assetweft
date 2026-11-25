@@ -328,3 +328,34 @@ numeric values to G-DET-1's semantic digest. Contract failures report their
 violations and the same digest scheme. The inspector evaluates declared bindings
 and leaves engine playback, cancellation behavior, and hit detection unexecuted
 (`engine_playback_status: "NOT_RUN"`).
+
+## AW-025:B clothing binding and sampled deformation
+
+`checks::inspect_cloth_file` bounds the GLB and JSON independently. The spec
+requires a nonempty `garments` array with unique, exact GLB node names,
+`binding_kind` (`skinned` or `rigid`), an exact `body_mesh_node` name,
+nonnegative `max_weight_sum_error`, `max_stretch_ratio`, `max_penetration_m`
+and Boolean `require_supported_structure`. The named garment and body must
+each resolve to one mesh node. Every skinned garment primitive needs one
+`JOINTS_0`/`WEIGHTS_0` set and usable skin joints. A rigid node has neither
+a skin nor joint or weight attributes. Unsupported morphs, extra joint/weight
+sets, physics/cloth extensions and missing or ambiguous meshes fail with
+structured reasons in both modes. Strict mode additionally rejects unknown
+optional extensions on the named nodes, meshes and primitives.
+
+Each `sampled_motion_poses` entry contains a frame number, body and garment
+vertices in the same world space in metres, indexed `rest_garment_edges`,
+and parallel `reference_edge_lengths_m`. Supply at least two distinct
+frames per series. Vertex counts, rest edges and positive rest lengths stay
+fixed across a series. Unnamed poses describe a shared proxy for the listed
+garments. Use `node_name` on every pose when providing separate series.
+The caller supplies the pose samples and stable vertex correspondence.
+
+The sampled body vertices define a positive-volume axis-aligned box at each
+frame. Penetration is the greatest interior garment vertex depth to a box
+face. Deformation is the greatest absolute edge length change divided by rest
+length. Only a strict threshold exceedance fails. Worst-frame ties use the
+earliest frame. G-DET-1 hashes classifications, structured reasons, measured
+maxima and worst frames. The box is a conservative body proxy and can mark
+empty space inside the box. Sampling covers the supplied frames and vertices.
+Exact mesh collision, solver playback and engine visuals are `NOT_RUN`.

@@ -1124,3 +1124,399 @@ fn face_accessor_data<'a>(
     }
     Ok(&bin[view.offset() + offset..view.offset() + end.expect("validated accessor end")])
 }
+
+#[derive(Debug)]
+pub struct ClothInputError {
+    pub field: &'static str,
+    pub detail: String,
+}
+
+pub fn inspect_cloth_file(
+    file: &Path,
+    spec: &Path,
+    limits: ValidationLimits,
+) -> Result<super::ClothReport, ClothInputError> {
+    let invalid = |field, detail| ClothInputError { field, detail };
+    let bytes = super::read_bounded(file, limits).map_err(|e| invalid("file", e.to_string()))?;
+    let spec = super::read_bounded(spec, limits).map_err(|e| invalid("spec", e.to_string()))?;
+    let spec: super::cloth_domain::Spec =
+        serde_json::from_slice(&spec).map_err(|e| invalid("spec", e.to_string()))?;
+    let motion = spec.measure().map_err(|e| invalid("spec", e))?;
+    let facts = cloth_binding_facts(&bytes, &spec).map_err(|e| invalid("file", e))?;
+    let garments = spec
+        .garments
+        .into_iter()
+        .zip(facts)
+        .zip(motion)
+        .map(|((garment, facts), motion)| garment.report(facts, motion))
+        .collect();
+    super::ClothReport::from_garments(garments).map_err(|e| invalid("spec", e))
+}
+
+fn cloth_binding_facts(
+    bytes: &[u8],
+    spec: &super::cloth_domain::Spec,
+) -> Result<Vec<super::cloth_domain::BindingFacts>, String> {
+    use super::cloth_domain::BindingFacts;
+    use gltf::{
+        Semantic,
+        accessor::{DataType, Dimensions},
+        animation::Property,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const CLOTH_INSPECTION_BUDGET: usize = 2_000_000;
+    let parsed = super::gltf_checks::parse_glb(bytes);
+    let raw = gltf::binary::Glb::from_slice(bytes).map_err(|err| err.to_string())?;
+    let (gltf, required) = match parsed {
+        Ok(result) => result,
+        Err(error) => {
+            // Only a validated document with unsupported required extensions earns a receipt.
+            if !error.starts_with("gltf parser rejected the GLB structure: invalid glTF:") {
+                return Err(error);
+            }
+            let mut root: gltf::json::Root =
+                serde_json::from_slice(&raw.json).map_err(|err| err.to_string())?;
+            let required = root.extensions_required.clone();
+            root.extensions_required
+                .retain(|name| gltf::json::extensions::ENABLED_EXTENSIONS.contains(&name.as_str()));
+            if required.len() == root.extensions_required.len() {
+                return Err(error);
+            }
+            let document = gltf::Document::from_json(root).map_err(|_| error)?;
+            (
+                gltf::Gltf {
+                    document,
+                    blob: None,
+                },
+                required,
+            )
+        }
+    };
+    let json: serde_json::Value =
+        serde_json::from_slice(&raw.json).map_err(|err| err.to_string())?;
+    let bin = raw.bin.as_deref().unwrap_or_default();
+    let physics = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        name.contains("cloth") || name.contains("physics")
+    };
+    let raw_extensions = json["extensions"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, _)| name.as_str());
+    let physics_extension = gltf
+        .document
+        .extensions_used()
+        .chain(raw_extensions)
+        .find(|name| physics(name));
+    let unsupported_required = required.iter().find(|name| {
+        name.as_str() != super::gltf_checks::WEBP_EXTENSION
+            && !gltf::json::extensions::ENABLED_EXTENSIONS.contains(&name.as_str())
+    });
+    if let Some(name) = unsupported_required
+        .map(String::as_str)
+        .or(physics_extension)
+    {
+        let reason = format!("UnsupportedExtension:{name}");
+        if reason.len().saturating_mul(spec.garments.len()) > CLOTH_INSPECTION_BUDGET {
+            return Err("cloth extension receipt budget exceeded".into());
+        }
+        return Ok(spec
+            .garments
+            .iter()
+            .map(|_| BindingFacts {
+                unsupported: BTreeSet::from([reason.clone()]),
+                ..BindingFacts::default()
+            })
+            .collect());
+    }
+
+    let mut nodes = BTreeMap::new();
+    for node in gltf.document.nodes() {
+        if let Some(name) = json["nodes"][node.index()]["name"].as_str() {
+            nodes
+                .entry(name)
+                .and_modify(|value| *value = None)
+                .or_insert(Some(node));
+        }
+    }
+    let morph_animated: BTreeSet<_> = gltf
+        .document
+        .animations()
+        .flat_map(|animation| animation.channels())
+        .filter(|channel| channel.target().property() == Property::MorphTargetWeights)
+        .map(|channel| channel.target().node().index())
+        .collect();
+
+    let mut budget = CLOTH_INSPECTION_BUDGET;
+    let mut results = Vec::with_capacity(spec.garments.len());
+    for garment in &spec.garments {
+        let mut facts = BindingFacts::default();
+        for (name, is_garment) in [
+            (garment.body_mesh_node.as_str(), false),
+            (garment.node_name.as_str(), true),
+        ] {
+            let node = nodes.get(name).and_then(Option::as_ref);
+            let Some((node, mesh)) = node.and_then(|node| node.mesh().map(|mesh| (node, mesh)))
+            else {
+                facts.unsupported.insert(
+                    if is_garment {
+                        "MissingOrAmbiguousGarmentMesh"
+                    } else {
+                        "MissingOrAmbiguousBodyMesh"
+                    }
+                    .into(),
+                );
+                continue;
+            };
+            let raw_node = &json["nodes"][node.index()];
+            let raw_mesh = &json["meshes"][mesh.index()];
+            if node.weights().is_some()
+                || mesh.weights().is_some()
+                || morph_animated.contains(&node.index())
+            {
+                facts.unsupported.insert("MorphDeformation".into());
+            }
+            for structure in [raw_node, raw_mesh] {
+                check_cloth_extensions(
+                    structure,
+                    garment.require_supported_structure,
+                    &mut facts,
+                    &mut budget,
+                )?;
+            }
+
+            let mut rigid = node.skin().is_none();
+            let mut skinned = node.skin().is_some();
+            let mut primitives = mesh.primitives().peekable();
+            if primitives.peek().is_none() {
+                facts.unsupported.insert("EmptyMesh".into());
+                continue;
+            }
+
+            let joint_count = if is_garment {
+                cloth_joint_count(node, bin, &mut budget, &mut facts)?
+            } else {
+                None
+            };
+            for part in primitives {
+                budget = budget
+                    .checked_sub(1)
+                    .ok_or("cloth accessor budget exceeded")?;
+                check_cloth_extensions(
+                    &raw_mesh["primitives"][part.index()],
+                    garment.require_supported_structure,
+                    &mut facts,
+                    &mut budget,
+                )?;
+                if part.morph_targets().len() > 0 {
+                    facts.unsupported.insert("MorphDeformation".into());
+                }
+                let positions = part
+                    .get(&Semantic::Positions)
+                    .ok_or("cloth mesh primitive is missing POSITION")?;
+                if positions.dimensions() != Dimensions::Vec3
+                    || positions.data_type() != DataType::F32
+                    || positions.normalized()
+                {
+                    facts.unsupported.insert("InvalidPositionLayout".into());
+                    continue;
+                }
+                check_face_accessor(&positions, bin, &mut budget)?;
+                let reader = part.reader(|_| Some(bin));
+                if reader
+                    .read_positions()
+                    .ok_or("invalid cloth POSITION accessor")?
+                    .flatten()
+                    .any(|value| !value.is_finite())
+                {
+                    return Err("cloth POSITION values must be finite".into());
+                }
+                if part.attributes().any(|(semantic, _)| {
+                    matches!(semantic, Semantic::Joints(1..) | Semantic::Weights(1..))
+                }) {
+                    facts.unsupported.insert("AdditionalJointWeightSets".into());
+                    skinned = false;
+                    rigid = false;
+                }
+                if !is_garment {
+                    continue;
+                }
+
+                let joints = part.get(&Semantic::Joints(0));
+                let weights = part.get(&Semantic::Weights(0));
+                rigid &= joints.is_none() && weights.is_none();
+                skinned &= joints.is_some() && weights.is_some();
+                match (joint_count, joints, weights) {
+                    (Some(count), Some(joints), Some(weights)) => {
+                        check_cloth_weights(
+                            &part,
+                            [joints, weights],
+                            positions.count(),
+                            count,
+                            bin,
+                            &mut budget,
+                            &mut facts,
+                        )?;
+                    }
+                    (None, None, None) if node.skin().is_none() => {}
+                    _ => {
+                        facts.unsupported.insert("IncompleteSkinBinding".into());
+                    }
+                }
+            }
+            if is_garment {
+                use super::GarmentBinding::{Rigid, Skinned};
+                facts.classification = match (rigid, skinned) {
+                    (true, false) => Some(Rigid),
+                    (false, true) => Some(Skinned),
+                    _ => None,
+                };
+            }
+        }
+        results.push(facts);
+    }
+    Ok(results)
+}
+
+fn check_cloth_extensions(
+    structure: &serde_json::Value,
+    strict: bool,
+    facts: &mut super::cloth_domain::BindingFacts,
+    budget: &mut usize,
+) -> Result<(), String> {
+    if let Some(extensions) = structure["extensions"].as_object() {
+        for name in extensions.keys() {
+            *budget = budget
+                .checked_sub(name.len().saturating_add(1))
+                .ok_or("cloth extension budget exceeded")?;
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("cloth")
+                || lower.contains("physics")
+                || matches!(
+                    name.as_str(),
+                    "KHR_draco_mesh_compression"
+                        | "EXT_meshopt_compression"
+                        | "EXT_mesh_gpu_instancing"
+                )
+                || (strict && name != "KHR_materials_variants")
+            {
+                facts
+                    .unsupported
+                    .insert(format!("UnsupportedExtension:{name}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cloth_joint_count(
+    node: &gltf::Node<'_>,
+    bin: &[u8],
+    budget: &mut usize,
+    facts: &mut super::cloth_domain::BindingFacts,
+) -> Result<Option<usize>, String> {
+    use gltf::accessor::{DataType, Dimensions};
+
+    let Some(skin) = node.skin() else {
+        return Ok(None);
+    };
+    let count = skin.joints().len();
+    *budget = budget
+        .checked_sub(count)
+        .ok_or("cloth accessor budget exceeded")?;
+    let unique: std::collections::BTreeSet<_> = skin.joints().map(|joint| joint.index()).collect();
+    if count == 0 || unique.len() != count {
+        facts
+            .unsupported
+            .insert("MissingOrDuplicateSkinJoints".into());
+        return Ok(None);
+    }
+    if let Some(accessor) = skin.inverse_bind_matrices() {
+        if accessor.count() != count
+            || accessor.dimensions() != Dimensions::Mat4
+            || accessor.data_type() != DataType::F32
+            || accessor.normalized()
+        {
+            facts
+                .unsupported
+                .insert("InvalidInverseBindMatrices".into());
+        } else {
+            check_face_accessor(&accessor, bin, budget)?;
+            let reader = skin.reader(|_| Some(bin));
+            if reader
+                .read_inverse_bind_matrices()
+                .ok_or("invalid inverse bind matrix accessor")?
+                .flatten()
+                .flatten()
+                .any(|value| !value.is_finite())
+            {
+                return Err("inverse bind matrices must be finite".into());
+            }
+        }
+    }
+    Ok(Some(count))
+}
+
+fn check_cloth_weights(
+    part: &gltf::Primitive<'_>,
+    [joints, weights]: [gltf::Accessor<'_>; 2],
+    vertices: usize,
+    joint_count: usize,
+    bin: &[u8],
+    budget: &mut usize,
+    facts: &mut super::cloth_domain::BindingFacts,
+) -> Result<(), String> {
+    use gltf::{
+        accessor::{DataType, Dimensions},
+        mesh::util::ReadWeights,
+    };
+
+    let is_uint = |ty| matches!(ty, DataType::U8 | DataType::U16);
+    if [&joints, &weights]
+        .into_iter()
+        .any(|accessor| accessor.count() != vertices || accessor.dimensions() != Dimensions::Vec4)
+        || joints.normalized()
+        || !is_uint(joints.data_type())
+        || !(weights.data_type() == DataType::F32 && !weights.normalized()
+            || is_uint(weights.data_type()) && weights.normalized())
+    {
+        facts.unsupported.insert("InvalidSkinAccessorLayout".into());
+        return Ok(());
+    }
+    check_face_accessor(&joints, bin, budget)?;
+    check_face_accessor(&weights, bin, budget)?;
+    let reader = part.reader(|_| Some(bin));
+    let joints = reader
+        .read_joints(0)
+        .ok_or("invalid JOINTS_0 accessor")?
+        .into_u16();
+    let mut weights = reader.read_weights(0).ok_or("invalid WEIGHTS_0 accessor")?;
+    for joints in joints {
+        let (weights, expected_sum) = match &mut weights {
+            ReadWeights::U8(values) => (values.next().map(|v| v.map(f64::from)), 255.0),
+            ReadWeights::U16(values) => (values.next().map(|v| v.map(f64::from)), 65_535.0),
+            ReadWeights::F32(values) => (values.next().map(|v| v.map(f64::from)), 1.0),
+        };
+        let weights = weights.ok_or("WEIGHTS_0 ended before JOINTS_0")?;
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err("WEIGHTS_0 values must be finite".into());
+        }
+        if joints
+            .into_iter()
+            .any(|joint| usize::from(joint) >= joint_count)
+        {
+            facts.unsupported.insert("OutOfRangeSkinJoint".into());
+        }
+        let sum: f64 = weights.into_iter().sum();
+        facts.invalid_weights |= sum <= 0.0
+            || weights
+                .iter()
+                .any(|weight| !(0.0..=expected_sum).contains(weight));
+        facts.weight_sum_error = facts
+            .weight_sum_error
+            .max((sum - expected_sum).abs() / expected_sum);
+    }
+    Ok(())
+}

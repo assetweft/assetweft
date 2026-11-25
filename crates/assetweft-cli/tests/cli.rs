@@ -7307,3 +7307,117 @@ fn card_template_check_reports_independent_art_and_failures() {
         check(&limited, 2, "INVALID_INPUT");
     }
 }
+
+fn retarget_fixture(height: f64) -> Value {
+    let rig = |height: f64, upper: f64, lower: f64| {
+        json!({
+            "height_m":height, "limbs":[{
+                "name":"foot", "upper_len_m":upper, "lower_len_m":lower, "max_extension_ratio":0.9
+            }]
+        })
+    };
+    let frame = |x: f64, contact: Option<[f64; 3]>| {
+        json!({
+            "root_pos":[0, 0, 0], "targets":[{
+                "limb":"foot", "hip_pos":[x, 0.5, 0], "end_effector_pos":[x, 0, 0],
+                "foot_contact_pos":contact
+            }]
+        })
+    };
+    json!({
+        "source_rig":rig(1.75, 0.5, 0.4), "target_rig":rig(height, 0.4, 0.35),
+        "contact":{"foot_marker":"foot","stance_frames":[0, 1],"max_slip_m":0.01,"loop_tolerance_m":0.02},
+        "frames":[frame(0.0, Some([0.0, 0.0, 0.0])), frame(0.005, Some([0.005, 0.0, 0.0])), frame(0.0, None)]
+    })
+}
+
+#[test]
+fn motion_retarget_cli_reports_each_stage_and_invalid_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("retarget.json");
+    let args = [
+        "--call-id".as_ref(),
+        "retarget-test".as_ref(),
+        "motion-retarget".as_ref(),
+        path.as_os_str(),
+    ];
+    let stages = ["proportion", "ik_reach", "contact_slip", "loop_closure"];
+    let run = |spec: &Value, failed: Option<usize>| {
+        fs::write(&path, serde_json::to_vec(spec).unwrap()).unwrap();
+        let (out, value) = invoke(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(failed.is_some())),
+            "{value}"
+        );
+        assert_eq!(out.stdout, invoke(&args).0.stdout);
+        assert_eq!(value["command"], "motion-retarget", "{args:?}: {value}");
+        assert_eq!(value["call_id"], "retarget-test");
+        assert_eq!(
+            value["status"],
+            if failed.is_some() { "FAIL" } else { "PASS" }
+        );
+        let report = &value["results"];
+        assert_eq!(report["visual_engine_status"], "NOT_RUN");
+        assert_eq!(
+            report["failed_stage"],
+            json!(failed.map(|index| stages[index]))
+        );
+        assert_eq!(report["stages"].as_array().unwrap().len(), stages.len());
+        for (index, stage) in stages.iter().enumerate() {
+            assert_eq!(&report["stages"][index]["stage"], stage);
+            let expected = match failed {
+                Some(failed) if index == failed => "FAIL",
+                Some(failed) if index > failed => "NOT_RUN",
+                _ => "PASS",
+            };
+            assert_eq!(report["stages"][index]["status"], expected);
+        }
+    };
+    for height in [1.4, 2.1] {
+        run(&retarget_fixture(height), None);
+    }
+    for (index, pointer, replacement) in [
+        (0, "/target_rig/height_m", json!(0.175)),
+        (
+            1,
+            "/frames/1/targets/0/end_effector_pos",
+            json!([0, -0.3, 0]),
+        ),
+        (
+            2,
+            "/frames/1/targets/0/foot_contact_pos",
+            json!([0.02, 0, 0]),
+        ),
+        (
+            3,
+            "/frames/2/targets/0/end_effector_pos",
+            json!([0.03, 0, 0]),
+        ),
+    ] {
+        let mut spec = retarget_fixture(1.4);
+        *spec.pointer_mut(pointer).unwrap() = replacement;
+        run(&spec, Some(index));
+    }
+
+    let invalid = |args: &[&OsStr]| {
+        let (out, value) = invoke(args);
+        assert_eq!(out.status.code(), Some(2), "{value}");
+        assert_eq!(value["status"], "INVALID_INPUT");
+        assert_eq!(value["command"], "motion-retarget", "{args:?}: {value}");
+    };
+    fs::remove_file(&path).unwrap();
+    invalid(&args);
+    let valid = retarget_fixture(1.4).to_string();
+    let nan = valid.replace("\"root_pos\":[0,0,0]", "\"root_pos\":[NaN,0,0]");
+    assert_ne!(nan, valid);
+    for contents in ["{", nan.as_str()] {
+        fs::write(&path, contents).unwrap();
+        invalid(&args);
+    }
+    fs::write(&path, valid).unwrap();
+    for limit in ["0", "bogus", "16"] {
+        invalid(&[&args[..], &["--max-bytes".as_ref(), limit.as_ref()]].concat());
+        invalid(&[&["--max-bytes".as_ref(), limit.as_ref()][..], &args].concat());
+    }
+}

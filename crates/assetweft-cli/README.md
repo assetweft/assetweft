@@ -17,6 +17,7 @@ assetweft [--call-id ID] sprite-inspect FILE.png --spec MANIFEST.json
 assetweft [--call-id ID] card-template-check TEMPLATE.json [--illustration FILE.png]
 assetweft [--call-id ID] static-kit-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
+assetweft [--call-id ID] [--max-bytes N] motion-retarget SPEC.json
 assetweft [--call-id ID] motion-stance SAMPLES.json --role grounded-humanoid|hovering
 assetweft [--call-id ID] motion-strike RiggedSimple.glb [--with-idle] --out NEW_FILE.glb
 assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
@@ -66,7 +67,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `sprite-inspect`, `card-template-check`, `static-kit-inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `sprite-inspect`, `card-template-check`, `static-kit-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -137,6 +138,39 @@ edge counts, and the optimization record. Scale, seam, or closed-shell
 violations return `FAIL/1`. Malformed or unsupported inputs return
 `INVALID_INPUT/2`. Visual quality remains `NOT_RUN`.
 [Static kit contract](../assetweft-core/src/assurance/CONTRACT.md#aw-028a-static-kit-inspection)
+
+### Sampled IK and retargeting
+
+`motion-retarget` verifies supplied target-space samples in world metres with Y up.
+The source and target rigs declare heights and named two-bone limbs. Each frame
+supplies a root position and one hip/end-effector target per limb. The contact's
+`foot_marker` names a limb, and its inclusive zero-based stance interval requires an
+explicit `foot_contact_pos` in each covered frame.
+
+```json
+{
+  "source_rig":{"height_m":1.75,"limbs":[{"name":"foot","upper_len_m":0.5,"lower_len_m":0.4,"max_extension_ratio":0.9}]},
+  "target_rig":{"height_m":1.40,"limbs":[{"name":"foot","upper_len_m":0.4,"lower_len_m":0.35,"max_extension_ratio":0.9}]},
+  "contact":{"foot_marker":"foot","stance_frames":[0,1],"max_slip_m":0.01,"loop_tolerance_m":0.02},
+  "frames":[
+    {"root_pos":[0,0,0],"targets":[{"limb":"foot","hip_pos":[0,0.5,0],"end_effector_pos":[0,0,0],"foot_contact_pos":[0,0,0]}]},
+    {"root_pos":[0,0,0],"targets":[{"limb":"foot","hip_pos":[0,0.5,0],"end_effector_pos":[0,0,0],"foot_contact_pos":[0.005,0,0]}]}
+  ]
+}
+```
+
+The four stages check limb correspondence and a height ratio in [0.25, 4],
+target limb reach and planar bend, horizontal distance from the first stance
+sample rounded to the nearest 1 nm with ties to even, and 3D start-to-end
+displacement of the root and each end effector. The final stage expects an
+in-place loop. The verifier measures input samples and emits a receipt.
+
+The CLI emits one JSON line with `PASS/0`, `FAIL/1` or `INVALID_INPUT/2`.
+The receipt includes the input SHA-256, height ratio, stage trace and raw
+measurement maxima. On failure the trace identifies the first failing stage,
+plus frame and limb where applicable. Maxima reflect the samples evaluated up
+to failure. Later stages report `NOT_RUN` with null metrics. Visual engine
+status is `NOT_RUN`.
 
 ### Sampled foot slip
 

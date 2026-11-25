@@ -61,6 +61,9 @@ fn grammar() -> Command {
         .subcommand(Command::new("rigged-simple-components").arg(file()).arg(
             Arg::new("out-dir").long("out-dir").required(true).value_parser(value_parser!(PathBuf)),
         ))
+        .subcommand(Command::new("motion-retarget")
+            .about("Verify sampled retargeting and two-bone IK in four stages")
+            .arg(file()))
         .subcommand(Command::new("motion-stance")
             .about("Check a declared support foot using sampled world-space motion")
             .arg(file())
@@ -471,6 +474,7 @@ fn run() -> (i32, Value) {
                 _ => (2, "INVALID_INPUT", "arguments"),
             };
             let recovered = grammar()
+                .mut_arg("max-bytes", |arg| arg.value_parser(value_parser!(String)))
                 .disable_help_flag(true)
                 .disable_version_flag(true)
                 .subcommand_required(false)
@@ -498,7 +502,11 @@ fn run() -> (i32, Value) {
                 .as_ref()
                 .and_then(ArgMatches::subcommand_name)
                 .filter(|&name| {
-                    code == 2 && matches!(name, "static-kit-inspect" | "card-template-check")
+                    code == 2
+                        && matches!(
+                            name,
+                            "static-kit-inspect" | "card-template-check" | "motion-retarget"
+                        )
                 })
                 .unwrap_or(command);
             let message = e.to_string();
@@ -628,6 +636,7 @@ fn run() -> (i32, Value) {
         "rigged-simple-components" => {
             assurance::rigged_simple_components_response(call_id, args, limits)
         }
+        "motion-retarget" => assurance::retarget_response(call_id, args, limits),
         "motion-stance" => assurance::stance_response(call_id, args, limits),
         "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
         "card-template-check" => assurance::card_template_check_response(call_id, args, limits),

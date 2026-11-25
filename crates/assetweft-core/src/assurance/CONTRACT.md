@@ -148,6 +148,35 @@ returns lowercase hex. Pass rotations through `canonical_quaternion` before
 hashing so equivalent signs produce the same digest. Component-level SEMANTIC
 execution remains a caller responsibility.
 
+## AW-026:A Independent VFX inspection
+
+`checks::inspect_vfx_file` applies `read_bounded` separately to the JSON spec
+and optional PNG. Unknown JSON fields and enum values are input errors.
+The spec contains:
+
+- `vfx_mode` (`parametric`, `flipbook`, or `hybrid`) and `authoring_state`
+  (`native_editable` or `baked`). `requires_native_editable` defaults to
+  false. When true, baked VFX fails and retains its declared state in the report.
+- `timing` with positive finite `fps`, positive integer `frame_count`,
+  integer `duration_ms`, boolean `loop_cycle`, and `blend_mode` (`alpha`,
+  `additive`, or `premultiplied`). The signed duration error against
+  `frame_count * 1000 / fps` is rounded to G-DET-1 micro-units and must be
+  within 1 ms.
+- A nonempty `parameters` array of `name`, `value`, `min`, and `max`.
+  Names must be unique after trimming and nonblank. G-DET-1 canonical floats
+  reject non-finite numbers and normalize signed zero. Values must be within
+  the inclusive declared bounds.
+- `flipbook` with `frame_width`, `frame_height`, `columns`, `rows`, and
+  `require_transparency`. Flipbook and hybrid modes require the grid and PNG.
+  Parametric mode omits both. The static 8-bit sprite decoder applies its
+  existing dimension and memory limits. The grid must exactly match PNG
+  dimensions and hold at least `frame_count` frames. Required transparency
+  needs alpha support and at least one pixel with alpha below 255.
+
+The report preserves the spec, decoded atlas facts, ordered violations, and
+separate SHA-256 digests of the original JSON and PNG bytes. The PNG digest
+is null when absent. `visual_engine_status` is always `NOT_RUN`.
+
 ## AW-027:A Local WAV inspection
 
 `checks::inspect_audio_file` applies `read_bounded` independently to the WAV

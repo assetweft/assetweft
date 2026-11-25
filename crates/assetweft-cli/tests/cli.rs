@@ -7342,6 +7342,87 @@ fn catalog_list_reports_bounded_versions() {
 }
 
 #[test]
+fn vfx_inspect_wire_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let spec_path = dir.path().join("vfx.json");
+    let flipbook_path = dir.path().join("atlas.png");
+    let mut spec = json!({
+        "vfx_mode": "parametric",
+        "authoring_state": "native_editable",
+        "requires_native_editable": true,
+        "timing": {"fps": 20, "frame_count": 2, "duration_ms": 100, "loop_cycle": true, "blend_mode": "alpha"},
+        "parameters": [{"name": "intensity", "value": 0.5, "min": 0, "max": 1}]
+    });
+
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("vfx-1"),
+        OsStr::new("vfx-inspect"),
+        spec_path.as_os_str(),
+        OsStr::new("--flipbook"),
+        flipbook_path.as_os_str(),
+    ];
+    let run = |args: &[&OsStr], code, status| {
+        let (out, response) = invoke(args);
+        assert_eq!(response["command"], "vfx-inspect");
+        assert_eq!(response["call_id"], "vfx-1");
+        assert_eq!(response["status"], status, "{response}");
+        assert_eq!(out.status.code(), Some(code));
+        (out, response["results"].clone())
+    };
+
+    fs::write(&spec_path, spec.to_string()).unwrap();
+    let (out, parametric) = run(&args[..4], 0, "PASS");
+    assert_eq!(out.stdout, invoke(&args[..4]).0.stdout);
+    assert_eq!(parametric["authoring_state"], "native_editable");
+    assert_eq!(parametric["visual_engine_status"], "NOT_RUN");
+    assert!(parametric["flipbook_sha256"].is_null());
+
+    for (pointer, value) in [
+        ("/authoring_state", json!("baked")),
+        ("/timing/duration_ms", json!(102)),
+        ("/parameters/0/value", json!(2)),
+    ] {
+        let mut invalid = spec.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        fs::write(&spec_path, invalid.to_string()).unwrap();
+        let (_, report) = run(&args[..4], 1, "FAIL");
+        assert_eq!(report["authoring_state"], invalid["authoring_state"]);
+    }
+
+    spec["vfx_mode"] = json!("flipbook");
+    spec["flipbook"] = json!({
+        "frame_width": 1, "frame_height": 1, "columns": 2, "rows": 1,
+        "require_transparency": true
+    });
+    fs::write(&spec_path, spec.to_string()).unwrap();
+    for (alpha, code, status) in [(0, 0, "PASS"), (255, 1, "FAIL")] {
+        let mut encoder = png::Encoder::new(fs::File::create(&flipbook_path).unwrap(), 2, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        let mut png = encoder.write_header().unwrap();
+        png.write_image_data(&[1, 2, 3, alpha, 1, 2, 3, 255])
+            .unwrap();
+        png.finish().unwrap();
+        let (_, report) = run(&args, code, status);
+        assert_eq!(report["visual_engine_status"], "NOT_RUN");
+        assert_eq!(report["flipbook_sha256"].as_str().unwrap().len(), 64);
+        assert_eq!(
+            report["flipbook_facts"]["transparent_pixel_count"],
+            u32::from(alpha < 255)
+        );
+    }
+    fs::write(&flipbook_path, b"broken png").unwrap();
+    run(&args, 2, "INVALID_INPUT");
+    fs::write(&spec_path, spec.to_string().replace("0.5", "NaN")).unwrap();
+    run(&args[..4], 2, "INVALID_INPUT");
+    fs::write(&spec_path, spec.to_string()).unwrap();
+    for limit in ["1", "0", "16777217"] {
+        let limited = [&args[..4], &[OsStr::new("--max-bytes"), OsStr::new(limit)]].concat();
+        run(&limited, 2, "INVALID_INPUT");
+    }
+}
+
+#[test]
 fn sprite_inspect_reports_contract_and_input_failures() {
     let dir = tempfile::tempdir().unwrap();
     let sheet = dir.path().join("sprite sheet.png");

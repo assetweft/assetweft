@@ -3,6 +3,7 @@ pub mod rig_blender;
 
 mod action_presentation_domain;
 pub(crate) mod application;
+mod audio_connector_domain;
 mod audio_domain;
 mod card_layout_domain;
 mod cloth_domain;
@@ -14,6 +15,7 @@ pub(crate) mod gltf_checks;
 mod ports;
 
 pub use action_presentation_domain::{ActionPresentationReport, ActionPresentationViolation};
+pub use audio_connector_domain::{AudioConnectorReport, AudioProvenance, Linkage, TrackLicensing};
 pub use audio_domain::{AudioLoopReport, AudioReport};
 pub use card_layout_domain::{CardLayoutReport, FittedBox, LayoutViolation, TemplateKind};
 pub use cloth_domain::{ClothGarmentReport, ClothReport, ClothViolation, GarmentBinding};

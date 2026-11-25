@@ -53,6 +53,55 @@ pub fn inspect_audio_file(
         .map_err(|e| invalid("file", e.into()))
 }
 
+pub fn inspect_audio_connector_file(
+    path: &Path,
+    limits: ValidationLimits,
+) -> Result<super::AudioConnectorReport, AudioInputError> {
+    use super::audio_connector_domain::{ConnectorSpec, LoopRegion, Track};
+
+    let invalid = |field, detail| AudioInputError { field, detail };
+    let bytes = super::read_bounded(path, limits).map_err(|e| invalid("spec", e.to_string()))?;
+    let spec: ConnectorSpec =
+        serde_json::from_slice(&bytes).map_err(|e| invalid("spec", e.to_string()))?;
+    let directory = path.parent().unwrap_or_else(|| Path::new(""));
+    let inspect = |role, track: &Track, transcript: Option<&str>, region: Option<&LoopRegion>| {
+        let spec: AudioSpec = serde_json::from_value(serde_json::json!({
+            "expected_channels": track.expected_channels,
+            "expected_sample_rate_hz": track.expected_sample_rate_hz,
+            "min_duration_ms": track.min_duration_ms,
+            "max_duration_ms": track.max_duration_ms,
+            "transcript_text": transcript,
+            "loop_region": region,
+        }))
+        .map_err(|e| invalid("spec", e.to_string()))?;
+        let wav_path = directory.join(&track.wav_path);
+        let bytes = super::read_bounded(&wav_path, limits)
+            .map_err(|e| invalid("wav_path", format!("{}: {e}", track.track_id)))?;
+        let audio = match wav_payload(&bytes) {
+            Ok((format, data, frames)) if spec.validate(frames).is_ok() => Ok(format
+                .inspect(data, frames, Some(spec))
+                .map_err(|e| invalid("wav_path", format!("{}: {e}", track.track_id)))?),
+            Ok(_) => Err("InvalidAudioConstraints"),
+            Err(_) => Err("InvalidWavFormat"),
+        };
+        Ok(track.provenance(role, audio))
+    };
+
+    let mut entries = vec![inspect(
+        "voice",
+        &spec.voice.track,
+        Some(&spec.voice.script_text),
+        None,
+    )?];
+    for sfx in &spec.sfx {
+        entries.push(inspect("sfx", &sfx.track, None, sfx.loop_region.as_ref())?);
+    }
+    if let Some(bgm) = &spec.bgm {
+        entries.push(inspect("bgm", &bgm.track, None, bgm.loop_region.as_ref())?);
+    }
+    Ok(spec.report(entries))
+}
+
 fn wav_u16(bytes: &[u8]) -> u16 {
     u16::from_le_bytes([bytes[0], bytes[1]])
 }

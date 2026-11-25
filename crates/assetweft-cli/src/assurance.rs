@@ -322,3 +322,42 @@ pub(super) fn sprite_inspect_response(
         ),
     )
 }
+
+pub(super) fn card_template_check_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    use val::checks::{CardLayoutError, check_card_template_file};
+
+    let command = "card-template-check";
+    let template = args.get_one::<PathBuf>("file").expect("required");
+    let illustration = args
+        .get_one::<PathBuf>("illustration")
+        .map(PathBuf::as_path);
+    let (code, status, field, detail) =
+        match check_card_template_file(template, illustration, limits) {
+            Ok(report) => {
+                return (
+                    0,
+                    envelope(command, call_id, "PASS", json!([]), json!(report)),
+                );
+            }
+            Err(CardLayoutError::InvalidInput { field, detail }) => {
+                (2, "INVALID_INPUT", field, detail)
+            }
+            Err(CardLayoutError::Contract(violation)) => {
+                (1, "FAIL", "template", format!("{violation:?}"))
+            }
+        };
+    (
+        code,
+        envelope(
+            command,
+            call_id,
+            status,
+            json!([error(field, status, detail)]),
+            Value::Null,
+        ),
+    )
+}

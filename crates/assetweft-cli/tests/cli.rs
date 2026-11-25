@@ -7214,3 +7214,96 @@ fn sprite_inspect_reports_contract_and_input_failures() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(response["status"], "INVALID_INPUT");
 }
+
+#[test]
+fn card_template_check_reports_independent_art_and_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let template = dir.path().join("template.json");
+    let art = dir.path().join("illustration.png");
+    let make_art = |pixel| {
+        let f = fs::File::create(&art).unwrap();
+        let mut writer = png::Encoder::new(f, 2, 1).write_header().unwrap();
+        writer.write_image_data(&[pixel, pixel]).unwrap();
+        writer.finish().unwrap();
+    };
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("card-1"),
+        OsStr::new("card-template-check"),
+        template.as_os_str(),
+        OsStr::new("--illustration"),
+        art.as_os_str(),
+    ];
+    let check = |args: &[&OsStr], code, status| {
+        let (out, receipt) = invoke(args);
+        assert_eq!(out.status.code(), Some(code), "{receipt}");
+        assert_eq!(receipt["status"], status);
+        assert_eq!(receipt["command"], "card-template-check");
+        assert_eq!(receipt["call_id"], "card-1");
+        receipt["results"].clone()
+    };
+    let spec = json!({
+        "kind": "card",
+        "canvas": {"width_px": 60, "height_px": 80},
+        "illustration_slot": {"slot_id": "art", "x": 0, "y": 0, "width": 60,
+            "height": 40, "editable_independently": true, "fit_mode": "contain"},
+        "text_boxes": [{"box_id": "title", "x": 0, "y": 40, "width": 60,
+            "height": 20, "text": "oak", "font_px": 8, "line_height_px": 10,
+            "max_chars_per_line": 4, "max_lines": 2}]
+    });
+    fs::write(&template, spec.to_string()).unwrap();
+    make_art(42);
+    let a = check(&args, 0, "PASS");
+    assert_eq!(invoke(&args).0.stdout, invoke(&args).0.stdout);
+    make_art(99);
+    let b = check(&args, 0, "PASS");
+    assert_eq!(a["template_layout_sha256"], b["template_layout_sha256"]);
+    assert_ne!(a["illustration_sha256"], b["illustration_sha256"]);
+    assert_eq!(b["illustration_width"], 2);
+    assert_eq!(b["illustration_height"], 1);
+    assert_eq!(b["visual_quality_status"], "NOT_RUN");
+    let no_art = check(&args[..4], 0, "PASS");
+    assert_eq!(
+        no_art["template_layout_sha256"],
+        a["template_layout_sha256"]
+    );
+    assert!(no_art["illustration_sha256"].is_null());
+
+    for kind in ["ui", "tile"] {
+        let mut valid = spec.clone();
+        valid["kind"] = json!(kind);
+        fs::write(&template, valid.to_string()).unwrap();
+        check(&args, 0, "PASS");
+    }
+    for (pointer, value) in [
+        ("/text_boxes/0/text", json!("a\nb\nc")),
+        ("/text_boxes/0/text", json!("unbreakable")),
+        ("/text_boxes/0/x", json!(1)),
+        ("/illustration_slot/editable_independently", json!(false)),
+        (
+            "/text_boxes",
+            json!([spec["text_boxes"][0], {
+                "box_id": "second", "x": 0, "y": 45, "width": 60,
+                "height": 20, "text": "ash", "font_px": 8, "line_height_px": 10,
+                "max_chars_per_line": 4, "max_lines": 2
+            }]),
+        ),
+    ] {
+        let mut invalid = spec.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        fs::write(&template, invalid.to_string()).unwrap();
+        check(&args, 1, "FAIL");
+    }
+    fs::write(&template, b"{").unwrap();
+    check(&args, 2, "INVALID_INPUT");
+    fs::write(&template, spec.to_string()).unwrap();
+    fs::write(&art, b"not a PNG").unwrap();
+    check(&args, 2, "INVALID_INPUT");
+    fs::remove_file(&art).unwrap();
+    check(&args, 2, "INVALID_INPUT");
+    for limit in ["1", "0"] {
+        let mut limited = args.to_vec();
+        limited.extend([OsStr::new("--max-bytes"), OsStr::new(limit)]);
+        check(&limited, 2, "INVALID_INPUT");
+    }
+}

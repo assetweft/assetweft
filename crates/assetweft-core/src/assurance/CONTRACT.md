@@ -176,3 +176,36 @@ counts alpha equal to 255. An empty frame has alpha zero throughout.
 Duplicate groups list equal hashes, with ascending frame indices and groups
 ordered by their first index. Duplicate and empty frames are observations.
 `semantic_quality_status` remains `NOT_RUN`.
+
+## AW-024:B card template layout check
+
+`checks::check_card_template_file` reads the template and optional illustration
+under the same per-file byte limit. The strict JSON contract accepts `kind`
+(`ui`, `card`, `tile`), `canvas` (`width_px`, `height_px`, each 1–4096),
+`illustration_slot`, `text_boxes` (1–1024), and the optional boolean
+`allow_text_over_illustration` (defaults to `true`).
+
+- The slot requires a nonblank `slot_id`, unsigned pixel `x`, `y`, `width`,
+  and `height`, `editable_independently: true`, and `fit_mode` of `contain`
+  or `cover`. `art_asset_sha256` is optional reference metadata.
+- Each text box requires a unique nonblank `box_id`, the same pixel rectangle
+  fields, `text`, `font_px`, `line_height_px`, `max_chars_per_line`, and
+  `max_lines`. All rectangles have positive area and stay inside the canvas.
+  Text boxes cannot overlap one another. Edge contact is allowed. Setting the
+  overlay flag to `false` also disallows text box overlap with the slot.
+- Line height must be at least the positive font size. Both text limits must be
+  positive and `max_lines * line_height_px` must fit the box height. Each
+  newline starts a line, including blank lines. Other whitespace separates
+  words and is counted as one scalar between words on a line. Words wrap
+  greedily. A word that exceeds the scalar limit fails.
+- `template_layout_sha256` hashes the canonical semantic bytes of canvas and
+  slot geometry followed by typed JSON with the `card_layout_v1` tag, slot
+  settings, and text boxes sorted by ID.
+  The art reference, PNG bytes, template kind, and overlay policy are excluded.
+  An optional PNG uses the sprite decoder and limits. Its raw-file SHA-256 and
+  dimensions are reported independently. Its centered fitted rectangle uses
+  signed pixel numerators and a shared positive denominator. Cover reports the
+  full scaled rectangle before clipping to the slot.
+
+The checker measures declared constraints. Font rendering and visual quality
+remain `NOT_RUN`.

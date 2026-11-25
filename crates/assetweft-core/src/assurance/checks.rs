@@ -90,6 +90,36 @@ pub fn inspect_sprite_file(
 }
 
 #[derive(Debug)]
+pub enum CardLayoutError {
+    InvalidInput { field: &'static str, detail: String },
+    Contract(super::LayoutViolation),
+}
+
+pub fn check_card_template_file(
+    template: &Path,
+    illustration: Option<&Path>,
+    limits: ValidationLimits,
+) -> Result<super::CardLayoutReport, CardLayoutError> {
+    use super::card_layout_domain::{Spec, sha256_hex};
+
+    let invalid = |field, detail| CardLayoutError::InvalidInput { field, detail };
+    let template =
+        super::read_bounded(template, limits).map_err(|e| invalid("template", e.to_string()))?;
+    let spec: Spec =
+        serde_json::from_slice(&template).map_err(|e| invalid("template", e.to_string()))?;
+    let illustration = illustration
+        .map(|path| {
+            let bytes = super::read_bounded(path, limits)
+                .map_err(|e| invalid("illustration", e.to_string()))?;
+            let (width, height, _, _) =
+                decode_sprite_png(&bytes).map_err(|e| invalid("illustration", e))?;
+            Ok((width, height, sha256_hex(&bytes)))
+        })
+        .transpose()?;
+    spec.check(illustration).map_err(CardLayoutError::Contract)
+}
+
+#[derive(Debug)]
 pub struct StaticKitInputError {
     pub field: &'static str,
     pub detail: String,

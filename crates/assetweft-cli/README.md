@@ -14,6 +14,7 @@ query stored exact metadata and the local fixture head through Catalog.
 ```
 assetweft [--call-id ID] inspect FILE.glb
 assetweft [--call-id ID] sprite-inspect FILE.png --spec MANIFEST.json
+assetweft [--call-id ID] card-template-check TEMPLATE.json [--illustration FILE.png]
 assetweft [--call-id ID] static-kit-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
 assetweft [--call-id ID] motion-stance SAMPLES.json --role grounded-humanoid|hovering
@@ -65,7 +66,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `sprite-inspect`, `static-kit-inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `sprite-inspect`, `card-template-check`, `static-kit-inspect`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -105,6 +106,14 @@ structural mismatch. `INVALID_INPUT` (2) covers malformed or unsupported input,
 unreadable paths and size limits. Semantic quality remains `NOT_RUN`.
 
 ### Static architecture and foliage kit inspection
+
+`card-template-check` checks bounds, overlap, and declared text fit for UI,
+card, and tile templates. Each input uses global `--max-bytes`. Swapping a
+compatible illustration changes its separate receipt fields while keeping the
+template layout SHA-256 stable. The command emits one JSON line with `PASS/0`,
+`FAIL/1` for layout violations, or `INVALID_INPUT/2` for input errors.
+Visual quality is `NOT_RUN`.
+See the [template contract](../assetweft-core/src/assurance/CONTRACT.md#aw-024b-card-template-layout-check).
 
 `static-kit-inspect` applies global `--max-bytes` to each local file. An
 example architecture spec with a socket at the module's east joint:

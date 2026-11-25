@@ -23,6 +23,7 @@ assetweft [--call-id ID] static-kit-inspect FILE.glb --spec SPEC.json
 assetweft [--call-id ID] audio-inspect FILE.wav [--spec SPEC.json]
 assetweft [--call-id ID] rigged-simple-components RiggedSimple.glb --out-dir NEW_DIRECTORY
 assetweft [--call-id ID] [--max-bytes N] motion-retarget SPEC.json
+assetweft [--call-id ID] [--max-bytes N] motion-interaction SPEC.json
 assetweft [--call-id ID] motion-stance SAMPLES.json --role grounded-humanoid|hovering
 assetweft [--call-id ID] motion-strike RiggedSimple.glb [--with-idle] --out NEW_FILE.glb
 assetweft [--call-id ID] rig-bend RiggedSimple.glb --blender ABSOLUTE_TRUSTED_EXECUTABLE --out NEW_DIRECTORY
@@ -72,7 +73,7 @@ All database opens also configure connection pragmas as described below.
 Every invocation emits exactly one compact JSON document and newline on stdout:
 `schema_version: 1`, `command`, `call_id` (null if absent/unparsed), `status`,
 `errors: [{code,field_path,message}]`, `results` (null on input errors).
-`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `cloth-inspect`, `motion-retarget`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
+`command` is `inspect`, `audio-inspect`, `sprite-inspect`, `vfx-inspect`, `action-presentation-inspect`, `card-template-check`, `static-kit-inspect`, `face-attachment-inspect`, `cloth-inspect`, `motion-retarget`, `motion-interaction`, `motion-stance`, `motion-strike`, `rig-bend`, `validate`, `plan`, `library init`, `library backup`, `library restore`, `workflow create`,
 `workflow status`, `workflow cancel`, `budget approve`, `budget balance`,
 `budget reserve`, `budget intent`, `budget receipts`, `budget cancel`, `candidate initialize`, `candidate propose`, `candidate show`, `candidate receipt`,
 `catalog version`, `catalog search`, `catalog file-availability`, `catalog references`, `catalog current`, `catalog feedback-add`,
@@ -248,6 +249,28 @@ measurement maxima. On failure the trace identifies the first failing stage,
 plus frame and limb where applicable. Maxima reflect the samples evaluated up
 to failure. Later stages report `NOT_RUN` with null metrics. Visual engine
 status is `NOT_RUN`.
+
+### Sampled multi-character interaction
+
+`motion-interaction` accepts a bounded JSON object with
+`scope: "shared_clock_kinematic"`, `actors`, and `interaction`. Each actor
+has a unique `actor_id`, strictly increasing integer `timestamps_ms`, and
+matching `root_positions_m` and `anchor_positions_m` arrays of world-space
+XYZ triples in metres. Every actor must share the same timestamp sequence.
+Unknown fields are rejected at every level.
+
+The `interaction` names two actors via `actor_a` and `actor_b`. The
+zero-based `contact_window_frames` and `separation_window_frames` are
+disjoint inclusive ranges. Every contact sample must have an anchor distance
+between `forbidden_interpenetration_m` and `max_contact_distance_m`, inclusive.
+Every separation sample must have both root and anchor distances at least
+`min_separation_distance_m`.
+
+The single JSON line returns `PASS/0`, `FAIL/1` with the first failing check,
+or `INVALID_INPUT/2`. Its `interaction_sha256` includes exact IDs, timestamps
+and frame ranges plus G-DET-1 quantized distances and coordinates. Geometric
+checks use the supplied sample precision. The receipt covers sampled kinematics
+and records `visual_engine_status: "NOT_RUN"`.
 
 ### Sampled foot slip
 

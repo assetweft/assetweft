@@ -7702,6 +7702,119 @@ fn retarget_fixture(height: f64) -> Value {
 }
 
 #[test]
+fn motion_interaction_cli_reports_verdicts_and_invalid_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("interaction.json");
+    let args = [
+        "--call-id".as_ref(),
+        "shared-clock".as_ref(),
+        "motion-interaction".as_ref(),
+        path.as_os_str(),
+    ];
+    let verify = |args: &[&OsStr], code, status| {
+        let (out, value) = invoke(args);
+        assert_eq!(out.status.code(), Some(code), "{value}");
+        assert_eq!(value["status"], status);
+        assert_eq!(value["command"], "motion-interaction");
+        assert_eq!(value["call_id"], "shared-clock");
+        (out, value)
+    };
+    verify(&args, 2, "INVALID_INPUT");
+    let spec = interaction_fixture();
+    fs::write(&path, spec.to_string()).unwrap();
+    let (out, value) = verify(&args, 0, "PASS");
+    assert_eq!(value["results"]["visual_engine_status"], "NOT_RUN");
+    assert_eq!(
+        value["results"]["interaction_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(out.stdout, invoke(&args).0.stdout);
+    for limit in ["16", "0", "bogus"] {
+        let bounded = [&args[..], &["--max-bytes".as_ref(), limit.as_ref()]].concat();
+        verify(&bounded, 2, "INVALID_INPUT");
+    }
+    for (reason, pointer, replacement) in [
+        ("ClockDesync", "/actors/1/timestamps_ms/7", json!(281)),
+        (
+            "ContactMiss",
+            "/actors/1/anchor_positions_m/4/0",
+            json!(0.04),
+        ),
+        (
+            "Interpenetration",
+            "/actors/1/anchor_positions_m/2/0",
+            json!(0.0),
+        ),
+        (
+            "InsufficientSeparation",
+            "/actors/1/anchor_positions_m/5/0",
+            json!(0.1),
+        ),
+        (
+            "InsufficientSeparation",
+            "/actors/1/root_positions_m/7/0",
+            json!(0.1),
+        ),
+    ] {
+        let mut changed = spec.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        fs::write(&path, changed.to_string()).unwrap();
+        let (_, value) = verify(&args, 1, "FAIL");
+        assert_eq!(value["results"]["failure"]["reason"], reason);
+    }
+    let mut ai = spec.clone();
+    ai["interaction"]["ai_planner_present"] = json!(true);
+    for contents in [
+        "{".into(),
+        spec.to_string().replace("0.03", "NaN"),
+        ai.to_string(),
+    ] {
+        fs::write(&path, contents).unwrap();
+        verify(&args, 2, "INVALID_INPUT");
+    }
+}
+
+fn interaction_fixture() -> Value {
+    let actor = |id, root_x, anchor_x| {
+        let anchors: Vec<_> = (0..8)
+            .map(|frame| {
+                [
+                    if (2..=4).contains(&frame) {
+                        anchor_x
+                    } else {
+                        root_x
+                    },
+                    0.0,
+                    0.0,
+                ]
+            })
+            .collect();
+        json!({
+            "actor_id": id,
+            "timestamps_ms": [0, 40, 80, 120, 160, 200, 240, 280],
+            "root_positions_m": vec![[root_x, 0.0, 0.0]; 8],
+            "anchor_positions_m": anchors,
+        })
+    };
+    json!({
+        "scope": "shared_clock_kinematic",
+        "actors": [actor("a", 0.0, 0.0), actor("b", 1.0, 0.02)],
+        "interaction": {
+            "actor_a": "a",
+            "actor_b": "b",
+            "contact_window_frames": [2, 4],
+            "separation_window_frames": [5, 7],
+            "max_contact_distance_m": 0.03,
+            "min_separation_distance_m": 0.5,
+            "forbidden_interpenetration_m": 0.01,
+        },
+    })
+}
+
+#[test]
 fn motion_retarget_cli_reports_each_stage_and_invalid_input() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("retarget.json");

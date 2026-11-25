@@ -61,6 +61,10 @@
 - **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [核心验证](../crates/assetweft-core/src/motion/retarget.rs)。
 - **正常判据**：单行 JSON `PASS/0`，按顺序通过体型比例、IK 可达性、接触滑移、循环闭合。首个失败阶段为 `FAIL/1`，后续为 `NOT_RUN`。输入错误为 `INVALID_INPUT/2`，视觉引擎为 `NOT_RUN`。
 
+### AW-023:C 多角色共享时钟、接触与分离
+- `assetweft [--call-id ID] [--max-bytes N] motion-interaction SPEC.json` · [核心验证](../crates/assetweft-core/src/motion/interaction.rs)。
+- 同步采样与接触/分离门禁通过为 `PASS/0`，门禁失败为 `FAIL/1`，输入错误为 `INVALID_INPUT/2`。视觉引擎为 `NOT_RUN`。
+
 ## 4. Catalog：元数据、精确组件引用、CAS 对象、导出、预览与评价（7 表写主）
 - **入口**：`assetweft catalog <action>`；核心 `catalog::*`（表：`aw_assets`, `aw_asset_versions`, `aw_component_references`, `aw_objects`, `aw_managed_versions`, `aw_candidate_current`, `aw_feedback`）
 - **路径或子命令**：`catalog {commit-object,register-version,add-reference,version,search,file-availability,references,current,preview,materialize-export,evict-export,feedback-add,feedback-latest} --db <DB> ...` · `catalog feedback-get --db <DB> --asset-id <A> --version-id <V> --feedback-id <ID>`

@@ -247,6 +247,16 @@ pub fn check_card_template_file(
     spec.check(illustration).map_err(CardLayoutError::Contract)
 }
 
+pub fn inspect_action_presentation_file(
+    spec: &Path,
+    limits: ValidationLimits,
+) -> Result<super::ActionPresentationReport, String> {
+    let bytes = super::read_bounded(spec, limits).map_err(|e| e.to_string())?;
+    let spec: super::action_presentation_domain::Spec =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    spec.inspect()
+}
+
 #[derive(Debug)]
 pub struct VfxInputError {
     pub field: &'static str,

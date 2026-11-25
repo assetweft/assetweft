@@ -55,6 +55,9 @@ fn grammar() -> Command {
         .subcommand(Command::new("inspect").arg(file()))
         .subcommand(Command::new("audio-inspect").arg(file()).arg(spec_file().required(false)))
         .subcommand(Command::new("sprite-inspect").arg(file()).arg(spec_file()))
+        .subcommand(Command::new("vfx-inspect")
+            .arg(Arg::new("spec").required(true).value_parser(value_parser!(PathBuf)))
+            .arg(Arg::new("flipbook").long("flipbook").value_parser(value_parser!(PathBuf))))
         .subcommand(Command::new("card-template-check").arg(file()).arg(
             Arg::new("illustration").long("illustration").value_parser(value_parser!(PathBuf)),
         ))
@@ -512,6 +515,7 @@ fn run() -> (i32, Value) {
                                 | "motion-retarget"
                                 | "audio-inspect"
                                 | "face-attachment-inspect"
+                                | "vfx-inspect"
                         )
                 })
                 .unwrap_or(command);
@@ -645,6 +649,7 @@ fn run() -> (i32, Value) {
         "motion-retarget" => assurance::retarget_response(call_id, args, limits),
         "motion-stance" => assurance::stance_response(call_id, args, limits),
         "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
+        "vfx-inspect" => assurance::vfx_inspect_response(call_id, args, limits),
         "audio-inspect" => assurance::audio_inspect_response(call_id, args, limits),
         "card-template-check" => assurance::card_template_check_response(call_id, args, limits),
         "face-attachment-inspect" => {

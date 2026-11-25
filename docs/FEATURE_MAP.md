@@ -26,6 +26,12 @@
 - **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [核心契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-025a-face-and-attachment-inspection)
 - **正常判据**：单行 JSON `PASS/0`。不需脸的角色回报 `INAPPLICABLE`，且仍检验刚性配件；有脸角色检查真实权重和眼颌轨道。视觉引擎为 `NOT_RUN`。
 
+## AW-026:A 独立 VFX 与翻页图集检查
+- **入口**：`assetweft vfx-inspect` · `assurance::checks::inspect_vfx_file`
+- **路径或子命令**：`vfx-inspect <SPEC.json> [--flipbook <FILE.png>]`，全局 `--max-bytes` 分别限制两个文件
+- **源码位置**：[CLI](../crates/assetweft-cli/src/assurance.rs) · [VFX 领域](../crates/assetweft-core/src/assurance/vfx_domain.rs) · [契约](../crates/assetweft-core/src/assurance/CONTRACT.md#aw-026a-independent-vfx-inspection)
+- **正常判据**：`PASS/0`，报告时序、参数、编辑状态、可选图集和各自 SHA-256，`visual_engine_status=NOT_RUN`
+
 ## AW-027:A 本地 WAV 与循环边界检查
 - **入口**：`assetweft audio-inspect` · `assurance::checks::inspect_audio_file`
 - **路径或子命令**：`audio-inspect <FILE.wav> [--spec <SPEC.json>]`，全局 `--max-bytes` 分别限制两个文件

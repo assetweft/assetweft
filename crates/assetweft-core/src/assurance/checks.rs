@@ -248,6 +248,45 @@ pub fn check_card_template_file(
 }
 
 #[derive(Debug)]
+pub struct VfxInputError {
+    pub field: &'static str,
+    pub detail: String,
+}
+
+pub fn inspect_vfx_file(
+    spec: &Path,
+    flipbook: Option<&Path>,
+    limits: ValidationLimits,
+) -> Result<super::VfxReport, VfxInputError> {
+    use super::card_layout_domain::sha256_hex;
+    use super::vfx_domain::{FlipbookFacts, Spec};
+
+    let invalid = |field, detail| VfxInputError { field, detail };
+    let bytes = super::read_bounded(spec, limits).map_err(|e| invalid("spec", e.to_string()))?;
+    let spec: Spec = serde_json::from_slice(&bytes).map_err(|e| invalid("spec", e.to_string()))?;
+    let atlas = flipbook
+        .map(|path| {
+            let bytes = super::read_bounded(path, limits)
+                .map_err(|e| invalid("flipbook", e.to_string()))?;
+            let (width, height, has_alpha_channel, rgba) =
+                decode_sprite_png(&bytes).map_err(|e| invalid("flipbook", e))?;
+            let facts = FlipbookFacts {
+                width,
+                height,
+                has_alpha_channel,
+                transparent_pixel_count: rgba
+                    .chunks_exact(4)
+                    .filter(|pixel| pixel[3] < 255)
+                    .count(),
+            };
+            Ok((facts, sha256_hex(&bytes)))
+        })
+        .transpose()?;
+    spec.inspect(sha256_hex(&bytes), atlas)
+        .map_err(|e| invalid("spec", e.to_string()))
+}
+
+#[derive(Debug)]
 pub struct StaticKitInputError {
     pub field: &'static str,
     pub detail: String,

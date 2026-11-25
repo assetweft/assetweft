@@ -361,6 +361,44 @@ pub(super) fn static_kit_inspect_response(
     }
 }
 
+pub(super) fn vfx_inspect_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let command = "vfx-inspect";
+    let spec = args.get_one::<PathBuf>("spec").expect("required");
+    let flipbook = args.get_one::<PathBuf>("flipbook").map(PathBuf::as_path);
+    match val::checks::inspect_vfx_file(spec, flipbook, limits) {
+        Ok(report) => {
+            let errors: Vec<_> = report
+                .violations
+                .iter()
+                .map(|violation| error(violation.field, "FAIL", violation.detail))
+                .collect();
+            let (code, status) = if errors.is_empty() {
+                (0, "PASS")
+            } else {
+                (1, "FAIL")
+            };
+            (
+                code,
+                envelope(command, call_id, status, json!(errors), json!(report)),
+            )
+        }
+        Err(e) => (
+            2,
+            envelope(
+                command,
+                call_id,
+                "INVALID_INPUT",
+                json!([error(e.field, "INVALID_INPUT", e.detail)]),
+                Value::Null,
+            ),
+        ),
+    }
+}
+
 pub(super) fn sprite_inspect_response(
     call_id: Option<&String>,
     args: &ArgMatches,

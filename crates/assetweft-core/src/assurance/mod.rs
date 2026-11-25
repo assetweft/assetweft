@@ -44,3 +44,9 @@ pub use sprite_domain::{Looping, SpriteFrame, SpriteReport};
 
 mod static_kit_domain;
 pub use static_kit_domain::{KitKind, OptimizationRecord, Resources, StaticKitReport, Violation};
+
+mod vfx_domain;
+pub use vfx_domain::{
+    AuthoringState, BlendMode, FlipbookFacts, FlipbookGrid, VfxMode, VfxParameter, VfxReport,
+    VfxTiming, VfxViolation,
+};

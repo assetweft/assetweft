@@ -148,6 +148,33 @@ returns lowercase hex. Pass rotations through `canonical_quaternion` before
 hashing so equivalent signs produce the same digest. Component-level SEMANTIC
 execution remains a caller responsibility.
 
+## AW-027:A Local WAV inspection
+
+`checks::inspect_audio_file` applies `read_bounded` independently to the WAV
+and optional JSON spec. RIFF size matches the file length. A single supported
+`fmt ` chunk precedes a single `data` chunk with at least one complete frame.
+Other chunks are skipped by their declared size and RIFF padding. Supported
+formats are PCM 8/16/24-bit and IEEE float32. Block alignment and byte rate
+must match the declared positive channel count and sample rate.
+
+PCM samples are normalized by their signed full-scale divisor, with 8-bit
+samples first centered at 128. Float samples must be finite and representable
+in G-DET-1 micro-units. `pcm_sha256` hashes canonical signed little-endian
+micro-units in interleaved sample order without headers. Duration is reported
+in milliseconds rounded to the nearest microsecond. Duration constraints use
+the exact frame-count/rate ratio. Peak and RMS use the decoded values across
+all channels. A sample at or beyond unit amplitude counts as clipped.
+
+An optional spec checks `expected_channels`, `expected_sample_rate_hz`, inclusive
+`min_duration_ms` / `max_duration_ms`, clipping and silence. Its `loop_region`
+uses zero-based frames with an exclusive `end_sample`. The reported seam
+metrics are the maximum per-channel step from the last frame to the first and
+the maximum absolute endpoint amplitude. Exceeding either finite non-negative
+limit produces `LoopBoundaryClick`. An invalid frame range or unknown spec
+field is an input error. `transcript_text` is reported as supplied and
+`chars_per_sec` counts Unicode scalar values over the exact duration.
+`asr_playback_status` is always `NOT_RUN`.
+
 ## AW-024:A Sprite sheet inspection
 
 `checks::inspect_sprite_file` reads the PNG and manifest independently with

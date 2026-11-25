@@ -4,6 +4,44 @@ use clap::ArgMatches;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 
+pub(super) fn audio_inspect_response(
+    call_id: Option<&String>,
+    args: &ArgMatches,
+    limits: val::ValidationLimits,
+) -> (i32, Value) {
+    let command = "audio-inspect";
+    let file = args.get_one::<PathBuf>("file").expect("required");
+    let spec = args.get_one::<PathBuf>("spec").map(PathBuf::as_path);
+    match val::checks::inspect_audio_file(file, spec, limits) {
+        Ok(report) => {
+            let errors: Vec<_> = report
+                .violations
+                .iter()
+                .map(|&id| error(id, "FAIL", id))
+                .collect();
+            let (code, status) = if errors.is_empty() {
+                (0, "PASS")
+            } else {
+                (1, "FAIL")
+            };
+            (
+                code,
+                envelope(command, call_id, status, json!(errors), json!(report)),
+            )
+        }
+        Err(e) => (
+            2,
+            envelope(
+                command,
+                call_id,
+                "INVALID_INPUT",
+                json!([error(e.field, "INVALID_INPUT", e.detail)]),
+                Value::Null,
+            ),
+        ),
+    }
+}
+
 pub(super) fn rigged_simple_components_response(
     call_id: Option<&String>,
     args: &ArgMatches,

@@ -12,10 +12,11 @@ use tauri::{Manager, State};
 use workbench_service::{
     AppendFeedbackRequest, ApproveBudgetRequest, BudgetAccountDto, BudgetIntentDto,
     BudgetOverviewDto, ByoGpuRunDto, CandidateAttemptDto, CandidateHeadDto, CandidateItemDto,
-    CandidateOverviewDto, FeedbackRecordDto, ImportLocalFileRequest, ImportResultDto,
-    InitHeadRequest, LibrarySessionDto, PreviewDto, ProposeCandidateRequest, ReconcileCallRequest,
-    ReserveCallRequest, RunByoGpuRequest, ServiceError, ValidationDto, VersionDetailDto,
-    VersionListDto, WorkbenchService,
+    CandidateOverviewDto, CapabilityOverviewDto, CapabilityRunResultDto, FeedbackRecordDto,
+    ImportLocalFileRequest, ImportResultDto, InitHeadRequest, LibrarySessionDto, PreviewDto,
+    ProposeCandidateRequest, ReconcileCallRequest, ReserveCallRequest, RunByoGpuRequest,
+    RunCapabilityRequest, ServiceError, ValidationDto, VersionDetailDto, VersionListDto,
+    WorkbenchService,
 };
 
 type Service = Mutex<WorkbenchService>;
@@ -25,6 +26,25 @@ fn lock<'a>(state: &State<'a, Service>) -> Result<MutexGuard<'a, WorkbenchServic
         code: "INTERNAL",
         message: "The local library service is unavailable".into(),
     })
+}
+
+#[tauri::command]
+fn capability_overview() -> Result<CapabilityOverviewDto, ServiceError> {
+    WorkbenchService::default().capability_overview()
+}
+
+#[tauri::command]
+async fn run_capability_check(
+    req: RunCapabilityRequest,
+) -> Result<CapabilityRunResultDto, ServiceError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        WorkbenchService::default().run_capability_check(req)
+    })
+    .await
+    .map_err(|error| ServiceError {
+        code: "INTERNAL",
+        message: error.to_string(),
+    })?
 }
 
 #[tauri::command]
@@ -182,6 +202,8 @@ fn main() {
         .manage(Service::default())
         .invoke_handler(tauri::generate_handler![
             open_library,
+            capability_overview,
+            run_capability_check,
             budget_overview,
             approve_budget,
             reserve_call,

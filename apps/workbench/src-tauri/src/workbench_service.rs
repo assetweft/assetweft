@@ -2,13 +2,14 @@ use assetweft_core::{
     LockMode,
     application::Application,
     assurance::{
-        RoleRequirement, SourceClass, SourceDeclaration, ValidationLimits, ValidationReport,
+        RoleRequirement, SourceClass, SourceDeclaration, ValidationLimits, ValidationReport, checks,
     },
     budget,
     candidate::{Acceptance, AcceptanceReport, Candidate, Current, FixtureContract, Proposal},
     execution::byo_gpu,
     history::{Decision, Feedback, FeedbackRecord, HistoryQuery},
     library::{AssetVersion, ComponentReference, ComponentRole, LibraryError, Presence},
+    motion::{interaction, retarget},
     storage::{FileAvailability, StorageError, StoredObject},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -113,9 +114,14 @@ fn capabilities() -> Vec<Capability> {
             "Budget allowances, remote UNKNOWN reconciliation, BYO GPU opt-in execution, and incremental candidate acceptance. Paid remote APIs remain NOT_RUN.",
         ),
         (
-            "rig_morph_animation_editor",
+            "professional_capability_views",
+            "READY",
+            "Local inspection with parameters for implemented checks.",
+        ),
+        (
+            "visual_engine_playback",
             "NOT_RUN",
-            "Planned in AW-032:C.",
+            "Unity, Unreal and Godot playback, GPU cloth solving and ASR playback are unavailable.",
         ),
         (
             "cloud_sync_and_login",
@@ -130,6 +136,443 @@ fn capabilities() -> Vec<Capability> {
         description,
     })
     .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CapabilitySpec {
+    id: &'static str,
+    label: &'static str,
+    task_code: Option<&'static str>,
+    implemented: bool,
+    status: &'static str,
+    allowed_params: &'static [&'static str],
+    primary_label: Option<&'static str>,
+    secondary_label: Option<&'static str>,
+    secondary_required: bool,
+    not_run: Vec<String>,
+    reason: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+pub struct CapabilityOverviewDto {
+    implemented: Vec<CapabilitySpec>,
+    unimplemented: Vec<CapabilitySpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunCapabilityRequest {
+    capability_id: String,
+    primary_path: String,
+    secondary_path: Option<String>,
+    max_bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityRunResultDto {
+    capability_id: &'static str,
+    task_code: &'static str,
+    status: &'static str,
+    violations: Vec<String>,
+    not_run: Vec<String>,
+    digest: Option<String>,
+    report: serde_json::Value,
+}
+
+const JSON_SPEC: &str = "JSON spec path";
+const ENGINE: &str = "visual_engine_status";
+const QUALITY: &str = "visual_quality_status";
+const ASR: &str = "asr_playback_status";
+
+impl WorkbenchService {
+    pub fn capability_overview(&self) -> Result<CapabilityOverviewDto> {
+        let implemented = [
+            (
+                "motion-retarget",
+                "Motion retargeting",
+                "AW-023:B",
+                JSON_SPEC,
+                None,
+                ENGINE,
+            ),
+            (
+                "motion-interaction",
+                "Motion interaction",
+                "AW-023:C",
+                JSON_SPEC,
+                None,
+                ENGINE,
+            ),
+            (
+                "sprite-inspect",
+                "Sprite sheet",
+                "AW-024:A",
+                "PNG sheet path",
+                Some((JSON_SPEC, true)),
+                "semantic_quality_status",
+            ),
+            (
+                "card-template-check",
+                "Card template",
+                "AW-024:B",
+                "JSON template path",
+                Some(("PNG illustration path", false)),
+                QUALITY,
+            ),
+            (
+                "face-attachment-inspect",
+                "Face and attachments",
+                "AW-025:A",
+                "GLB path",
+                Some((JSON_SPEC, true)),
+                ENGINE,
+            ),
+            (
+                "cloth-inspect",
+                "Cloth",
+                "AW-025:B",
+                "GLB path",
+                Some((JSON_SPEC, true)),
+                ENGINE,
+            ),
+            (
+                "vfx-inspect",
+                "Visual effects",
+                "AW-026:A",
+                JSON_SPEC,
+                Some(("PNG flipbook path", false)),
+                ENGINE,
+            ),
+            (
+                "action-presentation-inspect",
+                "Action presentation",
+                "AW-026:B",
+                JSON_SPEC,
+                None,
+                "engine_playback_status",
+            ),
+            (
+                "audio-inspect",
+                "Audio",
+                "AW-027:A",
+                "WAV path",
+                Some((JSON_SPEC, false)),
+                ASR,
+            ),
+            (
+                "static-kit-inspect",
+                "Static kit",
+                "AW-028:A",
+                "GLB path",
+                Some((JSON_SPEC, true)),
+                QUALITY,
+            ),
+        ]
+        .into_iter()
+        .map(
+            |(id, label, task_code, primary_label, secondary, boundary)| CapabilitySpec {
+                id,
+                label,
+                task_code: Some(task_code),
+                implemented: true,
+                status: "READY",
+                allowed_params: if secondary.is_some() {
+                    &["primaryPath", "secondaryPath", "maxBytes"]
+                } else {
+                    &["primaryPath", "maxBytes"]
+                },
+                primary_label: Some(primary_label),
+                secondary_label: secondary.map(|(label, _)| label),
+                secondary_required: secondary.is_some_and(|(_, required)| required),
+                not_run: vec![format!("{boundary}: NOT_RUN")],
+                reason: None,
+            },
+        )
+        .collect();
+
+        let unimplemented = [
+            (
+                "unity_live_import",
+                "Unity live import",
+                Some("AW-029"),
+                "Unity live import and playback are unavailable in this workspace.",
+            ),
+            (
+                "unreal_live_import",
+                "Unreal live import",
+                Some("AW-030"),
+                "Unreal live import and playback are unavailable in this workspace.",
+            ),
+            (
+                "godot_live_import",
+                "Godot live import",
+                Some("AW-031"),
+                "Godot live import and playback are unavailable in this workspace.",
+            ),
+            (
+                "realtime_cloth_gpu_solver",
+                "Real-time cloth solver",
+                None,
+                "The GPU cloth runtime is unavailable.",
+            ),
+            (
+                "asr_voice_playback",
+                "ASR voice playback",
+                None,
+                "The speech recognition playback runtime is unavailable.",
+            ),
+            (
+                "rig_skin_live_deformer",
+                "Live rig deformation",
+                None,
+                "The live skin, morph and animation runtime is unavailable.",
+            ),
+        ]
+        .into_iter()
+        .map(|(id, label, task_code, reason)| CapabilitySpec {
+            id,
+            label,
+            task_code,
+            implemented: false,
+            status: "NOT_RUN",
+            allowed_params: &[],
+            primary_label: None,
+            secondary_label: None,
+            secondary_required: false,
+            not_run: Vec::new(),
+            reason: Some(reason),
+        })
+        .collect();
+
+        Ok(CapabilityOverviewDto {
+            implemented,
+            unimplemented,
+        })
+    }
+
+    pub fn run_capability_check(
+        &self,
+        req: RunCapabilityRequest,
+    ) -> Result<CapabilityRunResultDto> {
+        let spec = self
+            .capability_overview()?
+            .implemented
+            .into_iter()
+            .find(|spec| spec.id == req.capability_id)
+            .ok_or_else(|| ServiceError::new("UNSUPPORTED", "Capability is NOT_RUN or unknown."))?;
+
+        if !(1..=MAX_BYTES).contains(&req.max_bytes) {
+            return Err(ServiceError::input(format!(
+                "maxBytes must be 1..={MAX_BYTES}"
+            )));
+        }
+        let primary = req.primary_path.trim();
+        if primary.is_empty() {
+            return Err(ServiceError::input("primaryPath is required"));
+        }
+        if req.secondary_path.is_some() && spec.secondary_label.is_none() {
+            return Err(ServiceError::input(
+                "secondaryPath is unsupported for this capability",
+            ));
+        }
+        let primary = Path::new(primary);
+        let secondary = req
+            .secondary_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(Path::new);
+        let required_spec =
+            || secondary.ok_or_else(|| ServiceError::input("secondaryPath is required"));
+        let limits = ValidationLimits {
+            max_bytes: req.max_bytes,
+        };
+        let json = |result: std::result::Result<serde_json::Value, serde_json::Error>| {
+            result.map_err(|error| ServiceError::new("INTERNAL", error))
+        };
+
+        let (report, violations, digest_key, applicable) = match spec.id {
+            "motion-retarget" => {
+                let report = retarget::assess(primary, limits).map_err(ServiceError::input)?;
+                let violations = report.failed_stage.into_iter().map(str::to_owned).collect();
+                (
+                    json(serde_json::to_value(report))?,
+                    violations,
+                    "input_sha256",
+                    true,
+                )
+            }
+            "motion-interaction" => {
+                let report = interaction::assess(primary, limits).map_err(ServiceError::input)?;
+                let violations = report
+                    .failure
+                    .iter()
+                    .map(|failure| format!("{failure:?}"))
+                    .collect();
+                (
+                    json(serde_json::to_value(report))?,
+                    violations,
+                    "interaction_sha256",
+                    true,
+                )
+            }
+            "sprite-inspect" => {
+                match checks::inspect_sprite_file(primary, required_spec()?, limits) {
+                    Ok(report) => (json(serde_json::to_value(report))?, vec![], "", true),
+                    Err(checks::SpriteError::Contract(detail)) => {
+                        (serde_json::Value::Null, vec![detail.into()], "", true)
+                    }
+                    Err(checks::SpriteError::InvalidInput { field, detail }) => {
+                        return Err(ServiceError::input(format!("{field}: {detail}")));
+                    }
+                }
+            }
+            "card-template-check" => {
+                match checks::check_card_template_file(primary, secondary, limits) {
+                    Ok(report) => (
+                        json(serde_json::to_value(report))?,
+                        vec![],
+                        "template_layout_sha256",
+                        true,
+                    ),
+                    Err(checks::CardLayoutError::Contract(violation)) => (
+                        serde_json::Value::Null,
+                        vec![format!("{violation:?}")],
+                        "",
+                        true,
+                    ),
+                    Err(checks::CardLayoutError::InvalidInput { field, detail }) => {
+                        return Err(ServiceError::input(format!("{field}: {detail}")));
+                    }
+                }
+            }
+            "face-attachment-inspect" => {
+                let report =
+                    checks::inspect_face_attachment_file(primary, required_spec()?, limits)
+                        .map_err(|e| ServiceError::input(format!("{}: {}", e.field, e.detail)))?;
+                let mut violations: Vec<_> = report
+                    .attachment_results
+                    .iter()
+                    .filter_map(|part| {
+                        part.violation
+                            .map(|detail| format!("{}: {detail}", part.attachment_node))
+                    })
+                    .collect();
+                if report.facial_status == "FAIL" {
+                    violations.push("Facial requirements are not playable".into());
+                }
+                let applicable =
+                    report.facial_status != "INAPPLICABLE" || !report.attachment_results.is_empty();
+                (
+                    json(serde_json::to_value(report))?,
+                    violations,
+                    "semantic_hash",
+                    applicable,
+                )
+            }
+            "cloth-inspect" => {
+                let report = checks::inspect_cloth_file(primary, required_spec()?, limits)
+                    .map_err(|e| ServiceError::input(format!("{}: {}", e.field, e.detail)))?;
+                let violations = report
+                    .garments
+                    .iter()
+                    .flat_map(|garment| {
+                        garment
+                            .violations
+                            .iter()
+                            .map(|violation| format!("{}: {violation:?}", garment.node_name))
+                    })
+                    .collect();
+                (
+                    json(serde_json::to_value(report))?,
+                    violations,
+                    "semantic_hash",
+                    true,
+                )
+            }
+            "vfx-inspect" => {
+                let report = checks::inspect_vfx_file(primary, secondary, limits)
+                    .map_err(|e| ServiceError::input(format!("{}: {}", e.field, e.detail)))?;
+                let violations = report
+                    .violations
+                    .iter()
+                    .map(|v| format!("{}: {}", v.field, v.detail))
+                    .collect();
+                (
+                    json(serde_json::to_value(report))?,
+                    violations,
+                    "vfx_spec_sha256",
+                    true,
+                )
+            }
+            "action-presentation-inspect" => {
+                let report = checks::inspect_action_presentation_file(primary, limits)
+                    .map_err(ServiceError::input)?;
+                let violations = report
+                    .violations
+                    .iter()
+                    .map(|v| format!("{}: {} ({})", v.field, v.detail, v.code))
+                    .collect();
+                (
+                    json(serde_json::to_value(report))?,
+                    violations,
+                    "presentation_sha256",
+                    true,
+                )
+            }
+            "audio-inspect" => {
+                let report = checks::inspect_audio_file(primary, secondary, limits)
+                    .map_err(|e| ServiceError::input(format!("{}: {}", e.field, e.detail)))?;
+                let violations = report.violations.iter().map(|v| (*v).to_owned()).collect();
+                (
+                    json(serde_json::to_value(report))?,
+                    violations,
+                    "pcm_sha256",
+                    true,
+                )
+            }
+            "static-kit-inspect" => {
+                let report = checks::inspect_static_kit_file(primary, required_spec()?, limits)
+                    .map_err(|e| ServiceError::input(format!("{}: {}", e.field, e.detail)))?;
+                let violations = report
+                    .violations
+                    .iter()
+                    .map(|v| format!("{}: {}", v.field, v.detail))
+                    .collect();
+                (json(serde_json::to_value(report))?, violations, "", true)
+            }
+            _ => {
+                return Err(ServiceError::new(
+                    "UNSUPPORTED",
+                    "Capability is NOT_RUN or unknown.",
+                ));
+            }
+        };
+        let status = if !violations.is_empty() {
+            "FAIL"
+        } else if applicable {
+            "PASS"
+        } else {
+            "INAPPLICABLE"
+        };
+
+        Ok(CapabilityRunResultDto {
+            capability_id: spec.id,
+            task_code: spec
+                .task_code
+                .expect("implemented capabilities have a task code"),
+            status,
+            violations,
+            not_run: spec.not_run,
+            digest: report
+                .get(digest_key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            report,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

@@ -6,6 +6,7 @@ import { WorkbenchController } from './controller';
 import type { LibrarySession, WorkspaceMode } from './types';
 import { budgetPanel } from './ui/patterns/budget-panel';
 import { candidatesPanel } from './ui/patterns/candidates-panel';
+import { capabilitiesPanel } from './ui/patterns/capabilities-panel';
 import { assetList } from './ui/patterns/asset-list';
 import { libraryDialogs } from './ui/patterns/dialogs';
 import { inspectorPanel } from './ui/patterns/inspector-panel';
@@ -34,7 +35,7 @@ const inspector = inspectorPanel(document.getElementById('inspector')!, {
   validate: (role) => controller.validate(role),
   feedback: (request) => controller.feedback(request),
 });
-const modes = ['catalog', 'budget', 'candidates'] as const;
+const modes = ['catalog', 'budget', 'candidates', 'capabilities'] as const;
 const tabs = modes.map((mode) => document.querySelector<HTMLButtonElement>(`#tab-${mode}`)!);
 const panels = modes.map((mode) => document.getElementById(`${mode}-workspace`)!);
 const budget = budgetPanel(panels[1], {
@@ -49,6 +50,7 @@ const candidates = candidatesPanel(panels[2], {
   propose: (req) => controller.proposeCandidate(req),
   attempt: (id) => controller.attemptCandidate(id),
 });
+const capabilities = capabilitiesPanel(panels[3], (req) => controller.runCapabilityCheck(req));
 const controller = new WorkbenchController(bridge, {
   session(value) {
     session = value;
@@ -76,6 +78,7 @@ const controller = new WorkbenchController(bridge, {
     candidates.render(value);
     if (!value) candidates.error(session ? 'Loading candidate overview…' : 'Open a local library to view candidates.');
   },
+  capabilities: capabilities.render,
   run: budget.run,
   budgetReceipt: budget.receipt,
   initializedHead: candidates.initializedHead,
@@ -85,6 +88,7 @@ const controller = new WorkbenchController(bridge, {
     if (area === 'catalog') catalog.error(message);
     else if (area === 'budget') budget.error(message);
     else if (area === 'candidates') candidates.error(message);
+    else if (area === 'capabilities') capabilities.error(message);
     else if (area === 'preview') stage.error(message);
     else inspector.error(message, area === 'validation');
   },

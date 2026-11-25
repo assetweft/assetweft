@@ -1,4 +1,6 @@
-use super::workbench_service::{AppendFeedbackRequest, ImportLocalFileRequest, WorkbenchService};
+use super::workbench_service::{
+    AppendFeedbackRequest, ImportLocalFileRequest, RunCapabilityRequest, WorkbenchService,
+};
 use assetweft_core::{
     application::Application,
     history::{Decision, HistoryQuery},
@@ -90,11 +92,13 @@ fn commands_follow_catalog_storage_validation_and_history() {
     assert_eq!(session["mode"], "LOCAL_SQLITE_NO_LOGIN");
     assert_eq!(session["schemaVersion"], 6);
     let caps = session["capabilities"].as_array().unwrap();
-    assert_eq!(caps.len(), 8);
+    assert_eq!(caps.len(), 9);
     assert_eq!(caps[5]["status"], "READY");
-    assert_eq!(caps[6]["status"], "NOT_RUN");
-    assert_eq!(caps[7]["status"], "DISABLED");
-    assert_eq!(caps[7]["status"], "DISABLED");
+    assert_eq!(caps[6]["id"], "professional_capability_views");
+    assert_eq!(caps[6]["status"], "READY");
+    assert_eq!(caps[7]["id"], "visual_engine_playback");
+    assert_eq!(caps[7]["status"], "NOT_RUN");
+    assert_eq!(caps[8]["status"], "DISABLED");
     assert_eq!(
         value(service.list_versions(None, 100).unwrap()),
         json!({"matches":[],"truncated":false})
@@ -625,4 +629,119 @@ fn sha256(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[test]
+fn capability_overview_is_available_without_a_library_and_exposes_core_parameters() {
+    let mut service = WorkbenchService::default();
+    let overview = value(service.capability_overview().unwrap());
+    let implemented = overview["implemented"].as_array().unwrap();
+    assert_eq!(implemented.len(), 10);
+    for (id, secondary_required) in [
+        ("motion-retarget", None),
+        ("motion-interaction", None),
+        ("sprite-inspect", Some(true)),
+        ("card-template-check", Some(false)),
+        ("face-attachment-inspect", Some(true)),
+        ("cloth-inspect", Some(true)),
+        ("vfx-inspect", Some(false)),
+        ("action-presentation-inspect", None),
+        ("audio-inspect", Some(false)),
+        ("static-kit-inspect", Some(true)),
+    ] {
+        let spec = implemented.iter().find(|spec| spec["id"] == id).unwrap();
+        assert_eq!(spec["status"], "READY");
+        assert_eq!(spec["implemented"], true);
+        assert_eq!(
+            spec["secondaryRequired"],
+            secondary_required.unwrap_or(false)
+        );
+        assert_eq!(
+            spec["allowedParams"],
+            if secondary_required.is_some() {
+                json!(["primaryPath", "secondaryPath", "maxBytes"])
+            } else {
+                json!(["primaryPath", "maxBytes"])
+            }
+        );
+    }
+    let unimplemented = overview["unimplemented"].as_array().unwrap();
+    assert_eq!(unimplemented.len(), 6);
+    for spec in unimplemented {
+        assert_eq!(spec["status"], "NOT_RUN");
+        assert_eq!(spec["implemented"], false);
+        assert_eq!(spec["allowedParams"], json!([]));
+        assert!(!spec["reason"].as_str().unwrap().is_empty());
+    }
+    let dir = tempfile::tempdir().unwrap();
+    service
+        .open_library(&dir.path().join("test.sqlite"), true)
+        .unwrap();
+    assert_eq!(value(service.capability_overview().unwrap()), overview);
+}
+
+#[test]
+fn capability_run_reports_real_audio_results_and_rejects_invalid_requests() {
+    let service = WorkbenchService::default();
+    let dir = tempfile::tempdir().unwrap();
+    let wav = dir.path().join("audio.wav");
+    fs::write(&wav, WAV).unwrap();
+    let spec = dir.path().join("audio.json");
+    fs::write(&spec, br#"{"expected_channels":2}"#).unwrap();
+    let request = |id: &str, secondary: Option<&Path>, max_bytes| {
+        serde_json::from_value::<RunCapabilityRequest>(json!({
+            "capabilityId": id,
+            "primaryPath": format!(" {} ", wav.display()),
+            "secondaryPath": secondary,
+            "maxBytes": max_bytes
+        }))
+        .unwrap()
+    };
+    let pass = value(
+        service
+            .run_capability_check(request("audio-inspect", None, 1024))
+            .unwrap(),
+    );
+    assert_eq!(pass["status"], "PASS");
+    assert_eq!(pass["taskCode"], "AW-027:A");
+    assert_eq!(pass["report"]["channels"], 1);
+    assert_eq!(pass["digest"], pass["report"]["pcm_sha256"]);
+    assert_eq!(pass["digest"].as_str().unwrap().len(), 64);
+    assert_eq!(pass["notRun"], json!(["asr_playback_status: NOT_RUN"]));
+    let fail = value(
+        service
+            .run_capability_check(request("audio-inspect", Some(&spec), 1024))
+            .unwrap(),
+    );
+    assert_eq!(fail["status"], "FAIL");
+    assert!(!fail["violations"].as_array().unwrap().is_empty());
+    assert_eq!(fail["violations"], fail["report"]["violations"]);
+    assert_eq!(fail["digest"], pass["digest"]);
+
+    for id in ["unity_live_import", "no-such-capability"] {
+        let error = service
+            .run_capability_check(request(id, None, 1024))
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "UNSUPPORTED");
+        assert!(error.message.contains("NOT_RUN"));
+    }
+    for (id, secondary, limit, message) in [
+        ("audio-inspect", None, 0, "maxBytes"),
+        ("audio-inspect", None, 16_777_217, "maxBytes"),
+        (
+            "motion-retarget",
+            Some(spec.as_path()),
+            1024,
+            "secondaryPath is unsupported",
+        ),
+        ("sprite-inspect", None, 1024, "secondaryPath is required"),
+    ] {
+        let error = service
+            .run_capability_check(request(id, secondary, limit))
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "INVALID_INPUT");
+        assert!(error.message.contains(message));
+    }
 }

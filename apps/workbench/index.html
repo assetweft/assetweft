@@ -18,11 +18,12 @@
         <button id="tab-catalog" type="button" role="tab" aria-controls="catalog-workspace" aria-selected="true">Catalog</button>
         <button id="tab-budget" type="button" role="tab" aria-controls="budget-workspace" aria-selected="false" tabindex="-1">Generation &amp; Budgets</button>
         <button id="tab-candidates" type="button" role="tab" aria-controls="candidates-workspace" aria-selected="false" tabindex="-1">Incremental Candidates</button>
+        <button id="tab-capabilities" type="button" role="tab" aria-controls="capabilities-workspace" aria-selected="false" tabindex="-1">Capabilities</button>
       </nav>
       <nav aria-label="Library actions">
         <button id="open-library" class="primary" type="button">Open library</button>
         <button id="import-file" type="button" disabled>Import local file</button>
-        <button id="capabilities" type="button">Capabilities</button>
+        <button id="capabilities" type="button">Library Features</button>
       </nav>
     </header>
     <div class="catalog-workspace" id="catalog-workspace" role="tabpanel" aria-labelledby="tab-catalog">
@@ -32,6 +33,7 @@
     </div>
     <section class="workspace-panel stack" id="budget-workspace" role="tabpanel" aria-labelledby="tab-budget" tabindex="0" hidden></section>
     <section class="workspace-panel stack" id="candidates-workspace" role="tabpanel" aria-labelledby="tab-candidates" tabindex="0" hidden></section>
+    <section class="workspace-panel stack" id="capabilities-workspace" role="tabpanel" aria-labelledby="tab-capabilities" tabindex="0" hidden></section>
   </div>
   <div class="visually-hidden" id="field-announcement" aria-live="polite"></div>
   <script type="module" src="./main.js"></script>

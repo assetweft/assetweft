@@ -1,3 +1,4 @@
+use super::audio_domain::{AudioFormat, AudioSpec};
 use super::{
     GeometryReport, RigReport, RoleRequirement, SourceDeclaration, ValidationLimits,
     ValidationReport, application,
@@ -9,6 +10,133 @@ use super::{
     rig_gltf::GltfRig,
 };
 use std::path::Path;
+
+#[derive(Debug)]
+pub struct AudioInputError {
+    pub field: &'static str,
+    pub detail: String,
+}
+
+pub fn inspect_audio_file(
+    path: &Path,
+    spec: Option<&Path>,
+    limits: ValidationLimits,
+) -> Result<super::AudioReport, AudioInputError> {
+    let invalid = |field, detail| AudioInputError { field, detail };
+    let bytes = super::read_bounded(path, limits).map_err(|e| invalid("file", e.to_string()))?;
+    let (format, data, frames) = wav_payload(&bytes).map_err(|e| invalid("file", e.into()))?;
+    let spec = if let Some(path) = spec {
+        let bytes =
+            super::read_bounded(path, limits).map_err(|e| invalid("spec", e.to_string()))?;
+        let spec: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| invalid("spec", e.to_string()))?;
+        if !spec.is_object()
+            || spec
+                .get("loop_region")
+                .is_some_and(|region| !region.is_null() && !region.is_object())
+        {
+            return Err(invalid(
+                "spec",
+                "spec and loop_region must be JSON objects".into(),
+            ));
+        }
+        let spec: AudioSpec =
+            serde_json::from_slice(&bytes).map_err(|e| invalid("spec", e.to_string()))?;
+        spec.validate(frames)
+            .map_err(|e| invalid("spec", e.into()))?;
+        Some(spec)
+    } else {
+        None
+    };
+    format
+        .inspect(data, frames, spec)
+        .map_err(|e| invalid("file", e.into()))
+}
+
+fn wav_u16(bytes: &[u8]) -> u16 {
+    u16::from_le_bytes([bytes[0], bytes[1]])
+}
+
+fn wav_u32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn wav_format(bytes: &[u8]) -> Result<(AudioFormat, usize), &'static str> {
+    if !(bytes.len() == 16 || (bytes.len() == 18 && bytes[16..] == [0, 0])) {
+        return Err("unsupported or truncated WAV fmt chunk");
+    }
+    let channels = wav_u16(&bytes[2..]);
+    let sample_rate_hz = wav_u32(&bytes[4..]);
+    let bits_per_sample = wav_u16(&bytes[14..]);
+    let decode: fn(&[u8]) -> f64 = match (wav_u16(bytes), bits_per_sample) {
+        (1, 8) => |sample| (f64::from(sample[0]) - 128.0) / 128.0,
+        (1, 16) => |sample| f64::from(i16::from_le_bytes([sample[0], sample[1]])) / 32_768.0,
+        (1, 24) => |sample| {
+            let signed = i32::from_le_bytes([0, sample[0], sample[1], sample[2]]) >> 8;
+            f64::from(signed) / 8_388_608.0
+        },
+        (3, 32) => |sample| f64::from(f32::from_bits(wav_u32(sample))),
+        _ => return Err("unsupported WAV codec or sample width"),
+    };
+    let block_align = u32::from(channels) * u32::from(bits_per_sample / 8);
+    if channels == 0
+        || sample_rate_hz == 0
+        || u32::from(wav_u16(&bytes[12..])) != block_align
+        || sample_rate_hz.checked_mul(block_align) != Some(wav_u32(&bytes[8..]))
+    {
+        return Err("invalid WAV channel count, sample rate, block alignment or byte rate");
+    }
+    Ok((
+        AudioFormat {
+            channels,
+            sample_rate_hz,
+            bits_per_sample,
+            decode,
+        },
+        block_align as usize,
+    ))
+}
+
+fn wav_payload(bytes: &[u8]) -> Result<(AudioFormat, &[u8], u64), &'static str> {
+    if bytes.len() < 12
+        || &bytes[..4] != b"RIFF"
+        || &bytes[8..12] != b"WAVE"
+        || wav_u32(&bytes[4..]) as usize != bytes.len() - 8
+    {
+        return Err("invalid RIFF/WAVE header or container size");
+    }
+    let mut rest = &bytes[12..];
+    let mut format = None;
+    let mut data = None;
+    while !rest.is_empty() {
+        let (header, payload) = rest
+            .split_at_checked(8)
+            .ok_or("truncated WAV chunk header")?;
+        let size = wav_u32(&header[4..]) as usize;
+        let (chunk, tail) = payload
+            .split_at_checked(size)
+            .ok_or("truncated WAV chunk")?;
+        rest = tail;
+        if !size.is_multiple_of(2) {
+            let Some((&0, tail)) = rest.split_first() else {
+                return Err("missing or nonzero WAV chunk padding");
+            };
+            rest = tail;
+        }
+        match &header[..4] {
+            b"fmt " if format.is_none() => format = Some(wav_format(chunk)?),
+            b"data" if format.is_some() && data.is_none() => data = Some(chunk),
+            b"fmt " | b"data" => return Err("duplicate or out-of-order WAV fmt/data chunk"),
+            _ => {}
+        }
+    }
+    let (format, block_align) = format.ok_or("missing WAV fmt chunk")?;
+    let data = data.ok_or("missing WAV data chunk")?;
+    if data.is_empty() || !data.len().is_multiple_of(block_align) {
+        return Err("WAV data must contain one or more complete sample frames");
+    }
+    Ok((format, data, (data.len() / block_align) as u64))
+}
 
 /// 验证调用者给定的单个文件。
 ///

@@ -35,6 +35,91 @@ fn fixture(name: &str) -> PathBuf {
         .join("../assetweft-core/tests/fixtures/validation")
         .join(name)
 }
+
+#[test]
+fn audio_inspect_reports_deterministic_measurements_and_contract_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("loop.wav");
+    let spec_file = dir.path().join("audio.json");
+    let wav = b"RIFF\x2c\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x04\0\0\0\x08\0\0\0\x02\0\x10\0data\x08\0\0\0\0\0\0\x40\0\xc0\0\0";
+    fs::write(&file, wav).unwrap();
+    let mut spec = json!({
+        "expected_channels":1, "expected_sample_rate_hz":4, "min_duration_ms":1000,
+        "max_duration_ms":1000, "transcript_text":"loop音",
+        "loop_region":{"start_sample":0,"end_sample":4,"max_step_delta":0,"max_zero_crossing_offset":0}
+    });
+    fs::write(&spec_file, spec.to_string()).unwrap();
+    let args = [
+        OsStr::new("--call-id"),
+        OsStr::new("audio-1"),
+        OsStr::new("audio-inspect"),
+        file.as_os_str(),
+        OsStr::new("--spec"),
+        spec_file.as_os_str(),
+    ];
+    let (out, pass) = invoke(&args);
+    assert_eq!(pass["command"], "audio-inspect");
+    assert_eq!(pass["call_id"], "audio-1");
+    assert_eq!(pass["status"], "PASS");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.stdout, invoke(&args).0.stdout);
+    assert_eq!(pass["results"]["asr_playback_status"], "NOT_RUN");
+    assert_eq!(pass["results"]["chars_per_sec"], 5.0);
+    assert_eq!(pass["results"]["transcript_text"], "loop音");
+
+    spec["expected_channels"] = json!(2);
+    spec["min_duration_ms"] = json!(1001);
+    spec["max_duration_ms"] = json!(1002);
+    spec["loop_region"]["end_sample"] = json!(3);
+    fs::write(&spec_file, spec.to_string()).unwrap();
+    let (out, fail) = invoke(&args);
+    assert_eq!(fail["status"], "FAIL");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        fail["results"]["violations"],
+        json!(["ChannelMismatch", "DurationMismatch", "LoopBoundaryClick"])
+    );
+
+    let assert_invalid = |args: &[&OsStr], path: &str| {
+        let (out, invalid) = invoke(args);
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(invalid["command"], "audio-inspect");
+        assert_eq!(invalid["status"], "INVALID_INPUT");
+        assert_eq!(invalid["errors"][0]["field_path"], path);
+    };
+    for (limit, field) in [("51", "file"), ("52", "spec"), ("0", "arguments")] {
+        let bounded = [
+            args.as_slice(),
+            &[OsStr::new("--max-bytes"), OsStr::new(limit)],
+        ]
+        .concat();
+        assert_invalid(&bounded, field);
+    }
+    for bad_spec in [
+        "[1,4,1000,1000,null,null]",
+        r#"{"loop_region":[0,4,0,0]}"#,
+        r#"{"expected_channels":1,"expected_channels":2}"#,
+        r#"{"extra":0}"#,
+        r#"{"loop_region":{"start_sample":0,"end_sample":4,"max_step_delta":0,"max_zero_crossing_offset":0,"extra":0}}"#,
+    ] {
+        fs::write(&spec_file, bad_spec).unwrap();
+        assert_invalid(&args, "spec");
+    }
+    fs::write(&file, &wav[..wav.len() - 1]).unwrap();
+    assert_invalid(&args[..4], "file");
+    let mut unsupported = *wav;
+    unsupported[20] = 6;
+    fs::write(&file, unsupported).unwrap();
+    assert_invalid(&args[..4], "file");
+    let mut float = *wav;
+    float[20] = 3;
+    float[28] = 16;
+    float[32] = 4;
+    float[34] = 32;
+    float[44..48].copy_from_slice(&f32::NAN.to_le_bytes());
+    fs::write(&file, float).unwrap();
+    assert_invalid(&args[..4], "file");
+}
 fn static_kit_glb(closed: bool, double_sided: bool) -> Vec<u8> {
     let mut vertices: Vec<[f32; 3]> = vec![[0., 0., 0.], [2., 0., 0.], [2., 1., 0.], [0., 1., 0.]];
     let mut indices: Vec<u16> = vec![0, 2, 1, 0, 3, 2];

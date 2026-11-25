@@ -53,6 +53,7 @@ fn grammar() -> Command {
         )
         .subcommand_required(true)
         .subcommand(Command::new("inspect").arg(file()))
+        .subcommand(Command::new("audio-inspect").arg(file()).arg(spec_file().required(false)))
         .subcommand(Command::new("sprite-inspect").arg(file()).arg(spec_file()))
         .subcommand(Command::new("card-template-check").arg(file()).arg(
             Arg::new("illustration").long("illustration").value_parser(value_parser!(PathBuf)),
@@ -505,7 +506,10 @@ fn run() -> (i32, Value) {
                     code == 2
                         && matches!(
                             name,
-                            "static-kit-inspect" | "card-template-check" | "motion-retarget"
+                            "static-kit-inspect"
+                                | "card-template-check"
+                                | "motion-retarget"
+                                | "audio-inspect"
                         )
                 })
                 .unwrap_or(command);
@@ -639,6 +643,7 @@ fn run() -> (i32, Value) {
         "motion-retarget" => assurance::retarget_response(call_id, args, limits),
         "motion-stance" => assurance::stance_response(call_id, args, limits),
         "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
+        "audio-inspect" => assurance::audio_inspect_response(call_id, args, limits),
         "card-template-check" => assurance::card_template_check_response(call_id, args, limits),
         "static-kit-inspect" => assurance::static_kit_inspect_response(call_id, args, limits),
         "inspect" => assurance::inspect_response(call_id, args, limits),

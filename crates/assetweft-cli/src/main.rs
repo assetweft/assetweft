@@ -71,6 +71,9 @@ fn grammar() -> Command {
         .subcommand(Command::new("motion-retarget")
             .about("Verify sampled retargeting and two-bone IK in four stages")
             .arg(file()))
+        .subcommand(Command::new("motion-interaction")
+            .about("Verify a shared clock and sampled contact and separation")
+            .arg(file()))
         .subcommand(Command::new("motion-stance")
             .about("Check a declared support foot using sampled world-space motion")
             .arg(file())
@@ -515,6 +518,7 @@ fn run() -> (i32, Value) {
                             "static-kit-inspect"
                                 | "card-template-check"
                                 | "motion-retarget"
+                                | "motion-interaction"
                                 | "audio-inspect"
                                 | "face-attachment-inspect"
                                 | "cloth-inspect"
@@ -651,6 +655,7 @@ fn run() -> (i32, Value) {
             assurance::rigged_simple_components_response(call_id, args, limits)
         }
         "motion-retarget" => assurance::retarget_response(call_id, args, limits),
+        "motion-interaction" => assurance::interaction_response(call_id, args, limits),
         "motion-stance" => assurance::stance_response(call_id, args, limits),
         "sprite-inspect" => assurance::sprite_inspect_response(call_id, args, limits),
         "action-presentation-inspect" => {
